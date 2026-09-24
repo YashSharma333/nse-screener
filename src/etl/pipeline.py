@@ -22,10 +22,12 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
+
 import pandas as pd
 
 from config.settings import setup_logging, PROJECT_ROOT
 from src.ingestion.downloader import NSEBhavcopyDownloader
+from src.ingestion.index_constituents import NSEIndexConstituents
 
 # ---------------------------------------------------------------------------
 # Initialise centralized logging
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
-INITIAL_DAYS_BACK = 366   # ~1 year lookback on the very first run
+INITIAL_DAYS_BACK = 1100   # ~3 year lookback on the very first run
 DOWNLOAD_DELAY = 0.8      # polite gap between daily downloads
 
 
@@ -313,24 +315,62 @@ class BhavcopyETL:
     def run(
         self,
         symbol_filter: Optional[set[str]] = None,
+        skip_constituent_filter: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Execute the full ETL pipeline.
+
+        By default, the pipeline fetches the official NSE constituent lists
+        for NIFTY 100 (Large Cap), NIFTY Midcap 150, and NIFTY Smallcap 250,
+        merges them into a ~500-symbol universe, and uses that as the
+        ``symbol_filter``.  This automatically excludes micro-cap and penny
+        stocks.
 
         Parameters
         ----------
         symbol_filter:
-            Optional set of symbols to keep. Pass ``None`` to retain every
-            EQ-series stock from the Bhavcopy.
+            Explicit set of symbols to keep.  When provided this takes
+            precedence over the automatic constituent fetch.
+        skip_constituent_filter:
+            If ``True`` no filtering is applied at all — every EQ-series
+            stock in the Bhavcopy is retained.  Useful for ad-hoc debugging.
 
         Returns
         -------
         ``(success_symbols, failed_symbols)``
         """
+        # 0. Build the symbol filter (auto-fetch unless overridden)
+        if symbol_filter is not None:
+            logger.info(
+                "Using caller-supplied symbol filter (%d symbols)",
+                len(symbol_filter),
+            )
+        elif skip_constituent_filter:
+            logger.info("Constituent filter SKIPPED — all EQ stocks will be retained")
+            symbol_filter = None
+        else:
+            try:
+                fetcher = NSEIndexConstituents()
+                result = fetcher.fetch_all()
+                symbol_filter = result.symbols
+                logger.info(
+                    "Auto-fetched constituent filter: %d symbols "
+                    "(Large Cap + Mid Cap + Small Cap)",
+                    len(symbol_filter),
+                )
+            except RuntimeError:
+                logger.error(
+                    "Could not fetch any index constituents — aborting pipeline. "
+                    "Pass skip_constituent_filter=True to bypass.",
+                )
+                raise
+
         # 1. Decide the date window
         fetch_start, fetch_end, is_update = self.resolve_date_range()
 
         logger.info("=" * 62)
         logger.info("  Fetch range : %s → %s", fetch_start, fetch_end)
+        logger.info("  Symbol filter : %s",
+                     f"{len(symbol_filter)} symbols" if symbol_filter else "ALL")
         logger.info("  Output dir  : %s", self.output_dir.resolve())
         logger.info("=" * 62)
 
@@ -357,3 +397,4 @@ class BhavcopyETL:
         logger.info("=" * 62)
 
         return success, failed
+
