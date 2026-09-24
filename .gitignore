@@ -1,0 +1,25 @@
+# Python & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Data (Keep out of source control)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Environment Variables
+.env
+.env.local
+
+# IDEs (VS Code, macOS specifics)
+.vscode/
+.DS_Store
+
+# Streamlit
+.streamlit/

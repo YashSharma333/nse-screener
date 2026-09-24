@@ -1,0 +1,8 @@
+streamlit>=1.31.0
+pandas>=2.1.0
+numpy>=1.26.0
+SQLAlchemy>=2.0.25
+plotly>=5.18.0
+requests>=2.31.0
+python-dotenv>=1.0.1
+# Add psycopg2-binary or mysqlclient later for cloud DB deployment
