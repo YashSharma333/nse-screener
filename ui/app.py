@@ -1,9 +1,12 @@
-import streamlit as st
 import logging
 
-# Configure basic logging for UI layer
-logging.basicConfig(level=logging.INFO)
+from config.settings import setup_logging
+
+# Initialize centralized logging (file + stdout) before anything else
+setup_logging()
 logger = logging.getLogger(__name__)
+
+import streamlit as st
 
 def setup_page_config():
     """Configures the main Streamlit page settings."""

@@ -7,6 +7,10 @@ venv/
 ENV/
 env/
 
+# Logs
+logs/
+*.log
+
 # Data (Keep out of source control)
 data/raw/*
 data/processed/*
