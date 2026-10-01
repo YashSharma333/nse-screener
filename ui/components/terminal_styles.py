@@ -207,6 +207,7 @@ def apply_terminal_theme() -> None:
     </style>
     """
     st.markdown(terminal_css, unsafe_allow_html=True)
+    render_sidebar_controls()
 
 
 def render_terminal_header(title: str, subtitle: str, status_text: str, is_live: bool = True) -> None:

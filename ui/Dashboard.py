@@ -11,7 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -117,7 +117,6 @@ def main() -> None:
         data = get_market_data()
         snapshot = data["snapshot"]
         is_live = data["is_live"]
-        status_msg = data["status_msg"]
 
         render_terminal_header(
             title="NSE Master Market Screener",
@@ -128,8 +127,6 @@ def main() -> None:
 
         # Top Control Bar with Update Trigger
         col_ctrl1, col_ctrl2 = st.columns([3, 1])
-        with col_ctrl1:
-            st.caption(f"Status: {status_msg}")
         with col_ctrl2:
             if st.button(
                 "🔄 Update Latest Market Data",
@@ -236,19 +233,12 @@ def main() -> None:
             column_config={k: v for k, v in column_config.items() if k in display_view.columns},
         )
 
-        col_dl, col_tv = st.columns([1, 1])
-        with col_dl:
-            st.download_button(
-                label="📥 Download Filtered Master Snapshot (CSV)",
-                data=display_view.to_csv(index=False),
-                file_name="nse_master_screener_snapshot.csv",
-                mime="text/csv",
-                width="stretch",
-            )
-        with col_tv:
-            if "Symbol" in display_view.columns:
-                tv_symbols = ",".join([f"NSE:{s}" for s in display_view["Symbol"].unique()])
-                st.text_input("TradingView Watchlist String (Copy & Paste into TV):", value=tv_symbols)
+        st.download_button(
+            label="📥 Download Filtered Master Snapshot (CSV)",
+            data=display_view.to_csv(index=False),
+            file_name="nse_master_screener_snapshot.csv",
+            mime="text/csv",
+        )
 
         st.markdown("---")
 
