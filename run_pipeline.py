@@ -41,6 +41,17 @@ def main() -> None:
         action="store_true",
         help="Bypass NIFTY constituent filtering to ingest all EQ-series symbols",
     )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help="Run incremental update for recent days only instead of full backfill",
+    )
+    parser.add_argument(
+        "--lookback",
+        type=int,
+        default=5,
+        help="Number of days to check for incremental update if no prior data exists (default: 5)",
+    )
 
     args = parser.parse_args()
 
@@ -52,12 +63,22 @@ def main() -> None:
     )
 
     try:
-        success, failed = etl.run(skip_constituent_filter=args.skip_constituents)
-        logger.info(
-            "ETL Pipeline execution completed. Successfully loaded: %d symbols, Failed: %d symbols.",
-            len(success),
-            len(failed),
-        )
+        if args.incremental:
+            logger.info("Executing incremental ETL update...")
+            res = etl.run_incremental(lookback_days=args.lookback)
+            logger.info(
+                "Incremental update completed [%s]: %s (updated: %d symbols)",
+                res.get("status"),
+                res.get("message"),
+                res.get("symbols_updated", 0),
+            )
+        else:
+            success, failed = etl.run(skip_constituent_filter=args.skip_constituents)
+            logger.info(
+                "ETL Pipeline execution completed. Successfully loaded: %d symbols, Failed: %d symbols.",
+                len(success),
+                len(failed),
+            )
     except Exception as exc:
         logger.error("Pipeline failed with error: %s", exc, exc_info=True)
         sys.exit(1)

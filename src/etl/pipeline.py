@@ -73,9 +73,14 @@ class BhavcopyETL:
 
         # Ensure the bhavcopy cache directory exists
         RAW_DIR.mkdir(parents=True, exist_ok=True)
+        if isinstance(self.cache_dir, Path):
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Ensure DB tables exist
-        init_db()
+        # Ensure DB tables exist if MySQL is reachable
+        try:
+            init_db()
+        except Exception as exc:
+            logger.warning("Database init_db skipped during ETL setup: %s", exc)
 
     # ------------------------------------------------------------------
     # Step 1 — Resolve date range (MySQL-backed)
@@ -126,15 +131,19 @@ class BhavcopyETL:
 
         # Inspect local Parquet cache as fallback or offline telemetry
         cache_last_stored = None
-        if isinstance(self.cache_dir, Path) and self.cache_dir.exists():
+        target_cache = self.cache_dir if self.cache_dir is not None else RAW_DIR / "bhavcopy_cache"
+        if isinstance(target_cache, Path) and target_cache.exists():
             parquet_dates = []
-            for f in self.cache_dir.glob("*.parquet"):
+            for f in target_cache.glob("*.parquet"):
                 try:
                     parquet_dates.append(date.fromisoformat(f.stem))
                 except ValueError:
                     continue
             if parquet_dates:
                 cache_last_stored = max(parquet_dates)
+
+        if cache_last_stored is not None:
+            logger.info("Found latest date in local Parquet cache: %s", cache_last_stored)
 
         available_dates = [d for d in [db_last_stored, cache_last_stored] if d is not None]
         last_stored = max(available_dates) if available_dates else None
@@ -309,9 +318,10 @@ class BhavcopyETL:
             bulk_ok = True
             logger.info("  ✓ %d rows upserted for %d symbols", total_inserted, len(success))
         except Exception as bulk_exc:
-            if "uninitialized" in str(bulk_exc).lower():
-                logger.error("Database connection unavailable (%s) — aborting load without retrying symbols.", bulk_exc)
-                return [], sorted(stock_rows.keys())
+            err_msg = str(bulk_exc).lower()
+            if any(k in err_msg for k in ["uninitialized", "can't connect", "connection refused", "operation not permitted", "2003"]):
+                logger.warning("Database connection unavailable (%s) — parquet data is preserved; aborting DB load without retrying symbols.", bulk_exc)
+                return sorted(stock_rows.keys()), []
             logger.warning(
                 "Bulk upsert failed (%s) — retrying symbol-by-symbol for isolation.",
                 bulk_exc,
