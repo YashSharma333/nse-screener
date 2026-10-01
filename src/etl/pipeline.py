@@ -2,6 +2,8 @@ import logging
 from datetime import date
 from typing import Optional, Tuple, List
 import pandas as pd
+from src.db.models import DailyPrice, TechnicalIndicator
+from src.db.session import get_db, init_db, engine
 
 logger = logging.getLogger(__name__)
 
