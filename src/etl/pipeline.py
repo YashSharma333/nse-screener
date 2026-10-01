@@ -295,6 +295,9 @@ class BhavcopyETL:
             bulk_ok = True
             logger.info("  ✓ %d rows upserted for %d symbols", total_inserted, len(success))
         except Exception as bulk_exc:
+            if "uninitialized" in str(bulk_exc).lower():
+                logger.error("Database connection unavailable (%s) — aborting load without retrying symbols.", bulk_exc)
+                return [], sorted(stock_rows.keys())
             logger.warning(
                 "Bulk upsert failed (%s) — retrying symbol-by-symbol for isolation.",
                 bulk_exc,
@@ -410,6 +413,13 @@ class BhavcopyETL:
         """
         try:
             success, failed = self.run()
+            if not success and failed:
+                return {
+                    "status": "error",
+                    "message": f"Database load failed for {len(failed)} symbols. Check database connection/logs.",
+                    "symbols_updated": 0,
+                    "failed_count": len(failed),
+                }
             if not success and not failed:
                 return {
                     "status": "up_to_date",

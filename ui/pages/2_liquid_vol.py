@@ -145,7 +145,7 @@ def main() -> None:
 
         st.dataframe(
             display_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Close": st.column_config.NumberColumn(format="₹%.2f"),
