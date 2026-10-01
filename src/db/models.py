@@ -8,18 +8,32 @@ class DailyPrice(Base):
     """OHLCV record for a single stock on a single trading day."""
     __tablename__ = "daily_prices"
     
-    # TODO: Define the columns for the daily price model.
-    # HINT: You'll need id, symbol, date, open, high, low, close, volume.
-    # HINT: Use Column(String(20)) for symbol, Column(Numeric(10, 2)) for prices.
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol = Column(String(50), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    open = Column(Numeric(12, 2), nullable=False)
+    high = Column(Numeric(12, 2), nullable=False)
+    low = Column(Numeric(12, 2), nullable=False)
+    close = Column(Numeric(12, 2), nullable=False)
+    volume = Column(BigInteger, nullable=False)
     
-    # TODO: Add a unique constraint to prevent duplicate entries for the same symbol on the same date.
-    # HINT: Use __table_args__ = (UniqueConstraint(...),)
-    pass
+    __table_args__ = (
+        UniqueConstraint('symbol', 'date', name='uq_daily_price_symbol_date'),
+    )
 
 class TechnicalIndicator(Base):
     """Pre-computed technical indicators per stock per day."""
     __tablename__ = "technical_indicators"
     
-    # TODO: Define the base columns (id, symbol, date).
-    # TODO: Add columns for technical indicators like sma_50, sma_200, rsi, etc.
-    pass
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol = Column(String(50), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    
+    sma_50 = Column(Numeric(12, 2), nullable=True)
+    sma_200 = Column(Numeric(12, 2), nullable=True)
+    high_52w = Column(Numeric(12, 2), nullable=True)
+    rsi_14 = Column(Numeric(12, 2), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('symbol', 'date', name='uq_technical_ind_symbol_date'),
+    )
