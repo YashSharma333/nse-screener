@@ -92,7 +92,12 @@ def main() -> None:
             return
 
         screener = StockScreener(snapshot)
-        qualifying = screener.strategy_swing_volume()
+        if hasattr(screener, "strategy_swing_volume"):
+            qualifying = screener.strategy_swing_volume()
+        elif hasattr(screener, "strategy_liquid_volume"):
+            qualifying = screener.strategy_liquid_volume()
+        else:
+            qualifying = screener.liquid_1_5x_volume()
 
         # Telemetry KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)

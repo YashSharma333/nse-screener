@@ -189,7 +189,7 @@ python run_pipeline.py --days-back 365 --delay 0.5 --batch-size 1000
 ### 5. Launch the Streamlit Financial Terminal
 Launch the multi-page terminal dashboard:
 ```bash
-streamlit run ui/app.py
+streamlit run ui/Dashboard.py
 ```
 Open [http://localhost:8501](http://localhost:8501) in your browser.
 
@@ -238,13 +238,13 @@ nse-screener/
 │   ├── test_pipeline.py          # Unit tests for constituent mapping & DB models
 │   └── test_screener.py          # Unit tests for quantitative screening strategies
 ├── ui/
-│   ├── app.py                    # Streamlit Terminal landing portal & incremental trigger
+│   ├── Dashboard.py              # Master market screener dashboard & application entrypoint
 │   ├── components/
+│   │   ├── stock_inspector.py    # Interactive candlestick, MA stack, volume & RSI inspector
 │   │   └── terminal_styles.py    # Dark-mode Bloomberg terminal CSS & header telemetry
 │   └── pages/
-│       ├── 1_dashboard.py        # Master table with dynamic column selection & filters
-│       ├── 2_liquid_vol.py       # Filtered view for Strategy 1 (Liquid 1.5x Vol)
-│       └── 3_liquid_momentum.py  # Filtered view for Strategy 2 (Liquid 1.5x Vol Momentum)
+│       ├── 2_swing_volume.py     # Filtered view for Strategy: Swing + Volume
+│       └── 3_swing_momentum.py   # Filtered view for Strategy: Swing With Momentum
 ├── pytest.ini                    # Pytest configuration root
 ├── requirements.txt              # Production dependency specifications
 ├── run_pipeline.py               # CLI runner for massive historical Bhavcopy ETL
