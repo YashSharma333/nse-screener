@@ -264,6 +264,18 @@ class NSEBhavcopyDownloader:
                         time.sleep(self.retry_wait)
                         continue
 
+                    if resp.status_code == 429:
+                        # Respect Retry-After header; fall back to retry_wait
+                        retry_after = float(
+                            resp.headers.get("Retry-After", self.retry_wait)
+                        )
+                        logger.warning(
+                            "%s %s attempt %d → 429 (rate-limited) — waiting %.0fs",
+                            d, fmt, attempt, retry_after,
+                        )
+                        time.sleep(retry_after)
+                        continue
+
                     resp.raise_for_status()
 
                     df = self._parse(resp.content, fmt)
@@ -291,6 +303,14 @@ class NSEBhavcopyDownloader:
                     )
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
+
+                except zipfile.BadZipFile as exc:
+                    # Corrupt archive — log and skip this format; don't retry same URL
+                    logger.warning(
+                        "%s %s — corrupt ZIP archive: %s (skipping format)",
+                        d, fmt, exc,
+                    )
+                    break
 
                 except Exception as exc:
                     logger.error(

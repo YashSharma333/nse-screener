@@ -262,54 +262,65 @@ class BhavcopyETL:
 
         logger.info("Loading data into MySQL (daily_prices) …")
 
-        # Flatten all rows across symbols into a single list for batching
-        all_rows: list[dict] = []
-        for rows in stock_rows.values():
-            all_rows.extend(rows)
-
-        if not all_rows:
+        if not stock_rows:
             logger.warning("No rows to load.")
             return success, failed
 
-        logger.info("  Total rows to upsert: %d", len(all_rows))
+        total_rows = sum(len(v) for v in stock_rows.values())
+        logger.info("  Total rows to upsert: %d across %d symbols", total_rows, len(stock_rows))
 
-        # Process in batches
+        def _upsert_batch(session, batch: list[dict]) -> None:
+            """Execute a single INSERT … ON DUPLICATE KEY UPDATE batch."""
+            stmt = mysql_insert(DailyPrice).values(batch)
+            session.execute(
+                stmt.on_duplicate_key_update(
+                    open=stmt.inserted.open,
+                    high=stmt.inserted.high,
+                    low=stmt.inserted.low,
+                    close=stmt.inserted.close,
+                    volume=stmt.inserted.volume,
+                    index_name=stmt.inserted.index_name,
+                )
+            )
+
+        # --- Fast path: commit all symbols in one transaction ---
+        all_rows: list[dict] = [r for rows in stock_rows.values() for r in rows]
+        bulk_ok = False
         try:
             with get_db() as session:
                 for batch_start in range(0, len(all_rows), self.batch_size):
-                    batch = all_rows[batch_start : batch_start + self.batch_size]
-
-                    stmt = mysql_insert(DailyPrice).values(batch)
-                    upsert_stmt = stmt.on_duplicate_key_update(
-                        open=stmt.inserted.open,
-                        high=stmt.inserted.high,
-                        low=stmt.inserted.low,
-                        close=stmt.inserted.close,
-                        volume=stmt.inserted.volume,
-                        index_name=stmt.inserted.index_name,
-                    )
-                    session.execute(upsert_stmt)
-                    total_inserted += len(batch)
-
-                    logger.debug(
-                        "  Batch %d–%d committed (%d rows)",
-                        batch_start,
-                        batch_start + len(batch),
-                        len(batch),
-                    )
-
-            # If we got here, the full commit succeeded
+                    _upsert_batch(session, all_rows[batch_start : batch_start + self.batch_size])
             success = sorted(stock_rows.keys())
-            logger.info(
-                "  ✓ %d rows upserted for %d symbols",
-                total_inserted, len(success),
+            total_inserted = len(all_rows)
+            bulk_ok = True
+            logger.info("  ✓ %d rows upserted for %d symbols", total_inserted, len(success))
+        except Exception as bulk_exc:
+            logger.warning(
+                "Bulk upsert failed (%s) — retrying symbol-by-symbol for isolation.",
+                bulk_exc,
             )
 
-        except Exception as exc:
-            logger.error("Database load failed: %s", exc, exc_info=True)
-            failed = sorted(stock_rows.keys())
+        if bulk_ok:
+            return success, failed
 
-        return success, failed
+        # --- Slow path: per-symbol isolation so one bad ticker doesn't block others ---
+        for sym, rows in stock_rows.items():
+            try:
+                with get_db() as session:
+                    for batch_start in range(0, len(rows), self.batch_size):
+                        _upsert_batch(session, rows[batch_start : batch_start + self.batch_size])
+                success.append(sym)
+                total_inserted += len(rows)
+                logger.debug("  ✓ %s — %d rows", sym, len(rows))
+            except Exception as sym_exc:
+                logger.error("  ✗ %s — skipped: %s", sym, sym_exc)
+                failed.append(sym)
+
+        logger.info(
+            "  Symbol-isolated load complete: ✓ %d succeeded  ✗ %d failed",
+            len(success), len(failed),
+        )
+        return sorted(success), sorted(failed)
 
     # ------------------------------------------------------------------
     # Orchestrator
