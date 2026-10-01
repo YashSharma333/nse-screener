@@ -59,18 +59,15 @@ try:
         pool_recycle=3600,       # recycle stale connections every hour
         pool_pre_ping=True,      # verify connections before handing them out
     )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     logger.info(
         "SQLAlchemy engine created  (host=%s, db=%s, pool_size=10)",
         MYSQL_HOST, MYSQL_DB,
     )
-except Exception as exc:
-    logger.error("Failed to create SQLAlchemy engine: %s", exc)
-    raise
-
-# ---------------------------------------------------------------------------
-# Session factory
-# ---------------------------------------------------------------------------
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+except (ImportError, Exception) as exc:
+    logger.warning("Could not initialize MySQL SQLAlchemy engine (%s) — DB operations will be disabled.", exc)
+    engine = None
+    SessionLocal = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +79,9 @@ def init_db() -> None:
     Safe to call repeatedly — ``CREATE TABLE IF NOT EXISTS`` is idempotent.
     Also ensures newly added columns such as ``index_name`` are migrated.
     """
+    if engine is None:
+        logger.warning("Database init_db skipped: engine is not available.")
+        return
     try:
         Base.metadata.create_all(bind=engine)
         try:
@@ -123,6 +123,8 @@ def get_db() -> Generator[Session, None, None]:
     The session is committed on clean exit and rolled back on exception.
     ``session.close()`` is always called.
     """
+    if SessionLocal is None:
+        raise RuntimeError("Database session factory is uninitialized. Ensure pymysql is installed and MySQL is configured.")
     session = SessionLocal()
     try:
         yield session
@@ -136,6 +138,8 @@ def get_db() -> Generator[Session, None, None]:
 
 def check_connection() -> bool:
     """Quick health-check: execute ``SELECT 1`` and return True on success."""
+    if engine is None:
+        return False
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
