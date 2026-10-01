@@ -140,7 +140,7 @@ class BhavcopyETL:
                 "All data is already up to date (last date: %s). Nothing to fetch.",
                 last_stored,
             )
-            raise SystemExit(0)
+            return start, today, True
 
         logger.info("Mode: UPDATE RUN  (last stored date: %s)", last_stored)
         logger.info("Fetching new days: %s → %s", start, today)
@@ -163,6 +163,7 @@ class BhavcopyETL:
         start: date,
         end: date,
         symbol_filter: Optional[set[str]] = None,
+        symbol_index_map: Optional[dict[str, str]] = None,
     ) -> dict[str, list[dict]]:
         """Download Bhavcopy files for each weekday and bucket rows by symbol.
 
@@ -173,16 +174,22 @@ class BhavcopyETL:
         symbol_filter:
             Optional set of symbols to keep. When ``None`` all EQ-series
             stocks are retained.
+        symbol_index_map:
+            Optional mapping from symbol to index name ("NIFTY 100", etc.).
 
         Returns
         -------
         ``{symbol: [row_dict, …]}`` where each dict has keys
-        ``date, symbol, open, high, low, close, volume``.
+        ``date, symbol, open, high, low, close, volume, index_name``.
         """
         all_dates = list(self._weekdays(start, end))
         total = len(all_dates)
         stock_rows: dict[str, list[dict]] = {}
         trading_days = 0
+
+        if not all_dates:
+            logger.info("No trading weekdays to process in range %s → %s.", start, end)
+            return stock_rows
 
         logger.info(
             "Scanning %d potential trading days (%s → %s) …", total, start, end
@@ -210,15 +217,17 @@ class BhavcopyETL:
                 sym = row["Symbol"]
                 if sym not in stock_rows:
                     stock_rows[sym] = []
+                idx_name = symbol_index_map.get(sym) if symbol_index_map else None
                 stock_rows[sym].append(
                     {
-                        "symbol": sym,
-                        "date":   d,
-                        "open":   row.get("Open"),
-                        "high":   row.get("High"),
-                        "low":    row.get("Low"),
-                        "close":  row.get("Close"),
-                        "volume": row.get("Volume"),
+                        "symbol":     sym,
+                        "date":       d,
+                        "open":       row.get("Open"),
+                        "high":       row.get("High"),
+                        "low":        row.get("Low"),
+                        "close":      row.get("Close"),
+                        "volume":     row.get("Volume"),
+                        "index_name": idx_name,
                     }
                 )
 
@@ -277,6 +286,7 @@ class BhavcopyETL:
                         low=stmt.inserted.low,
                         close=stmt.inserted.close,
                         volume=stmt.inserted.volume,
+                        index_name=stmt.inserted.index_name,
                     )
                     session.execute(upsert_stmt)
                     total_inserted += len(batch)
@@ -307,45 +317,29 @@ class BhavcopyETL:
     def run(
         self,
         symbol_filter: Optional[set[str]] = None,
+        symbol_index_map: Optional[dict[str, str]] = None,
         skip_constituent_filter: bool = False,
     ) -> tuple[list[str], list[str]]:
-        """Execute the full ETL pipeline.
-
-        By default, the pipeline fetches the official NSE constituent lists
-        for NIFTY 100 (Large Cap), NIFTY Midcap 150, and NIFTY Smallcap 250,
-        merges them into a ~500-symbol universe, and uses that as the
-        ``symbol_filter``.  This automatically excludes micro-cap and penny
-        stocks.
-
-        Parameters
-        ----------
-        symbol_filter:
-            Explicit set of symbols to keep.  When provided this takes
-            precedence over the automatic constituent fetch.
-        skip_constituent_filter:
-            If ``True`` no filtering is applied at all — every EQ-series
-            stock in the Bhavcopy is retained.  Useful for ad-hoc debugging.
-
-        Returns
-        -------
-        ``(success_symbols, failed_symbols)``
-        """
-        # 0. Build the symbol filter (auto-fetch unless overridden)
+        """Execute the full ETL pipeline."""
+        # 0. Build the symbol filter and index map (auto-fetch unless overridden)
         if symbol_filter is not None:
             logger.info(
                 "Using caller-supplied symbol filter (%d symbols)",
                 len(symbol_filter),
             )
+            idx_map = symbol_index_map or {}
         elif skip_constituent_filter:
             logger.info(
                 "Constituent filter SKIPPED — all EQ stocks will be retained"
             )
             symbol_filter = None
+            idx_map = {}
         else:
             try:
                 fetcher = NSEIndexConstituents()
                 result = fetcher.fetch_all()
                 symbol_filter = result.symbols
+                idx_map = dict(result)
                 logger.info(
                     "Auto-fetched constituent filter: %d symbols "
                     "(Large Cap + Mid Cap + Small Cap)",
@@ -361,6 +355,10 @@ class BhavcopyETL:
         # 1. Decide the date window (queries MySQL)
         fetch_start, fetch_end, is_update = self.resolve_date_range()
 
+        if fetch_start > fetch_end:
+            logger.info("All data is up to date (%s > %s). Nothing to fetch.", fetch_start, fetch_end)
+            return [], []
+
         logger.info("=" * 62)
         logger.info("  Fetch range    : %s → %s", fetch_start, fetch_end)
         logger.info(
@@ -372,7 +370,7 @@ class BhavcopyETL:
 
         # 2. Download daily Bhavcopy files and bucket rows by symbol
         stock_rows = self.collect_new_rows(
-            fetch_start, fetch_end, symbol_filter=symbol_filter
+            fetch_start, fetch_end, symbol_filter=symbol_filter, symbol_index_map=idx_map
         )
 
         # 3. Upsert into MySQL
@@ -393,3 +391,30 @@ class BhavcopyETL:
         logger.info("=" * 62)
 
         return success, failed
+
+    def run_incremental(self, lookback_days: int = 5) -> dict:
+        """Incremental update trigger: fetches only the most recent Bhavcopy data.
+
+        Returns a dictionary summary with counts and status.
+        """
+        try:
+            success, failed = self.run()
+            if not success and not failed:
+                return {
+                    "status": "up_to_date",
+                    "message": "Database is already up to date with latest trading session.",
+                    "symbols_updated": 0,
+                }
+            return {
+                "status": "success",
+                "message": f"Successfully updated {len(success)} symbols.",
+                "symbols_updated": len(success),
+                "failed_count": len(failed),
+            }
+        except Exception as exc:
+            logger.error("Incremental update failed: %s", exc, exc_info=True)
+            return {
+                "status": "error",
+                "message": str(exc),
+                "symbols_updated": 0,
+            }

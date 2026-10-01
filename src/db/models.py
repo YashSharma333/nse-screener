@@ -42,14 +42,15 @@ class DailyPrice(Base):
 
     __tablename__ = "daily_prices"
 
-    id     = Column(BigInteger, primary_key=True, autoincrement=True)
-    symbol = Column(String(20), nullable=False, index=True)
-    date   = Column(Date,       nullable=False, index=True)
-    open   = Column(Numeric(10, 2), nullable=True)
-    high   = Column(Numeric(10, 2), nullable=True)
-    low    = Column(Numeric(10, 2), nullable=True)
-    close  = Column(Numeric(10, 2), nullable=True)
-    volume = Column(BigInteger,     nullable=True)
+    id         = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol     = Column(String(20), nullable=False, index=True)
+    date       = Column(Date,       nullable=False, index=True)
+    open       = Column(Numeric(10, 2), nullable=True)
+    high       = Column(Numeric(10, 2), nullable=True)
+    low        = Column(Numeric(10, 2), nullable=True)
+    close      = Column(Numeric(10, 2), nullable=True)
+    volume     = Column(BigInteger,     nullable=True)
+    index_name = Column(String(50),     nullable=True, index=True)
 
     __table_args__ = (
         UniqueConstraint("symbol", "date", name="uq_symbol_date"),
@@ -58,7 +59,7 @@ class DailyPrice(Base):
     def __repr__(self) -> str:
         return (
             f"<DailyPrice(symbol={self.symbol!r}, date={self.date}, "
-            f"close={self.close})>"
+            f"close={self.close}, index={self.index_name!r})>"
         )
 
 

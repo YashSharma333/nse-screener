@@ -85,12 +85,32 @@ class TestTechnicalCalculator(unittest.TestCase):
     def test_apply_all_indicators(self):
         df_result = self.calc.apply_all_indicators(self.df.copy())
         expected_cols = [
-            'sma_50', 'sma_200', 'ema_12', 'ema_26', 'rsi_14', 
+            'sma_50', 'sma_200', 'ema_12', 'ema_20', 'ema_26', 'rsi_14', 
             'high_52w', 'low_52w', 'bb_upper', 'bb_middle', 'bb_lower', 
-            'macd_line', 'macd_signal', 'macd_histogram', 'daily_returns', 'volatility_20'
+            'macd_line', 'macd_signal', 'macd_histogram', 'daily_returns', 'volatility_20',
+            'volume_sma_20', 'high_252d_prev',
+            'pct_change_daily', 'pct_change_1m', 'pct_change_3m', 'pct_change_6m', 'pct_change_12m',
+            'close_60d', 'close_120d', 'close_180d', 'close_252d',
+            'return_60d', 'return_120d'
         ]
         for col in expected_cols:
             self.assertIn(col, df_result.columns)
+
+    def test_new_lookback_and_shift_indicators(self):
+        pct_1m = self.calc.calculate_pct_change(self.df, periods=21)
+        self.assertEqual(len(pct_1m), 300)
+        self.assertTrue(pd.isna(pct_1m.iloc[20]))
+        self.assertFalse(pd.isna(pct_1m.iloc[21]))
+
+        shift_60 = self.calc.calculate_shifted_price(self.df, shift_days=60)
+        self.assertEqual(len(shift_60), 300)
+        self.assertTrue(pd.isna(shift_60.iloc[59]))
+        self.assertFalse(pd.isna(shift_60.iloc[60]))
+
+        high_prev = self.calc.calculate_shifted_rolling_high(self.df, window=252, shift_days=1)
+        self.assertEqual(len(high_prev), 300)
+        self.assertTrue(pd.isna(high_prev.iloc[251]))
+        self.assertFalse(pd.isna(high_prev.iloc[253]))
             
     def test_edge_cases(self):
         empty_df = pd.DataFrame(columns=['date', 'open', 'high', 'low', 'close', 'volume'])
