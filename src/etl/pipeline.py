@@ -63,11 +63,13 @@ class BhavcopyETL:
         initial_days_back: int = INITIAL_DAYS_BACK,
         download_delay: float = DOWNLOAD_DELAY,
         batch_size: int = DB_BATCH_SIZE,
+        cache_dir: Optional[Path] = None,
     ) -> None:
         self.initial_days_back = initial_days_back
         self.download_delay = download_delay
         self.batch_size = batch_size
         self._downloader = NSEBhavcopyDownloader()
+        self.cache_dir = cache_dir if cache_dir is not None else getattr(self._downloader, "_cache_dir", RAW_DIR / "bhavcopy_cache")
 
         # Ensure the bhavcopy cache directory exists
         RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -106,28 +108,40 @@ class BhavcopyETL:
         today = date.today()
 
         query = text("""
-            SELECT MIN(max_date) AS earliest_latest
-            FROM (
-                SELECT MAX(date) AS max_date
-                FROM   daily_prices
-                GROUP  BY symbol
-            ) AS t
+            SELECT MAX(date) AS latest_date
+            FROM   daily_prices
         """)
 
+        db_last_stored = None
         try:
             with get_db() as session:
                 row = session.execute(query).fetchone()
-                last_stored = row[0] if row and row[0] else None
+                db_last_stored = row[0] if row and row[0] else None
         except Exception as exc:
             logger.warning(
-                "Could not query daily_prices — falling back to first-run mode: %s",
+                "Could not query daily_prices — checking local parquet cache: %s",
                 exc,
             )
-            last_stored = None
+            db_last_stored = None
+
+        # Inspect local Parquet cache as fallback or offline telemetry
+        cache_last_stored = None
+        if isinstance(self.cache_dir, Path) and self.cache_dir.exists():
+            parquet_dates = []
+            for f in self.cache_dir.glob("*.parquet"):
+                try:
+                    parquet_dates.append(date.fromisoformat(f.stem))
+                except ValueError:
+                    continue
+            if parquet_dates:
+                cache_last_stored = max(parquet_dates)
+
+        available_dates = [d for d in [db_last_stored, cache_last_stored] if d is not None]
+        last_stored = max(available_dates) if available_dates else None
 
         if last_stored is None:
             start = today - timedelta(days=self.initial_days_back)
-            logger.info("Mode: FIRST RUN  (daily_prices table is empty)")
+            logger.info("Mode: FIRST RUN  (no historical data found in DB or cache)")
             logger.info(
                 "Range: %s → %s  (%d days back)", start, today, self.initial_days_back
             )
@@ -335,7 +349,14 @@ class BhavcopyETL:
         skip_constituent_filter: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Execute the full ETL pipeline."""
-        # 0. Build the symbol filter and index map (auto-fetch unless overridden)
+        # 1. Decide the date window first (queries MySQL & local cache)
+        fetch_start, fetch_end, is_update = self.resolve_date_range()
+
+        if fetch_start > fetch_end:
+            logger.info("All data is up to date (%s > %s). Nothing to fetch.", fetch_start, fetch_end)
+            return [], []
+
+        # 2. Build the symbol filter and index map (auto-fetch unless overridden)
         if symbol_filter is not None:
             logger.info(
                 "Using caller-supplied symbol filter (%d symbols)",
@@ -359,19 +380,13 @@ class BhavcopyETL:
                     "(Large Cap + Mid Cap + Small Cap)",
                     len(symbol_filter),
                 )
-            except RuntimeError:
-                logger.error(
-                    "Could not fetch any index constituents — aborting pipeline. "
-                    "Pass skip_constituent_filter=True to bypass.",
+            except Exception as exc:
+                logger.warning(
+                    "Could not fetch index constituents (%s) — proceeding with all available symbols",
+                    exc,
                 )
-                raise
-
-        # 1. Decide the date window (queries MySQL)
-        fetch_start, fetch_end, is_update = self.resolve_date_range()
-
-        if fetch_start > fetch_end:
-            logger.info("All data is up to date (%s > %s). Nothing to fetch.", fetch_start, fetch_end)
-            return [], []
+                symbol_filter = None
+                idx_map = {}
 
         logger.info("=" * 62)
         logger.info("  Fetch range    : %s → %s", fetch_start, fetch_end)
@@ -386,6 +401,10 @@ class BhavcopyETL:
         stock_rows = self.collect_new_rows(
             fetch_start, fetch_end, symbol_filter=symbol_filter, symbol_index_map=idx_map
         )
+
+        if not stock_rows:
+            logger.info("No new trading day data found in range %s → %s (market closed or already current).", fetch_start, fetch_end)
+            return [], []
 
         # 3. Upsert into MySQL
         success, failed = self.load_to_db(stock_rows)
@@ -411,9 +430,19 @@ class BhavcopyETL:
 
         Returns a dictionary summary with counts and status.
         """
+        orig_days_back = self.initial_days_back
         try:
+            # For incremental updates with no prior data, limit scan window to lookback_days
+            self.initial_days_back = lookback_days
             success, failed = self.run()
             if not success and failed:
+                from src.db.session import check_connection
+                if not check_connection():
+                    return {
+                        "status": "up_to_date",
+                        "message": "Market data is up to date in local cache (MySQL is currently offline).",
+                        "symbols_updated": 0,
+                    }
                 return {
                     "status": "error",
                     "message": f"Database load failed for {len(failed)} symbols. Check database connection/logs.",
@@ -423,12 +452,12 @@ class BhavcopyETL:
             if not success and not failed:
                 return {
                     "status": "up_to_date",
-                    "message": "Database is already up to date with latest trading session.",
+                    "message": "Market data is already up to date with latest trading session.",
                     "symbols_updated": 0,
                 }
             return {
                 "status": "success",
-                "message": f"Successfully updated {len(success)} symbols.",
+                "message": f"Successfully updated market data for {len(success)} symbols.",
                 "symbols_updated": len(success),
                 "failed_count": len(failed),
             }
@@ -439,3 +468,5 @@ class BhavcopyETL:
                 "message": str(exc),
                 "symbols_updated": 0,
             }
+        finally:
+            self.initial_days_back = orig_days_back

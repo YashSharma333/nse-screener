@@ -38,7 +38,7 @@ def etl(tmp_path, monkeypatch):
     """Return a BhavcopyETL with init_db and NSEBhavcopyDownloader mocked out."""
     with patch("src.etl.pipeline.init_db"), \
          patch("src.etl.pipeline.NSEBhavcopyDownloader"):
-        instance = BhavcopyETL()
+        instance = BhavcopyETL(cache_dir=tmp_path / "bhavcopy_cache")
     return instance
 
 
@@ -270,3 +270,45 @@ class TestResolveDateRange:
 
         assert start > end  # signals "nothing to fetch" in run()
         assert is_update is True
+
+    def test_empty_table_uses_parquet_cache_if_present(self, etl, tmp_path):
+        """When DB is empty or offline, but parquet cache has files, resolve_date_range
+        must use the latest cached date rather than re-downloading from scratch."""
+        cache_dir = tmp_path / "bhavcopy_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Create a mock cached date for yesterday
+        yesterday = date.today() - timedelta(days=1)
+        (cache_dir / f"{yesterday.isoformat()}.parquet").touch()
+
+        @contextmanager
+        def _get_db_empty():
+            session = MagicMock()
+            result = MagicMock()
+            result.fetchone.return_value = None
+            session.execute.return_value = result
+            yield session
+
+        with patch("src.etl.pipeline.get_db", _get_db_empty):
+            start, end, is_update = etl.resolve_date_range()
+
+        assert is_update is True
+        assert start == yesterday + timedelta(days=1)
+        assert end == date.today()
+
+    def test_run_incremental_up_to_date_immediate_return(self, etl):
+        """run_incremental returns up_to_date without fetching when data is current."""
+        today = date.today()
+
+        @contextmanager
+        def _get_db_current():
+            session = MagicMock()
+            result = MagicMock()
+            result.fetchone.return_value = (today,)
+            session.execute.return_value = result
+            yield session
+
+        with patch("src.etl.pipeline.get_db", _get_db_current), \
+             patch.object(etl, "collect_new_rows") as mock_collect:
+            res = etl.run_incremental()
+            assert res["status"] == "up_to_date"
+            mock_collect.assert_not_called()
