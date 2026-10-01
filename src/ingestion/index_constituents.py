@@ -44,9 +44,9 @@ _BASE_URL = "https://nsearchives.nseindia.com/content/indices"
 
 # (logical name, CSV filename on NSE, minimum expected count)
 _INDEX_SPECS: list[tuple[str, str, int]] = [
-    ("NIFTY 100 (Large Cap)",   "ind_nifty100list.csv",          90),
-    ("NIFTY Midcap 150",        "ind_niftymidcap150list.csv",   140),
-    ("NIFTY Smallcap 250",      "ind_niftysmallcap250list.csv", 230),
+    ("NIFTY 100",          "ind_nifty100list.csv",          90),
+    ("NIFTY Midcap 150",   "ind_niftymidcap150list.csv",   140),
+    ("NIFTY Smallcap 250", "ind_niftysmallcap250list.csv", 230),
 ]
 
 _NSE_HEADERS = {
@@ -68,18 +68,31 @@ REQUEST_TIMEOUT = 20  # seconds per HTTP request
 # ---------------------------------------------------------------------------
 # Result container
 # ---------------------------------------------------------------------------
-@dataclass
-class ConstituentResult:
-    """Holds the output of a constituent-fetch operation."""
+class ConstituentResult(dict):
+    """Holds the output of a constituent-fetch operation as a dict (symbol -> index_name)."""
 
-    symbols: set[str] = field(default_factory=set)
-    """Master set of symbols across all successfully fetched indices."""
+    def __init__(
+        self,
+        symbol_to_index: Optional[dict[str, str]] = None,
+        symbols: Optional[set[str]] = None,
+        per_index: Optional[dict[str, set[str]]] = None,
+        failed_indices: Optional[list[str]] = None,
+    ) -> None:
+        mapping = symbol_to_index or {}
+        super().__init__(mapping)
+        self.symbol_to_index = mapping
+        self._symbols = symbols if symbols is not None else set(mapping.keys())
+        self.per_index = per_index or {}
+        self.failed_indices = failed_indices or []
 
-    per_index: dict[str, set[str]] = field(default_factory=dict)
-    """Symbols broken out by index name, for diagnostics."""
+    @property
+    def symbols(self) -> set[str]:
+        """Set of unique symbols across all tracked indices."""
+        return self._symbols or set(self.keys())
 
-    failed_indices: list[str] = field(default_factory=list)
-    """Index names that could not be fetched after all retries."""
+    @symbols.setter
+    def symbols(self, val: set[str]) -> None:
+        self._symbols = val
 
 
 # ---------------------------------------------------------------------------
@@ -227,20 +240,34 @@ class NSEIndexConstituents:
     def fetch_all(self) -> ConstituentResult:
         """Fetch Large Cap, Mid Cap, and Small Cap lists and merge them.
 
-        Returns a :class:`ConstituentResult` with the master symbol set.
-        Raises :class:`RuntimeError` if *all* three indices fail (the
-        pipeline should not proceed with zero symbols).
+        Returns a :class:`ConstituentResult` (which behaves as a dict mapping
+        each symbol to its index: "NIFTY 100", "NIFTY Midcap 150", or
+        "NIFTY Smallcap 250").
+        Raises :class:`RuntimeError` if *all* three indices fail.
         """
-        result = ConstituentResult()
         logger.info("Fetching NSE index constituent lists …")
+        per_index: dict[str, set[str]] = {}
+        failed_indices: list[str] = []
+        symbol_to_index: dict[str, str] = {}
+        all_symbols: set[str] = set()
 
         for name, filename, min_expected in _INDEX_SPECS:
             symbols = self._fetch_index(name, filename, min_expected)
             if symbols is not None:
-                result.per_index[name] = symbols
-                result.symbols |= symbols
+                per_index[name] = symbols
+                all_symbols |= symbols
+                for sym in symbols:
+                    if sym not in symbol_to_index:
+                        symbol_to_index[sym] = name
             else:
-                result.failed_indices.append(name)
+                failed_indices.append(name)
+
+        result = ConstituentResult(
+            symbol_to_index=symbol_to_index,
+            symbols=all_symbols,
+            per_index=per_index,
+            failed_indices=failed_indices,
+        )
 
         # Summary
         logger.info("-" * 50)
@@ -263,3 +290,8 @@ class NSEIndexConstituents:
             )
 
         return result
+
+    def fetch_symbol_map(self) -> dict[str, str]:
+        """Fetch index constituents and return a dictionary mapping symbol -> index name."""
+        result = self.fetch_all()
+        return dict(result)

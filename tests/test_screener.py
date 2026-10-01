@@ -59,5 +59,57 @@ class TestStockScreener(unittest.TestCase):
         res = self.screener.bollinger_squeeze()
         self.assertIn(8, res.index)
 
+    def test_strategy_liquid_volume(self):
+        # Create row that satisfies all conditions of Strategy 1
+        s1_data = {
+            'close': [100.0, 110.0],
+            'ema_20': [90.0, 105.0],
+            'sma_50': [80.0, 95.0],
+            'sma_200': [70.0, 85.0],
+            'high_252d_prev': [120.0, 115.0],  # 0.85 * 115 = 97.75 <= 110
+            'volume': [100_000, 400_000],
+            'volume_sma_20': [200_000, 260_000],  # 400_000 > 1.5 * 260_000 = 390_000, and 260k > 250k
+            'index_name': ['NIFTY 100', 'NIFTY 100'],
+        }
+        df = pd.DataFrame(s1_data)
+        screener = StockScreener(df)
+        res = screener.strategy_liquid_volume()
+        self.assertIn(1, res.index)
+        self.assertNotIn(0, res.index)
+
+    def test_strategy_liquid_momentum(self):
+        # Row 1 satisfies Strategy 1 and all momentum conditions of Strategy 2:
+        # 60d return <= 40% (here 20%)
+        # 120d return >= 30% (here 35%)
+        # Close = 200, Close_252d = 100, Close_180d = 120
+        # ((Close - Close_252d) / Close_180d) * 100 = ((200 - 100) / 120) * 100 = 83.33% (<= 300)
+        # ((Close - Close_180d) / Close_252d) * 100 = ((200 - 120) / 100) * 100 = 80.0% (between 50 and 300)
+        s2_data = {
+            'close': [200.0],
+            'ema_20': [180.0],
+            'sma_50': [160.0],
+            'sma_200': [140.0],
+            'high_252d_prev': [210.0],
+            'volume': [500_000],
+            'volume_sma_20': [300_000],
+            'index_name': ['NIFTY Midcap 150'],
+            'close_60d': [166.67],      # return ~20% <= 40%
+            'close_120d': [148.15],     # return ~35% >= 30%
+            'close_180d': [120.0],
+            'close_252d': [100.0],
+            'return_60d': [20.0],
+            'return_120d': [35.0],
+        }
+        df = pd.DataFrame(s2_data)
+        screener = StockScreener(df)
+        res = screener.strategy_liquid_momentum()
+        self.assertEqual(len(res), 1)
+        self.assertIn(0, res.index)
+
+    def test_screener_imports_from_both_locations(self):
+        from src.screener import StockScreener as Screener1
+        from src.computation.screener import StockScreener as Screener2
+        self.assertIs(Screener1, Screener2)
+
 if __name__ == '__main__':
     unittest.main()

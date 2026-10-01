@@ -80,9 +80,31 @@ def init_db() -> None:
     """Create all tables defined in :mod:`src.db.models` if they don't exist.
 
     Safe to call repeatedly — ``CREATE TABLE IF NOT EXISTS`` is idempotent.
+    Also ensures newly added columns such as ``index_name`` are migrated.
     """
     try:
         Base.metadata.create_all(bind=engine)
+        try:
+            with engine.connect() as conn:
+                check_sql = text("""
+                    SELECT COUNT(*)
+                    FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'daily_prices'
+                      AND COLUMN_NAME = 'index_name'
+                """)
+                col_exists = conn.execute(check_sql).scalar()
+                if col_exists == 0:
+                    conn.execute(text("""
+                        ALTER TABLE daily_prices
+                        ADD COLUMN index_name VARCHAR(50) NULL,
+                        ADD INDEX ix_daily_prices_index_name (index_name)
+                    """))
+                    conn.commit()
+                    logger.info("Migrated daily_prices table: added index_name column.")
+        except Exception as mig_err:
+            logger.debug("Schema migration check skipped or failed: %s", mig_err)
+
         logger.info("Database tables initialised (create_all complete)")
     except Exception as exc:
         logger.error("Failed to initialise database tables: %s", exc)
