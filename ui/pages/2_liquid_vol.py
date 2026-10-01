@@ -21,6 +21,7 @@ logger = logging.getLogger("ui.liquid_vol")
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 from src.db.data_service import (
     load_raw_market_data,
@@ -111,8 +112,10 @@ def main() -> None:
 
         # Prepare Clean Display Table
         qualifying = qualifying.copy()
-        qualifying['vol_multiple'] = qualifying['volume'] / qualifying['volume_sma_20']
-        qualifying['pct_from_52w_high'] = ((qualifying['close'] - qualifying['high_252d_prev']) / qualifying['high_252d_prev']) * 100.0
+        vol_denom = qualifying['volume_sma_20'].replace(0, np.nan)
+        high_denom = qualifying['high_252d_prev'].replace(0, np.nan)
+        qualifying['vol_multiple'] = qualifying['volume'] / vol_denom
+        qualifying['pct_from_52w_high'] = ((qualifying['close'] - qualifying['high_252d_prev']) / high_denom) * 100.0
 
         cols_to_show = [
             'symbol', 'index_name', 'close', 'pct_change_daily',

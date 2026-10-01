@@ -30,37 +30,57 @@ def generate_demo_dataset(num_days: int = 300) -> pd.DataFrame:
     date_range = sorted(date_range[:num_days])
 
     stocks = [
-        ("RELIANCE", "NIFTY 100", 2800.0, 1500000, 0.012),
-        ("TCS", "NIFTY 100", 3900.0, 800000, 0.010),
-        ("HDFCBANK", "NIFTY 100", 1600.0, 2000000, 0.011),
-        ("INFY", "NIFTY 100", 1750.0, 1200000, 0.014),
-        ("ICICIBANK", "NIFTY 100", 1200.0, 1800000, 0.013),
-        ("TATAMOTORS", "NIFTY 100", 950.0, 3500000, 0.020),
-        ("BHARTIARTL", "NIFTY 100", 1400.0, 900000, 0.011),
-        ("DIXON", "NIFTY Midcap 150", 11500.0, 450000, 0.022),
-        ("PERSISTENT", "NIFTY Midcap 150", 4800.0, 350000, 0.018),
-        ("COFORGE", "NIFTY Midcap 150", 6500.0, 320000, 0.019),
-        ("POLYCAB", "NIFTY Midcap 150", 6200.0, 400000, 0.017),
-        ("TRENT", "NIFTY Midcap 150", 7100.0, 600000, 0.021),
-        ("KAYNES", "NIFTY Smallcap 250", 4200.0, 310000, 0.028),
-        ("CAMS", "NIFTY Smallcap 250", 3800.0, 280000, 0.020),
-        ("CDSL", "NIFTY Smallcap 250", 1450.0, 850000, 0.024),
-        ("ANGELONE", "NIFTY Smallcap 250", 2700.0, 550000, 0.025),
-        ("DATAPATTNS", "NIFTY Smallcap 250", 2900.0, 320000, 0.027),
+        ("RELIANCE", "NIFTY 100", 2800.0, 1500000, 0.0004),
+        ("TCS", "NIFTY 100", 3900.0, 800000, 0.0003),
+        ("HDFCBANK", "NIFTY 100", 1600.0, 2000000, 0.0003),
+        ("INFY", "NIFTY 100", 1750.0, 1200000, 0.0004),
+        ("ICICIBANK", "NIFTY 100", 1200.0, 1800000, 0.0004),
+        ("TATAMOTORS", "NIFTY 100", 950.0, 3500000, 0.0005),
+        ("BHARTIARTL", "NIFTY 100", 1400.0, 900000, 0.0004),
+        ("DIXON", "NIFTY Midcap 150", 11500.0, 450000, 0.0008),
+        ("PERSISTENT", "NIFTY Midcap 150", 4800.0, 350000, 0.0005),
+        ("COFORGE", "NIFTY Midcap 150", 6500.0, 320000, 0.0006),
+        ("POLYCAB", "NIFTY Midcap 150", 6200.0, 400000, 0.0005),
+        ("TRENT", "NIFTY Midcap 150", 7100.0, 600000, 0.0018),
+        ("KAYNES", "NIFTY Smallcap 250", 4200.0, 310000, 0.0009),
+        ("CAMS", "NIFTY Smallcap 250", 3800.0, 280000, 0.0004),
+        ("CDSL", "NIFTY Smallcap 250", 1450.0, 850000, 0.0006),
+        ("ANGELONE", "NIFTY Smallcap 250", 2700.0, 550000, 0.0007),
+        ("DATAPATTNS", "NIFTY Smallcap 250", 2900.0, 320000, 0.0008),
     ]
 
     all_rows = []
     for symbol, index_name, base_price, base_vol, drift in stocks:
-        cur_price = base_price * 0.70
+        cur_price = base_price * 0.75
         for idx, dt in enumerate(date_range):
-            daily_shock = np.random.normal(drift, 0.018)
+            if symbol == "TRENT":
+                # Staged institutional growth satisfying both Strategy 1 and Strategy 2
+                if idx < 50:
+                    d_drift = 0.0002
+                elif idx < 120:
+                    d_drift = 0.0020
+                elif idx < 180:
+                    d_drift = 0.0018
+                elif idx < 240:
+                    d_drift = 0.0022
+                else:
+                    d_drift = 0.0022
+            elif symbol == "DIXON":
+                d_drift = 0.0014
+            else:
+                d_drift = drift
+
+            daily_shock = np.random.normal(d_drift, 0.010)
             cur_price *= (1.0 + daily_shock)
-            high_price = cur_price * (1.0 + abs(np.random.normal(0.008, 0.005)))
-            low_price = cur_price * (1.0 - abs(np.random.normal(0.008, 0.005)))
+            high_price = cur_price * (1.0 + abs(np.random.normal(0.006, 0.003)))
+            low_price = cur_price * (1.0 - abs(np.random.normal(0.006, 0.003)))
             open_price = (high_price + low_price) / 2.0
-            
-            # Boost volume on last days for selective momentum triggers
-            vol_mult = 2.2 if idx >= len(date_range) - 3 and symbol in ("TRENT", "DIXON", "KAYNES") else np.random.uniform(0.7, 1.4)
+
+            # Last 2 days: institutional volume expansion (> 1.5x of 20d SMA) for specific breakouts
+            if idx >= len(date_range) - 2 and symbol in ("TRENT", "DIXON"):
+                vol_mult = 2.4
+            else:
+                vol_mult = np.random.uniform(0.85, 1.25)
             cur_vol = int(base_vol * vol_mult)
 
             all_rows.append({

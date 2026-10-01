@@ -207,9 +207,19 @@ class TechnicalCalculator:
 
         if 'symbol' in df.columns and df['symbol'].nunique() > 1:
             sorted_df = df.sort_values(by=['symbol', 'date']) if 'date' in df.columns else df
+
+            def _apply_with_symbol(grp):
+                # grp has no 'symbol' column (include_groups=False drops groupby key).
+                # Re-attach it from the group's position in the original frame.
+                result = cls._apply_indicators_to_series(grp)
+                # Restore the symbol value by looking it up from the original sorted_df
+                sym_values = sorted_df.loc[grp.index, 'symbol']
+                result['symbol'] = sym_values.values
+                return result
+
             return (
                 sorted_df.groupby('symbol', group_keys=False)
-                .apply(cls._apply_indicators_to_series, include_groups=False)
+                .apply(_apply_with_symbol, include_groups=False)
             )
 
         if 'date' in df.columns:

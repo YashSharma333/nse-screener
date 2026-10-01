@@ -5,6 +5,14 @@ Safely checks and adds the index_name column and index if not present.
 """
 
 import logging
+import sys
+from pathlib import Path
+
+# Add project root to sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from sqlalchemy import text
 from config.settings import setup_logging
 from src.db.session import engine, check_connection
