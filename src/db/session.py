@@ -105,10 +105,8 @@ def init_db() -> None:
         except Exception as mig_err:
             logger.debug("Schema migration check skipped or failed: %s", mig_err)
 
-        logger.info("Database tables initialised (create_all complete)")
     except Exception as exc:
-        logger.error("Failed to initialise database tables: %s", exc)
-        raise
+        logger.warning("Database tables could not be initialised (MySQL offline or unreachable): %s", exc)
 
 
 @contextmanager

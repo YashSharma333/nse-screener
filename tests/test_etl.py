@@ -312,3 +312,26 @@ class TestResolveDateRange:
             res = etl.run_incremental()
             assert res["status"] == "up_to_date"
             mock_collect.assert_not_called()
+
+    def test_load_to_db_aborts_without_retry_on_connection_error(self, etl):
+        """When bulk upsert raises a connection-related error, load_to_db must abort
+        immediately without attempting slow per-symbol retry loops."""
+        stock_rows = _sample_stock_rows()
+
+        @contextmanager
+        def _get_db_conn_error():
+            raise Exception("Can't connect to MySQL server on 'localhost' (2003)")
+            yield
+
+        with patch("src.etl.pipeline.get_db", _get_db_conn_error):
+            success, failed = etl.load_to_db(stock_rows)
+
+        assert sorted(success) == ["INFY", "RELIANCE"]
+        assert failed == []
+
+    def test_init_db_graceful_on_operational_error(self):
+        """init_db must log a warning and return gracefully when the DB is offline."""
+        from src.db.session import init_db
+        with patch("src.db.session.Base.metadata.create_all", side_effect=Exception("Connection refused")):
+            # Must not raise
+            init_db()
