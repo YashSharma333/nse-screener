@@ -15,6 +15,13 @@ if ! command -v gh &> /dev/null; then
     exit 1
 fi
 
+if [ -z "${GH_TOKEN:-}" ]; then
+    TOKEN=$(printf "protocol=https\nhost=github.com\n" | git credential fill 2>/dev/null | grep '^password=' | cut -d= -f2- || true)
+    if [ -n "$TOKEN" ]; then
+        export GH_TOKEN="$TOKEN"
+    fi
+fi
+
 echo "Updating GitHub repository metadata..."
 gh repo edit \
     --description "$DESCRIPTION" \

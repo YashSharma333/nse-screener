@@ -112,11 +112,12 @@ def main() -> None:
 
         # Prepare Clean Display Table
         qualifying = qualifying.copy()
-        c_180 = qualifying['close_180d']
-        c_252 = qualifying['close_252d']
-        qualifying['ratio_252_180'] = ((qualifying['close'] - c_252) / c_180) * 100.0
-        qualifying['ratio_180_252'] = ((qualifying['close'] - c_180) / c_252) * 100.0
-        qualifying['vol_multiple'] = qualifying['volume'] / qualifying['volume_sma_20']
+        c_180 = qualifying['close_180d'].replace(0, np.nan)
+        c_252 = qualifying['close_252d'].replace(0, np.nan)
+        vol_denom = qualifying['volume_sma_20'].replace(0, np.nan)
+        qualifying['ratio_252_180'] = ((qualifying['close'] - qualifying['close_252d']) / c_180) * 100.0
+        qualifying['ratio_180_252'] = ((qualifying['close'] - qualifying['close_180d']) / c_252) * 100.0
+        qualifying['vol_multiple'] = qualifying['volume'] / vol_denom
 
         cols_to_show = [
             'symbol', 'index_name', 'close', 'pct_change_daily',
