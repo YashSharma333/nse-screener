@@ -1,6 +1,6 @@
 """
-Strategy 2: Liquid 1.5x Vol Momentum Screener
-=============================================
+Strategy: Swing With Momentum
+==============================
 Filters for institutional breakout equities exhibiting multi-quarter structural
 accumulation, strong medium-term trend velocity, and disciplined non-overheated price expansion.
 """
@@ -17,8 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import setup_logging
 setup_logging()
-logger = logging.getLogger("ui.liquid_momentum")
+logger = logging.getLogger("ui.swing_momentum")
 
+from typing import Any
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -30,18 +31,19 @@ from src.db.data_service import (
 )
 from src.screener import StockScreener
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
+from ui.components.stock_inspector import render_stock_inspector
 
 
 def setup_page_config() -> None:
     st.set_page_config(
-        page_title="Liquid Momentum Strategy | ApexGrowth",
+        page_title="Swing With Momentum Strategy | ApexGrowth",
         page_icon="🚀",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
 
-def get_market_snapshot() -> tuple[pd.DataFrame, bool, str]:
+def get_market_data() -> dict[str, Any]:
     if "market_data_cache" not in st.session_state or st.session_state.market_data_cache is None:
         raw_df, is_live, status_msg = load_raw_market_data()
         with_indicators = compute_market_indicators(raw_df)
@@ -53,8 +55,7 @@ def get_market_snapshot() -> tuple[pd.DataFrame, bool, str]:
             "is_live": is_live,
             "status_msg": status_msg,
         }
-    cache = st.session_state.market_data_cache
-    return cache["snapshot"], cache["is_live"], cache["status_msg"]
+    return st.session_state.market_data_cache
 
 
 def main() -> None:
@@ -62,25 +63,27 @@ def main() -> None:
         setup_page_config()
         apply_terminal_theme()
 
-        snapshot, is_live, status_msg = get_market_snapshot()
+        data = get_market_data()
+        snapshot = data["snapshot"]
+        indicators_df = data["indicators"]
+        is_live = data["is_live"]
 
         render_terminal_header(
-            title="Strategy: Liquid 1.5x Vol Momentum",
+            title="Swing With Momentum",
             subtitle="INSTITUTIONAL MOMENTUM & MULTI-HORIZON ACCUMULATION ALPHA",
             status_text="LIVE MYSQL" if is_live else "DEMO MODE",
             is_live=is_live,
         )
 
-        # Strategy Specification Box
+        # Compact Filter Chips Ribbon (Zero Verbose Essay)
         st.markdown("""
-        <div class="strategy-box">
-            <div class="strategy-title">🎯 Quantitative Momentum & Base Expansion Formula</div>
-            <div class="rule-item">1. <strong>Baseline Qualifiers:</strong> Meets 100% of Strategy 1 criteria (Universe, MA Stack, Price Dominance, 52W Proximity, Volume Surge).</div>
-            <div class="rule-item">2. <strong>Anti-Overheating Check:</strong> 60-Day Return ≤ 40% (avoids parabolic exhaustion buying at climax tops).</div>
-            <div class="rule-item">3. <strong>Long-term Base Spread:</strong> ((Close - Close_252d) / Close_180d) × 100 ≤ 300% (controlled secular expansion).</div>
-            <div class="rule-item">4. <strong>Inter-Horizon Spread Ceiling:</strong> ((Close - Close_180d) / Close_252d) × 100 ≤ 300% (orderly stage progression).</div>
-            <div class="rule-item">5. <strong>Inter-Horizon Spread Floor:</strong> ((Close - Close_180d) / Close_252d) × 100 ≥ 50% (confirms strong established intermediate trend).</div>
-            <div class="rule-item">6. <strong>Medium-term Velocity:</strong> 120-Day Return ≥ 30% (demands top-decile momentum persistence).</div>
+        <div class="filter-ribbon">
+            <span class="filter-chip chip-cyan">⚡ Baseline: 100% Swing + Volume Qualified</span>
+            <span class="filter-chip chip-amber">🛡️ Anti-Climax: 60D Return &le; +40%</span>
+            <span class="filter-chip chip-purple">📐 Base Spread: (C - C252)/C180 &le; 300%</span>
+            <span class="filter-chip chip-purple">📏 Horizon Ceiling: (C - C180)/C252 &le; 300%</span>
+            <span class="filter-chip chip-green">🚀 Horizon Floor: (C - C180)/C252 &ge; +50%</span>
+            <span class="filter-chip chip-cyan">🔥 Velocity: 120D Return &ge; +30%</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -89,7 +92,7 @@ def main() -> None:
             return
 
         screener = StockScreener(snapshot)
-        qualifying = screener.strategy_liquid_momentum()
+        qualifying = screener.strategy_swing_momentum()
 
         # Telemetry KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -108,7 +111,7 @@ def main() -> None:
         st.markdown("---")
 
         if qualifying.empty:
-            st.info("No stocks currently satisfy all rigorous criteria for Strategy 2: Liquid 1.5x Vol Momentum.")
+            st.info("No stocks currently satisfy all criteria for Swing With Momentum.")
             return
 
         # Prepare Clean Display Table
@@ -171,15 +174,27 @@ def main() -> None:
             }
         )
 
-        st.download_button(
-            label="📥 Download Strategy 2 Results (CSV)",
-            data=display_df.to_csv(index=False),
-            file_name="nse_strategy2_liquid_momentum.csv",
-            mime="text/csv",
-        )
+        col_dl, col_tv = st.columns([1, 1])
+        with col_dl:
+            st.download_button(
+                label="📥 Download Results (CSV)",
+                data=display_df.to_csv(index=False),
+                file_name="nse_swing_with_momentum.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+        with col_tv:
+            tv_symbols = ",".join([f"NSE:{s}" for s in qualifying['symbol'].unique()])
+            st.text_input("TradingView Watchlist String (Copy & Paste into TV):", value=tv_symbols)
+
+        st.markdown("---")
+
+        # Interactive Technical Stock Inspector Drilldown
+        top_symbol = qualifying.iloc[0]["symbol"] if not qualifying.empty else None
+        render_stock_inspector(indicators_df, default_symbol=top_symbol, key_prefix="swing_mom")
 
     except Exception as exc:
-        logger.error("Strategy 2 page error: %s", exc, exc_info=True)
+        logger.error("Swing With Momentum page error: %s", exc, exc_info=True)
         st.error(f"Strategy error: {exc}. Check logs/screener.log.")
 
 

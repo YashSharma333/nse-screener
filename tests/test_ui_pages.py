@@ -16,15 +16,15 @@ class TestStreamlitPages(unittest.TestCase):
         at.run()
         self.assertFalse(at.exception, f"Dashboard page raised exception: {at.exception}")
 
-    def test_liquid_vol_page(self):
-        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "pages" / "2_liquid_vol.py"), default_timeout=30)
+    def test_swing_volume_page(self):
+        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "pages" / "2_swing_volume.py"), default_timeout=30)
         at.run()
-        self.assertFalse(at.exception, f"Liquid Vol page raised exception: {at.exception}")
+        self.assertFalse(at.exception, f"Swing + Volume page raised exception: {at.exception}")
 
-    def test_liquid_momentum_page(self):
-        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "pages" / "3_liquid_momentum.py"), default_timeout=30)
+    def test_swing_momentum_page(self):
+        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "pages" / "3_swing_momentum.py"), default_timeout=30)
         at.run()
-        self.assertFalse(at.exception, f"Liquid Momentum page raised exception: {at.exception}")
+        self.assertFalse(at.exception, f"Swing With Momentum page raised exception: {at.exception}")
 
 
 if __name__ == "__main__":
