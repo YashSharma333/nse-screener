@@ -78,7 +78,32 @@ class TechnicalIndicator(Base):
     symbol = Column(String(20), nullable=False, index=True)
     date   = Column(Date,       nullable=False, index=True)
 
-    # TODO: Add indicator columns as computation module evolves.
+    # Moving averages
+    sma_50  = Column(Numeric(10, 2), nullable=True)
+    sma_200 = Column(Numeric(10, 2), nullable=True)
+    ema_12  = Column(Numeric(10, 2), nullable=True)
+    ema_26  = Column(Numeric(10, 2), nullable=True)
+
+    # Momentum
+    rsi_14 = Column(Numeric(10, 4), nullable=True)
+
+    # Range
+    high_52w = Column(Numeric(10, 2), nullable=True)
+    low_52w  = Column(Numeric(10, 2), nullable=True)
+
+    # Bollinger Bands
+    bb_upper  = Column(Numeric(10, 2), nullable=True)
+    bb_middle = Column(Numeric(10, 2), nullable=True)
+    bb_lower  = Column(Numeric(10, 2), nullable=True)
+
+    # MACD
+    macd_line      = Column(Numeric(10, 4), nullable=True)
+    macd_signal    = Column(Numeric(10, 4), nullable=True)
+    macd_histogram = Column(Numeric(10, 4), nullable=True)
+
+    # Volatility
+    daily_returns = Column(Numeric(10, 6), nullable=True)
+    volatility_20 = Column(Numeric(10, 6), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("symbol", "date", name="uq_indicator_symbol_date"),
