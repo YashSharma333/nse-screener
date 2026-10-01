@@ -133,7 +133,7 @@ def main() -> None:
             if st.button(
                 "🔄 Update Latest Market Data",
                 disabled=st.session_state.is_updating_etl,
-                use_container_width=True,
+                width="stretch",
                 help="Incrementally fetch and upsert today's Bhavcopy into MySQL",
             ):
                 run_incremental_update()
@@ -230,7 +230,7 @@ def main() -> None:
 
         st.dataframe(
             display_view,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={k: v for k, v in column_config.items() if k in display_view.columns},
         )

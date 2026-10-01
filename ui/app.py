@@ -79,7 +79,7 @@ def render_sidebar() -> None:
     if st.sidebar.button(
         "📥 Update Latest Market Data",
         disabled=st.session_state.is_updating_etl,
-        use_container_width=True,
+        width="stretch",
         help="Incrementally fetch only the most recent Bhavcopy data and upsert into MySQL",
     ):
         run_incremental_update()
@@ -211,7 +211,7 @@ def main() -> None:
         preview_cols = [c for c in ['symbol', 'index_name', 'close', 'volume', 'pct_change_daily', 'rsi_14'] if c in snapshot.columns]
         display_preview = snapshot[preview_cols].copy()
         display_preview.columns = [c.replace('_', ' ').title() for c in display_preview.columns]
-        st.dataframe(display_preview.head(10), use_container_width=True, hide_index=True)
+        st.dataframe(display_preview.head(10), width="stretch", hide_index=True)
 
         st.caption("Use the sidebar pages to navigate the Master Dashboard and filtered Quantitative Strategy views.")
 
