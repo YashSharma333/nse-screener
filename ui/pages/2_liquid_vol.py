@@ -21,6 +21,7 @@ logger = logging.getLogger("ui.liquid_vol")
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 from src.db.data_service import (
     load_raw_market_data,
