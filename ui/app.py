@@ -110,7 +110,7 @@ def render_sidebar() -> None:
 
 def load_cached_market_data():
     """Load or retrieve computed market indicators and snapshot."""
-    if st.session_state.market_data_cache is None:
+    if "market_data_cache" not in st.session_state or st.session_state.market_data_cache is None:
         raw_df, is_live, status_msg = load_raw_market_data()
         with_indicators = compute_market_indicators(raw_df)
         snapshot = get_latest_market_snapshot(with_indicators)

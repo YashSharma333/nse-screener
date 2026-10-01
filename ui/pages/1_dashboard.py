@@ -66,7 +66,7 @@ def run_incremental_update() -> None:
 
 
 def get_market_data():
-    if st.session_state.market_data_cache is None:
+    if "market_data_cache" not in st.session_state or st.session_state.market_data_cache is None:
         raw_df, is_live, status_msg = load_raw_market_data()
         with_indicators = compute_market_indicators(raw_df)
         snapshot = get_latest_market_snapshot(with_indicators)
