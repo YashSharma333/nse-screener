@@ -86,6 +86,14 @@ class StockScreener:
         """Alias for Strategy 1: Liquid 1.5x Vol."""
         return self.strategy_liquid_volume()
 
+    def strategy_swing_volume(self) -> pd.DataFrame:
+        """Alias for Strategy 1: Swing + Volume."""
+        return self.strategy_liquid_volume()
+
+    def swing_volume(self) -> pd.DataFrame:
+        """Alias for Strategy 1: Swing + Volume."""
+        return self.strategy_liquid_volume()
+
     # ------------------------------------------------------------------
     # Capstone Strategy 2: "Liquid 1.5x Vol Momentum"
     # ------------------------------------------------------------------
@@ -156,6 +164,14 @@ class StockScreener:
 
     def liquid_1_5x_volume_momentum(self) -> pd.DataFrame:
         """Alias for Strategy 2: Liquid 1.5x Vol Momentum."""
+        return self.strategy_liquid_momentum()
+
+    def strategy_swing_momentum(self) -> pd.DataFrame:
+        """Alias for Strategy 2: Swing With Momentum."""
+        return self.strategy_liquid_momentum()
+
+    def swing_momentum(self) -> pd.DataFrame:
+        """Alias for Strategy 2: Swing With Momentum."""
         return self.strategy_liquid_momentum()
 
     # ------------------------------------------------------------------

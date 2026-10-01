@@ -1,8 +1,8 @@
 """
-Strategy 1: Liquid 1.5x Vol Screener
-====================================
-Screens for high-liquidity institutional accumulation within NIFTY 100,
-NIFTY Midcap 150, and NIFTY Smallcap 250 indices.
+Strategy: Swing + Volume
+=========================
+Systematic screening for institutional volume expansion and multi-timeframe bullish trend alignment
+across NIFTY 100, NIFTY Midcap 150, and NIFTY Smallcap 250 equities.
 """
 
 from __future__ import annotations
@@ -17,8 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.settings import setup_logging
 setup_logging()
-logger = logging.getLogger("ui.liquid_vol")
+logger = logging.getLogger("ui.swing_volume")
 
+from typing import Any
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -30,18 +31,19 @@ from src.db.data_service import (
 )
 from src.screener import StockScreener
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
+from ui.components.stock_inspector import render_stock_inspector
 
 
 def setup_page_config() -> None:
     st.set_page_config(
-        page_title="Liquid 1.5x Vol Strategy | ApexGrowth",
+        page_title="Swing + Volume Strategy | ApexGrowth",
         page_icon="🌊",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
 
-def get_market_snapshot() -> tuple[pd.DataFrame, bool, str]:
+def get_market_data() -> dict[str, Any]:
     if "market_data_cache" not in st.session_state or st.session_state.market_data_cache is None:
         raw_df, is_live, status_msg = load_raw_market_data()
         with_indicators = compute_market_indicators(raw_df)
@@ -53,8 +55,7 @@ def get_market_snapshot() -> tuple[pd.DataFrame, bool, str]:
             "is_live": is_live,
             "status_msg": status_msg,
         }
-    cache = st.session_state.market_data_cache
-    return cache["snapshot"], cache["is_live"], cache["status_msg"]
+    return st.session_state.market_data_cache
 
 
 def main() -> None:
@@ -62,24 +63,27 @@ def main() -> None:
         setup_page_config()
         apply_terminal_theme()
 
-        snapshot, is_live, status_msg = get_market_snapshot()
+        data = get_market_data()
+        snapshot = data["snapshot"]
+        indicators_df = data["indicators"]
+        is_live = data["is_live"]
 
         render_terminal_header(
-            title="Strategy: Liquid 1.5x Vol",
-            subtitle="INSTITUTIONAL VOLUME EXPANSION & TREND MOMENTUM FILTER",
+            title="Swing + Volume",
+            subtitle="INSTITUTIONAL VOLUME EXPANSION & MULTI-TIMEFRAME TREND BREAKOUT",
             status_text="LIVE MYSQL" if is_live else "DEMO MODE",
             is_live=is_live,
         )
 
-        # Strategy Specification Box
+        # Compact Filter Chips Ribbon (Zero Verbose Essay)
         st.markdown("""
-        <div class="strategy-box">
-            <div class="strategy-title">🎯 Quantitative Strategy Rationale</div>
-            <div class="rule-item">1. <strong>Tracked Index Universe:</strong> Must belong to NIFTY 100, NIFTY Midcap 150, or NIFTY Smallcap 250 (eliminates penny/illiquid stocks).</div>
-            <div class="rule-item">2. <strong>Moving Average Stack:</strong> EMA(20) > SMA(50) and SMA(50) > SMA(200) (strict multi-timeframe bullish trend).</div>
-            <div class="rule-item">3. <strong>Price Dominance:</strong> Close > SMA(50) and Close > SMA(200).</div>
-            <div class="rule-item">4. <strong>High Proximity:</strong> Close ≥ 0.85 × (1-day shifted 252-day High) (consolidating within 15% of annual peak).</div>
-            <div class="rule-item">5. <strong>Liquidity Breakout:</strong> Volume > 1.5 × SMA(Volume, 20) and SMA(Volume, 20) > 250,000 shares.</div>
+        <div class="filter-ribbon">
+            <span class="filter-chip chip-cyan">🎯 Universe: NIFTY 100 / Midcap 150 / Smallcap 250</span>
+            <span class="filter-chip chip-green">📈 Trend: EMA(20) &gt; SMA(50) &gt; SMA(200)</span>
+            <span class="filter-chip chip-cyan">💎 Price: Close &gt; SMA(50) &amp; SMA(200)</span>
+            <span class="filter-chip chip-amber">⚡ Peak Proximity: Close &ge; 0.85 &times; 252D High</span>
+            <span class="filter-chip chip-purple">🌊 Volume Breakout: Vol &gt; 1.5&times; 20D SMA</span>
+            <span class="filter-chip chip-rose">💧 Liquidity Floor: 20D SMA Vol &gt; 250K</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -88,7 +92,7 @@ def main() -> None:
             return
 
         screener = StockScreener(snapshot)
-        qualifying = screener.strategy_liquid_volume()
+        qualifying = screener.strategy_swing_volume()
 
         # Telemetry KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -107,7 +111,7 @@ def main() -> None:
         st.markdown("---")
 
         if qualifying.empty:
-            st.info("No stocks currently satisfy all criteria for Strategy 1: Liquid 1.5x Vol.")
+            st.info("No stocks currently satisfy all criteria for Swing + Volume.")
             return
 
         # Prepare Clean Display Table
@@ -162,15 +166,27 @@ def main() -> None:
             }
         )
 
-        st.download_button(
-            label="📥 Download Strategy 1 Results (CSV)",
-            data=display_df.to_csv(index=False),
-            file_name="nse_strategy1_liquid_vol.csv",
-            mime="text/csv",
-        )
+        col_dl, col_tv = st.columns([1, 1])
+        with col_dl:
+            st.download_button(
+                label="📥 Download Results (CSV)",
+                data=display_df.to_csv(index=False),
+                file_name="nse_swing_plus_volume.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+        with col_tv:
+            tv_symbols = ",".join([f"NSE:{s}" for s in qualifying['symbol'].unique()])
+            st.text_input("TradingView Watchlist String (Copy & Paste into TV):", value=tv_symbols)
+
+        st.markdown("---")
+
+        # Interactive Technical Stock Inspector Drilldown
+        top_symbol = qualifying.iloc[0]["symbol"] if not qualifying.empty else None
+        render_stock_inspector(indicators_df, default_symbol=top_symbol, key_prefix="swing_vol")
 
     except Exception as exc:
-        logger.error("Strategy 1 page error: %s", exc, exc_info=True)
+        logger.error("Swing + Volume page error: %s", exc, exc_info=True)
         st.error(f"Strategy error: {exc}. Check logs/screener.log.")
 
 

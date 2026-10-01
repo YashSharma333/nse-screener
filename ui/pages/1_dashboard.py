@@ -29,6 +29,7 @@ from src.db.data_service import (
 )
 from src.etl.pipeline import BhavcopyETL
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
+from ui.components.stock_inspector import render_stock_inspector
 
 
 def setup_page_config() -> None:
@@ -235,12 +236,26 @@ def main() -> None:
             column_config={k: v for k, v in column_config.items() if k in display_view.columns},
         )
 
-        st.download_button(
-            label="📥 Download Filtered Master Snapshot (CSV)",
-            data=display_view.to_csv(index=False),
-            file_name="nse_master_screener_snapshot.csv",
-            mime="text/csv",
-        )
+        col_dl, col_tv = st.columns([1, 1])
+        with col_dl:
+            st.download_button(
+                label="📥 Download Filtered Master Snapshot (CSV)",
+                data=display_view.to_csv(index=False),
+                file_name="nse_master_screener_snapshot.csv",
+                mime="text/csv",
+                width="stretch",
+            )
+        with col_tv:
+            if "Symbol" in display_view.columns:
+                tv_symbols = ",".join([f"NSE:{s}" for s in display_view["Symbol"].unique()])
+                st.text_input("TradingView Watchlist String (Copy & Paste into TV):", value=tv_symbols)
+
+        st.markdown("---")
+
+        # Interactive Technical Stock Inspector Drilldown
+        indicators_df = data.get("indicators", pd.DataFrame())
+        default_sym = display_view["Symbol"].iloc[0] if not display_view.empty and "Symbol" in display_view.columns else None
+        render_stock_inspector(indicators_df, default_symbol=default_sym, key_prefix="dash")
 
     except Exception as exc:
         logger.error("Dashboard page crash: %s", exc, exc_info=True)
