@@ -142,7 +142,7 @@ def main() -> None:
             msg = st.session_state.etl_status.get("message", "")
             if status == "success":
                 st.success(f"✓ {msg}")
-            elif status == "up_to_date":
+            elif status in ("up_to_date", "offline"):
                 st.info(f"ℹ {msg}")
             else:
                 st.error(f"✗ Update failed: {msg}")

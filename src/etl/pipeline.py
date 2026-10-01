@@ -30,7 +30,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from config.settings import setup_logging, PROJECT_ROOT
 from src.db.models import DailyPrice
-from src.db.session import get_db, init_db, engine
+from src.db.session import get_db, init_db, engine, check_connection
 from src.ingestion.downloader import NSEBhavcopyDownloader
 from src.ingestion.index_constituents import NSEIndexConstituents
 
@@ -320,8 +320,11 @@ class BhavcopyETL:
         except Exception as bulk_exc:
             err_msg = str(bulk_exc).lower()
             if any(k in err_msg for k in ["uninitialized", "can't connect", "connection refused", "operation not permitted", "2003"]):
-                logger.warning("Database connection unavailable (%s) — parquet data is preserved; aborting DB load without retrying symbols.", bulk_exc)
-                return sorted(stock_rows.keys()), []
+                logger.warning(
+                    "MySQL is unreachable — Bhavcopy data is preserved in local Parquet cache. "
+                    "Skipping DB load. Rows will be upserted once MySQL is available.",
+                )
+                return [], []
             logger.warning(
                 "Bulk upsert failed (%s) — retrying symbol-by-symbol for isolation.",
                 bulk_exc,
@@ -445,31 +448,36 @@ class BhavcopyETL:
             # For incremental updates with no prior data, limit scan window to lookback_days
             self.initial_days_back = lookback_days
             success, failed = self.run()
-            if not success and failed:
-                from src.db.session import check_connection
-                if not check_connection():
-                    return {
-                        "status": "up_to_date",
-                        "message": "Market data is up to date in local cache (MySQL is currently offline).",
-                        "symbols_updated": 0,
-                    }
+
+            # New data downloaded and successfully upserted into MySQL
+            if success:
+                return {
+                    "status": "success",
+                    "message": f"Successfully updated market data for {len(success)} symbols.",
+                    "symbols_updated": len(success),
+                    "failed_count": len(failed),
+                }
+
+            # Load failed for some symbols but DB was reachable
+            if failed:
                 return {
                     "status": "error",
                     "message": f"Database load failed for {len(failed)} symbols. Check database connection/logs.",
                     "symbols_updated": 0,
                     "failed_count": len(failed),
                 }
-            if not success and not failed:
+
+            # No rows: either up-to-date, holiday, or MySQL was unreachable (load_to_db returned ([], []))
+            if not check_connection():
                 return {
-                    "status": "up_to_date",
-                    "message": "Market data is already up to date with latest trading session.",
+                    "status": "offline",
+                    "message": "Local Parquet cache is current. MySQL is offline — data will sync when MySQL is available.",
                     "symbols_updated": 0,
                 }
             return {
-                "status": "success",
-                "message": f"Successfully updated market data for {len(success)} symbols.",
-                "symbols_updated": len(success),
-                "failed_count": len(failed),
+                "status": "up_to_date",
+                "message": "Market data is already up to date with the latest trading session.",
+                "symbols_updated": 0,
             }
         except Exception as exc:
             logger.error("Incremental update failed: %s", exc, exc_info=True)

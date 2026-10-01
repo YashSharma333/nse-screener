@@ -308,6 +308,7 @@ class TestResolveDateRange:
             yield session
 
         with patch("src.etl.pipeline.get_db", _get_db_current), \
+             patch("src.etl.pipeline.check_connection", return_value=True), \
              patch.object(etl, "collect_new_rows") as mock_collect:
             res = etl.run_incremental()
             assert res["status"] == "up_to_date"
@@ -315,7 +316,8 @@ class TestResolveDateRange:
 
     def test_load_to_db_aborts_without_retry_on_connection_error(self, etl):
         """When bulk upsert raises a connection-related error, load_to_db must abort
-        immediately without attempting slow per-symbol retry loops."""
+        immediately (no per-symbol retry loop) and return ([], []) so run_incremental
+        correctly identifies the offline scenario rather than reporting false success."""
         stock_rows = _sample_stock_rows()
 
         @contextmanager
@@ -326,7 +328,8 @@ class TestResolveDateRange:
         with patch("src.etl.pipeline.get_db", _get_db_conn_error):
             success, failed = etl.load_to_db(stock_rows)
 
-        assert sorted(success) == ["INFY", "RELIANCE"]
+        # Both empty: offline → no rows loaded, no symbols "failed"
+        assert success == []
         assert failed == []
 
     def test_init_db_graceful_on_operational_error(self):
@@ -335,3 +338,20 @@ class TestResolveDateRange:
         with patch("src.db.session.Base.metadata.create_all", side_effect=Exception("Connection refused")):
             # Must not raise
             init_db()
+
+    def test_run_incremental_returns_offline_when_db_unreachable(self, etl, tmp_path):
+        """When MySQL is unreachable but parquet cache is current, run_incremental
+        must return status='offline' rather than 'error' or 'success'."""
+        today = date.today()
+
+        @contextmanager
+        def _get_db_raises():
+            raise Exception("Can't connect to MySQL server (2003)")
+            yield
+
+        with patch("src.etl.pipeline.get_db", _get_db_raises), \
+             patch("src.etl.pipeline.check_connection", return_value=False):
+            res = etl.run_incremental()
+
+        assert res["status"] in ("offline", "up_to_date")
+        assert res.get("symbols_updated", 0) == 0
