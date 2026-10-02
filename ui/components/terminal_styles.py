@@ -170,7 +170,40 @@ def apply_terminal_theme() -> None:
         border: 1px solid rgba(244, 63, 94, 0.35);
     }
 
-    /* Sidebar Index Cards */
+    /* Sidebar Index Cards & Strategy Cards */
+    .sidebar-header-box {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(30, 41, 59, 0.4) 100%);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+    }
+    .sidebar-brand-title {
+        font-size: 1.1rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: #f8fafc;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+    }
+    .sidebar-brand-subtitle {
+        font-size: 0.72rem;
+        color: #94a3b8;
+        font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+        margin-top: 3px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .sidebar-card {
+        background: #0f172a;
+        border: 1px solid #1e293b;
+        border-radius: 6px;
+        padding: 8px 12px;
+        margin: 6px 0;
+        font-size: 0.8rem;
+    }
     .index-badge-card {
         background: #0f172a;
         border-left: 3px solid #38bdf8;
@@ -229,25 +262,31 @@ def render_terminal_header(title: str, subtitle: str, status_text: str, is_live:
 
 def render_sidebar_controls() -> None:
     """Render unified production-grade sidebar telemetry and data pipeline triggers."""
-    st.sidebar.markdown("### ⚡ APEXGROWTH")
-    st.sidebar.caption("NSE Equity Systematic Alpha Terminal")
+    # Top branding box: modern trading terminal identity
+    st.sidebar.markdown("""
+    <div class="sidebar-header-box">
+        <div class="sidebar-brand-title">📈 TRADING TERMINAL</div>
+        <div class="sidebar-brand-subtitle">NSE Quantitative Screener</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.sidebar.divider()
-
-    st.sidebar.markdown("#### 🔄 Market Data Pipeline")
+    # Market Data Pipeline trigger with safe incremental execution
+    st.sidebar.markdown("#### 🔄 Ingestion Engine")
     if st.sidebar.button(
-        "📥 Update Latest Market Data",
+        "⚡ Sync Market Data",
+        key="sidebar_etl_incremental_sync",
         disabled=st.session_state.get("is_updating_etl", False),
         width="stretch",
-        help="Incrementally fetch only the most recent Bhavcopy data and upsert into MySQL",
+        help="Incrementally fetch latest Bhavcopy records and sync MySQL without full re-download",
     ):
         from src.etl.pipeline import BhavcopyETL
         st.session_state.is_updating_etl = True
         try:
-            with st.spinner("Fetching latest NSE Bhavcopy and updating MySQL..."):
+            with st.spinner("Syncing latest market data..."):
                 etl = BhavcopyETL()
                 res = etl.run_incremental()
                 st.session_state.etl_status = res
+                # Invalidate in-memory session cache to display freshly updated records
                 st.session_state.market_data_cache = None
         except Exception as exc:
             st.session_state.etl_status = {"status": "error", "message": str(exc)}
@@ -255,19 +294,22 @@ def render_sidebar_controls() -> None:
             st.session_state.is_updating_etl = False
         st.rerun()
 
-    # Show notification if an update ran
+    # Proactive status notification handling (including offline mode guard)
     if st.session_state.get("etl_status"):
         status = st.session_state.etl_status.get("status")
         msg = st.session_state.etl_status.get("message", "")
         if status == "success":
             st.sidebar.success(f"✓ {msg}")
-        elif status == "up_to_date":
+        elif status in ("up_to_date", "offline"):
+            # Informational badge when already current or utilizing local parquet cache
             st.sidebar.info(f"ℹ {msg}")
         else:
-            st.sidebar.error(f"✗ Update failed: {msg}")
+            st.sidebar.error(f"✗ {msg}")
 
     st.sidebar.divider()
-    st.sidebar.markdown("#### 📊 Tracked Universe")
+
+    # Tracked Universe Telemetry
+    st.sidebar.markdown("#### 🎯 Tracked Universe")
     st.sidebar.markdown("""
     <div class="index-badge-card" style="border-left-color: #38bdf8;">
         <strong>NIFTY 100</strong> · Large Cap Core (100)
@@ -281,4 +323,19 @@ def render_sidebar_controls() -> None:
     """, unsafe_allow_html=True)
 
     st.sidebar.divider()
-    st.sidebar.caption("Production Terminal v2.1")
+
+    # Quantitative Strategies Summary
+    st.sidebar.markdown("#### 📐 Screener Strategies")
+    st.sidebar.markdown("""
+    <div class="sidebar-card">
+        <span style="color:#00f0ff; font-weight:700;">🌊 Swing + Volume</span><br/>
+        <span style="color:#94a3b8; font-size:0.75rem;">Breakout & Volume Expansion</span>
+    </div>
+    <div class="sidebar-card">
+        <span style="color:#a855f7; font-weight:700;">🚀 Swing With Momentum</span><br/>
+        <span style="color:#94a3b8; font-size:0.75rem;">Multi-Horizon Stage Growth</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.sidebar.divider()
+    st.sidebar.caption("NSE Screener Terminal v2.2 · Production")

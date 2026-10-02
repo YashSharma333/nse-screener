@@ -35,8 +35,9 @@ from ui.components.stock_inspector import render_stock_inspector
 
 
 def setup_page_config() -> None:
+    # Page setup for Swing With Momentum strategy view
     st.set_page_config(
-        page_title="Swing With Momentum Strategy | ApexGrowth",
+        page_title="Swing With Momentum Strategy | Trading Terminal",
         page_icon="🚀",
         layout="wide",
         initial_sidebar_state="expanded",

@@ -1,5 +1,5 @@
 """
-ApexGrowth Terminal - Application Entrypoint
+NSE Trading Terminal - Application Entrypoint
 ===========================================
 Production-grade quantitative stock screening terminal for the National Stock Exchange of India.
 Unified navigation directly to the Master Dashboard and Quantitative Strategies (no 'app' splash page).
@@ -11,6 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
+# Ensure root directory is on PYTHONPATH for module imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -24,8 +25,9 @@ from ui.components.terminal_styles import apply_terminal_theme
 
 
 def main() -> None:
+    # Top-level application configuration
     st.set_page_config(
-        page_title="ApexGrowth Terminal | NSE Quantitative Screener",
+        page_title="NSE Trading Terminal | Quantitative Screener",
         page_icon="⚡",
         layout="wide",
         initial_sidebar_state="expanded",
