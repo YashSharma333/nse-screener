@@ -108,7 +108,7 @@ python scripts/migrate_add_index_name.py
 
 ApexGrowth evaluates two proprietary systematic momentum strategies designed for mid-to-large cap equities:
 
-### Strategy 1: "Liquid 1.5x Vol"
+### Strategy 1: "Swing + Volume"
 Screens for equities undergoing institutional volume accumulation while maintaining an unbroken multi-timeframe bullish trend.
 
 $$\begin{aligned}
@@ -121,7 +121,7 @@ $$\begin{aligned}
 
 ---
 
-### Strategy 2: "Liquid 1.5x Vol Momentum"
+### Strategy 2: "Swing With Momentum"
 Builds upon Strategy 1 by demanding strong intermediate price velocity while filtering out climax runs and over-extended parabolic blow-offs.
 
 $$\begin{aligned}
@@ -173,33 +173,40 @@ MYSQL_DB=nse_screener
 ### 3. Initialize MySQL Database & Run Migrations
 Ensure MySQL server is running (e.g., via `brew services start mysql` or Docker). Initialize tables and run migrations:
 ```bash
-python scripts/migrate_add_index_name.py
+.venv/bin/python scripts/migrate_add_index_name.py
 ```
 
-### 4. Run Massive Historical Ingestion (CLI)
-Execute the CLI ETL pipeline to download 3 years (~1,100 days) of Bhavcopy records:
+### 4. Run Bhavcopy Ingestion (CLI)
+Execute the CLI ETL pipeline to download historical Bhavcopy records:
 ```bash
-# Standard 3-year historical ingestion for NIFTY 100, Midcap 150, Smallcap 250
-python run_pipeline.py
+# Incremental daily update (fetches and upserts only latest days)
+.venv/bin/python run_pipeline.py --incremental
+
+# Incremental update with custom lookback (e.g. 10 days)
+.venv/bin/python run_pipeline.py --incremental --lookback 10
+
+# Full 3-year historical backfill (~1,100 days)
+.venv/bin/python run_pipeline.py
 
 # Optional parameters for custom historical window or delay:
-python run_pipeline.py --days-back 365 --delay 0.5 --batch-size 1000
+.venv/bin/python run_pipeline.py --days-back 365 --delay 0.5 --batch-size 1000
 ```
 
 ### 5. Launch the Streamlit Financial Terminal
-Launch the multi-page terminal dashboard:
+Launch the multi-page terminal dashboard using the virtual environment:
 ```bash
-streamlit run ui/Dashboard.py
+.venv/bin/streamlit run ui/Dashboard.py
 ```
 Open [http://localhost:8501](http://localhost:8501) in your browser.
 
 > [!NOTE]
 > **Zero-Friction Fallback:** If local MySQL is not running or the database is unpopulated, the application automatically activates **Demonstration Mode**, synthesizing a representative NIFTY universe dataset so all terminal screens, formulas, and strategies remain fully testable and reviewable.
+> You can also click **"🔄 Update Latest Market Data"** on the Dashboard to trigger an incremental sync directly from the UI.
 
 ### 6. Run Test Suite
-Validate calculations, screening filters, and database models across 25+ unit tests:
+Validate calculations, screening filters, ETL deduplication, and UI pages across 53 automated unit tests:
 ```bash
-pytest
+.venv/bin/pytest tests/ -v
 ```
 
 ---
@@ -209,10 +216,9 @@ pytest
 ```
 nse-screener/
 ├── config/
-│   ├── logger.py                 # Secondary logging helpers
 │   └── settings.py               # Centralized rotating file & stdout logging config
 ├── data/
-│   └── raw/                      # Local Parquet cache for historical Bhavcopies
+│   └── raw/bhavcopy_cache/       # Local Parquet cache for historical Bhavcopies
 ├── logs/
 │   └── screener.log              # 5MB rotating application logs
 ├── scripts/
@@ -232,22 +238,25 @@ nse-screener/
 │   ├── ingestion/
 │   │   ├── downloader.py         # Resilient NSE Bhavcopy HTTP downloader
 │   │   └── index_constituents.py # NSEIndexConstituents (NIFTY 100, Midcap 150, Smallcap 250)
-│   └── screener.py               # StockScreener: Liquid 1.5x Vol & Momentum Strategies
+│   └── screener.py               # StockScreener: Swing + Volume & Swing With Momentum
 ├── tests/
+│   ├── test_etl.py               # Unit tests for ETL pipeline, date range & DB upsert
 │   ├── test_indicators.py        # Unit tests for technical indicator math
 │   ├── test_pipeline.py          # Unit tests for constituent mapping & DB models
-│   └── test_screener.py          # Unit tests for quantitative screening strategies
+│   ├── test_screener.py          # Unit tests for quantitative screening strategies
+│   └── test_ui_pages.py          # Automated AppTest unit tests for all Streamlit UI pages
 ├── ui/
 │   ├── Dashboard.py              # Master market screener dashboard & application entrypoint
 │   ├── components/
-│   │   ├── stock_inspector.py    # Interactive candlestick, MA stack, volume & RSI inspector
+│   │   ├── stock_inspector.py    # Interactive 3-panel candlestick, volume & RSI inspector
 │   │   └── terminal_styles.py    # Dark-mode Bloomberg terminal CSS & header telemetry
 │   └── pages/
 │       ├── 2_swing_volume.py     # Filtered view for Strategy: Swing + Volume
 │       └── 3_swing_momentum.py   # Filtered view for Strategy: Swing With Momentum
+├── PROJECT_GUIDE.md              # Complete end-to-end architecture & code guide
 ├── pytest.ini                    # Pytest configuration root
 ├── requirements.txt              # Production dependency specifications
-├── run_pipeline.py               # CLI runner for massive historical Bhavcopy ETL
+├── run_pipeline.py               # CLI runner with --incremental & --lookback flags
 └── README.md                     # Capstone documentation & engineering showcase
 ```
 

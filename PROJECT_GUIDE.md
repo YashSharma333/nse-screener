@@ -655,7 +655,7 @@ snapshot = data["snapshot"]
 screener = StockScreener(snapshot)
 qualifying = screener.strategy_swing_volume()   # apply filter rules
 ```
-Display: KPI tiles, qualifying stocks table, TradingView watchlist string, StockInspector.
+Display: KPI tiles, qualifying stocks table, CSV export, StockInspector.
 
 ### `ui/components/stock_inspector.py`
 
