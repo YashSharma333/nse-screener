@@ -32,7 +32,9 @@ def apply_terminal_theme() -> None:
 
     /* Sidebar Styling */
     section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0d131f 0%, #090e17 100%);
+        background: radial-gradient(circle at 15% 15%, rgba(14, 165, 233, 0.08) 0%, transparent 45%),
+                    radial-gradient(circle at 85% 85%, rgba(168, 85, 247, 0.08) 0%, transparent 45%),
+                    linear-gradient(180deg, #0d131f 0%, #080c14 100%);
         border-right: 1px solid #1e293b;
     }
     section[data-testid="stSidebar"] .stMarkdown h1,
@@ -43,6 +45,92 @@ def apply_terminal_theme() -> None:
         letter-spacing: 0.06em;
         text-transform: uppercase;
         font-weight: 700;
+    }
+
+    /* Modern Navigation Container & Visual Page Cards */
+    div[data-testid="stSidebarNav"] {
+        padding: 12px 10px 14px 10px;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.75) 0%, rgba(10, 15, 29, 0.85) 100%);
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        border-radius: 12px;
+        margin-bottom: 18px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+    }
+    div[data-testid="stSidebarNav"]::before {
+        content: "TERMINAL SCREENS";
+        display: block;
+        font-size: 0.72rem;
+        font-weight: 800;
+        color: #38bdf8;
+        letter-spacing: 0.08em;
+        margin-bottom: 10px;
+        margin-left: 6px;
+        font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    }
+    div[data-testid="stSidebarNav"] ul {
+        gap: 6px;
+        display: flex;
+        flex-direction: column;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    div[data-testid="stSidebarNav"] ul li {
+        list-style: none;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+    a[data-testid="stSidebarNavLink"] {
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.5) 0%, rgba(15, 23, 42, 0.7) 100%);
+        border: 1px solid rgba(51, 65, 85, 0.55);
+        border-radius: 8px !important;
+        padding: 8px 12px !important;
+        margin: 2px 0 !important;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+    a[data-testid="stSidebarNavLink"] span {
+        text-transform: capitalize !important;
+        font-weight: 600 !important;
+        font-size: 0.88rem !important;
+        color: #cbd5e1 !important;
+        transition: color 0.15s ease;
+    }
+    a[data-testid="stSidebarNavLink"]:hover {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.18) 0%, rgba(30, 41, 59, 0.85) 100%) !important;
+        border-color: rgba(56, 189, 248, 0.55) !important;
+        transform: translateX(4px);
+        box-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
+    }
+    a[data-testid="stSidebarNavLink"]:hover span {
+        color: #f8fafc !important;
+    }
+
+    /* Active Page Styling with Glowing Neon Accent */
+    a[data-testid="stSidebarNavLink"][aria-current="page"] {
+        background: linear-gradient(135deg, rgba(14, 165, 233, 0.25) 0%, rgba(15, 23, 42, 0.95) 100%) !important;
+        border: 1px solid #38bdf8 !important;
+        border-left: 4px solid #00f0ff !important;
+        box-shadow: 0 0 16px rgba(0, 240, 255, 0.3), inset 0 0 10px rgba(56, 189, 248, 0.12) !important;
+    }
+    a[data-testid="stSidebarNavLink"][aria-current="page"] span {
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        text-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+    }
+
+    /* Page-specific icons for clean visual presentation */
+    div[data-testid="stSidebarNav"] ul li:nth-child(1) a span::before {
+        content: "📊 ";
+        margin-right: 4px;
+    }
+    div[data-testid="stSidebarNav"] ul li:nth-child(2) a span::before {
+        content: "🌊 ";
+        margin-right: 4px;
+    }
+    div[data-testid="stSidebarNav"] ul li:nth-child(3) a span::before {
+        content: "🚀 ";
+        margin-right: 4px;
     }
 
     /* Terminal Header Bar */
