@@ -10,13 +10,8 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-
-try:
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    HAS_PLOTLY = True
-except ImportError:
-    HAS_PLOTLY = False
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 def render_stock_inspector(
@@ -101,9 +96,6 @@ def render_stock_inspector(
     with m5:
         idx_label = latest.get("index_name", "NSE Equity")
         st.metric(label="Index Classification", value=str(idx_label))
-
-    if not HAS_PLOTLY:
-        return
 
     # Construct Plotly Chart: Panel 1 = Candlestick + MAs, Panel 2 = Volume, Panel 3 = RSI
     fig = make_subplots(
