@@ -33,8 +33,9 @@ from ui.components.stock_inspector import render_stock_inspector
 
 
 def setup_page_config() -> None:
+    # Configure high-resolution widescreen layout for trading terminal
     st.set_page_config(
-        page_title="Master Dashboard | ApexGrowth Terminal",
+        page_title="Master Dashboard | NSE Trading Terminal",
         page_icon="📊",
         layout="wide",
         initial_sidebar_state="expanded",

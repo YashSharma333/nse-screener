@@ -6,7 +6,8 @@
 
 set -euo pipefail
 
-DESCRIPTION="ApexGrowth: A Python and MySQL-backed quantitative NSE stock screener and ETL pipeline."
+# Set repository description and key technical topic tags
+DESCRIPTION="NSE Screener: A Python and MySQL-backed quantitative NSE stock screener and ETL pipeline."
 TOPICS="python,streamlit,data-analytics,sql,quantitative-analysis"
 
 echo "Checking GitHub CLI authentication..."

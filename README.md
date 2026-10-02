@@ -1,4 +1,4 @@
-# ApexGrowth: Quantitative NSE Stock Screener & Systematic Market Terminal
+# NSE Screener: Quantitative Equity Screener & Systematic Market Terminal
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.31+-FF4B4B.svg)](https://streamlit.io/)
@@ -18,7 +18,7 @@ Institutional asset managers and active quantitative analysts in emerging market
 3. **Database Concurrency & Duplication Risks:** Daily historical data ingestion without idempotent upsert semantics leads to corrupted time-series integrity or slow, manual table maintenance.
 4. **Actionable Alpha Discovery:** Analysts require systematic, mathematically sound screening strategies that combine multi-timeframe moving averages, liquidity volume surges, and non-overheated structural momentum.
 
-**ApexGrowth** resolves this by automating an institutional end-to-end data pipeline:
+**NSE Screener** resolves this by automating an institutional end-to-end data pipeline:
 - **Restricts Universe** to official constituents of **NIFTY 100**, **NIFTY Midcap 150**, and **NIFTY Smallcap 250** (~500 institutional-grade stocks).
 - **Hardened Ingestion Engine** with user-agent rotation, cookie warm-up, exponential backoff, and localized Parquet caching.
 - **Relational Storage** utilizing MySQL 8.0 and SQLAlchemy 2.0 with atomic `ON DUPLICATE KEY UPDATE` batch upserts.
@@ -106,7 +106,7 @@ python scripts/migrate_add_index_name.py
 
 ## 📐 Quantitative Logic & Screening Strategies
 
-ApexGrowth evaluates two proprietary systematic momentum strategies designed for mid-to-large cap equities:
+The quantitative screener evaluates two systematic momentum strategies designed for mid-to-large cap equities:
 
 ### Strategy 1: "Swing + Volume"
 Screens for equities undergoing institutional volume accumulation while maintaining an unbroken multi-timeframe bullish trend.
@@ -272,7 +272,7 @@ chmod +x scripts/update_github_meta.sh
 ```
 
 This sets:
-- **Description:** *"ApexGrowth: A Python and MySQL-backed quantitative NSE stock screener and ETL pipeline."*
+- **Description:** *"NSE Screener: A Python and MySQL-backed quantitative NSE stock screener and ETL pipeline."*
 - **Topics:** `python`, `streamlit`, `data-analytics`, `sql`, `quantitative-analysis`
 
 ---
