@@ -102,20 +102,7 @@ def render_stock_inspector(
         idx_label = latest.get("index_name", "NSE Equity")
         st.metric(label="Index Classification", value=str(idx_label))
 
-    # Fallback when plotly is not installed
     if not HAS_PLOTLY:
-        st.info("ℹ️ Interactive candlestick charting requires Plotly. Native charts displayed below. Install plotly via `pip install plotly` or run within the project virtual environment (`.venv`).")
-        chart_df = stock_df.set_index("date")
-        price_cols = [c for c in ["close", "ema_20", "sma_50", "sma_200"] if c in chart_df.columns]
-        if price_cols:
-            st.caption("Price & Moving Averages (Close, EMA 20, SMA 50, SMA 200)")
-            st.line_chart(chart_df[price_cols])
-        if "volume" in chart_df.columns:
-            st.caption("Volume")
-            st.bar_chart(chart_df[["volume"]])
-        if "rsi_14" in chart_df.columns:
-            st.caption("RSI (14)")
-            st.line_chart(chart_df[["rsi_14"]])
         return
 
     # Construct Plotly Chart: Panel 1 = Candlestick + MAs, Panel 2 = Volume, Panel 3 = RSI

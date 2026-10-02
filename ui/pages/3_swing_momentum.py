@@ -179,18 +179,13 @@ def main() -> None:
             }
         )
 
-        col_dl, col_tv = st.columns([1, 1])
-        with col_dl:
-            st.download_button(
-                label="📥 Download Results (CSV)",
-                data=display_df.to_csv(index=False),
-                file_name="nse_swing_with_momentum.csv",
-                mime="text/csv",
-                width="stretch",
-            )
-        with col_tv:
-            tv_symbols = ",".join([f"NSE:{s}" for s in qualifying['symbol'].unique()])
-            st.text_input("TradingView Watchlist String (Copy & Paste into TV):", value=tv_symbols)
+        st.download_button(
+            label="📥 Download Results (CSV)",
+            data=display_df.to_csv(index=False),
+            file_name="nse_swing_with_momentum.csv",
+            mime="text/csv",
+            width="stretch",
+        )
 
         st.markdown("---")
 
