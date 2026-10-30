@@ -1,10 +1,11 @@
 """
-Quantitative Stock Screener & Rule-Based Strategies
-===================================================
-Applies quantitative filters and multi-condition momentum strategies to NSE equity data.
+Quantitative Stock Screener & Rule-Based Screens
+================================================
+Applies quantitative filters and multi-condition momentum screens to NSE equity data.
 """
 
 import logging
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -25,10 +26,10 @@ class StockScreener:
         self.df = df.copy()
 
     # ------------------------------------------------------------------
-    # Capstone Strategy 1: "Liquid 1.5x Vol"
+    # Capstone Screener 1: "Swing + Volume"
     # ------------------------------------------------------------------
-    def strategy_liquid_volume(self) -> pd.DataFrame:
-        """Strategy 1: 'Liquid 1.5x Vol'
+    def screen_swing_volume(self) -> pd.DataFrame:
+        """Screener 1: 'Swing + Volume'
 
         Criteria:
         1. Universe: Must belong to tracked NIFTY indices (100, Midcap 150, Smallcap 250).
@@ -79,29 +80,48 @@ class StockScreener:
 
             return df[mask.fillna(False)]
         except Exception as e:
-            logger.error("Error in strategy_liquid_volume: %s", e)
+            logger.error("Error in screen_swing_volume: %s", e)
             return pd.DataFrame()
 
+    def strategy_liquid_volume(self) -> pd.DataFrame:
+        """Deprecated alias for screen_swing_volume."""
+        warnings.warn(
+            "strategy_liquid_volume is deprecated; use screen_swing_volume instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.screen_swing_volume()
+
     def liquid_1_5x_volume(self) -> pd.DataFrame:
-        """Alias for Strategy 1: Liquid 1.5x Vol."""
-        return self.strategy_liquid_volume()
+        """Deprecated alias for screen_swing_volume."""
+        warnings.warn(
+            "liquid_1_5x_volume is deprecated; use screen_swing_volume instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.screen_swing_volume()
 
     def strategy_swing_volume(self) -> pd.DataFrame:
-        """Alias for Strategy 1: Swing + Volume."""
-        return self.strategy_liquid_volume()
+        """Deprecated alias for screen_swing_volume."""
+        warnings.warn(
+            "strategy_swing_volume is deprecated; use screen_swing_volume instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.screen_swing_volume()
 
     def swing_volume(self) -> pd.DataFrame:
-        """Alias for Strategy 1: Swing + Volume."""
-        return self.strategy_liquid_volume()
+        """Convenience alias for screen_swing_volume."""
+        return self.screen_swing_volume()
 
     # ------------------------------------------------------------------
-    # Capstone Strategy 2: "Liquid 1.5x Vol Momentum"
+    # Capstone Screener 2: "Swing With Momentum"
     # ------------------------------------------------------------------
-    def strategy_liquid_momentum(self) -> pd.DataFrame:
-        """Strategy 2: 'Liquid 1.5x Vol Momentum'
+    def screen_swing_momentum(self) -> pd.DataFrame:
+        """Screener 2: 'Swing With Momentum'
 
         Criteria:
-        1. Meets all conditions of Strategy 1 (Liquid 1.5x Vol).
+        1. Meets all conditions of Screener 1 (Swing + Volume).
         2. 60-day return <= 40%.
         3. ((Close - Close_252d) / Close_180d) * 100 <= 300.
         4. ((Close - Close_180d) / Close_252d) * 100 <= 300.
@@ -109,8 +129,8 @@ class StockScreener:
         6. 120-day return >= 30%.
         """
         try:
-            # Must satisfy Strategy 1 first
-            s1_df = self.strategy_liquid_volume()
+            # Must satisfy Screener 1 first
+            s1_df = self.screen_swing_volume()
             if s1_df.empty:
                 return pd.DataFrame()
 
@@ -163,20 +183,39 @@ class StockScreener:
 
             return df[mask.fillna(False)]
         except Exception as e:
-            logger.error("Error in strategy_liquid_momentum: %s", e)
+            logger.error("Error in screen_swing_momentum: %s", e)
             return pd.DataFrame()
 
+    def strategy_liquid_momentum(self) -> pd.DataFrame:
+        """Deprecated alias for screen_swing_momentum."""
+        warnings.warn(
+            "strategy_liquid_momentum is deprecated; use screen_swing_momentum instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.screen_swing_momentum()
+
     def liquid_1_5x_volume_momentum(self) -> pd.DataFrame:
-        """Alias for Strategy 2: Liquid 1.5x Vol Momentum."""
-        return self.strategy_liquid_momentum()
+        """Deprecated alias for screen_swing_momentum."""
+        warnings.warn(
+            "liquid_1_5x_volume_momentum is deprecated; use screen_swing_momentum instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.screen_swing_momentum()
 
     def strategy_swing_momentum(self) -> pd.DataFrame:
-        """Alias for Strategy 2: Swing With Momentum."""
-        return self.strategy_liquid_momentum()
+        """Deprecated alias for screen_swing_momentum."""
+        warnings.warn(
+            "strategy_swing_momentum is deprecated; use screen_swing_momentum instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.screen_swing_momentum()
 
     def swing_momentum(self) -> pd.DataFrame:
-        """Alias for Strategy 2: Swing With Momentum."""
-        return self.strategy_liquid_momentum()
+        """Convenience alias for screen_swing_momentum."""
+        return self.screen_swing_momentum()
 
     # ------------------------------------------------------------------
     # Standard Technical Filters

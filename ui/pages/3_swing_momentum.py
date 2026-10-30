@@ -1,5 +1,5 @@
 """
-Strategy: Swing With Momentum
+Screener: Swing With Momentum
 ==============================
 Filters for institutional breakout equities exhibiting multi-quarter structural
 accumulation, strong medium-term trend velocity, and disciplined non-overheated price expansion.
@@ -36,9 +36,9 @@ from ui.components.terminal_styles import apply_terminal_theme, render_terminal_
 
 
 def setup_page_config() -> None:
-    # Page setup for Swing With Momentum strategy view
+    # Page setup for Swing With Momentum screener view
     st.set_page_config(
-        page_title="Swing With Momentum Strategy | Trading Terminal",
+        page_title="Swing With Momentum Screener | Trading Terminal",
         page_icon="🚀",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -97,12 +97,7 @@ def main() -> None:
             return
 
         screener = StockScreener(snapshot)
-        if hasattr(screener, "strategy_swing_momentum"):
-            qualifying = screener.strategy_swing_momentum()
-        elif hasattr(screener, "strategy_liquid_momentum"):
-            qualifying = screener.strategy_liquid_momentum()
-        else:
-            qualifying = screener.liquid_1_5x_volume_momentum()
+        qualifying = screener.screen_swing_momentum()
 
         # Telemetry KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -221,7 +216,7 @@ def main() -> None:
 
     except Exception as exc:
         logger.error("Swing With Momentum page error: %s", exc, exc_info=True)
-        st.error(f"Strategy error: {exc}. Check logs/screener.log.")
+        st.error(f"Screener error: {exc}. Check logs/screener.log.")
 
 
 if __name__ == "__main__":

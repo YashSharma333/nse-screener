@@ -34,8 +34,8 @@ class TestIngestionAndModels(unittest.TestCase):
 
         empty_df = pd.DataFrame()
         screener = StockScreener(empty_df)
-        self.assertTrue(screener.strategy_liquid_volume().empty)
-        self.assertTrue(screener.strategy_liquid_momentum().empty)
+        self.assertTrue(screener.screen_swing_volume().empty)
+        self.assertTrue(screener.screen_swing_momentum().empty)
 
 
 if __name__ == "__main__":

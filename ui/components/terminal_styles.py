@@ -265,7 +265,7 @@ def apply_terminal_theme() -> None:
         border: 1px solid rgba(244, 63, 94, 0.35);
     }
 
-    /* Sidebar Index Cards & Strategy Cards */
+    /* Sidebar Index Cards & Screener Cards */
     .sidebar-header-box {
         background:
             linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(30, 41, 59, 0.4) 100%);
@@ -429,8 +429,8 @@ def render_sidebar_controls() -> None:
 
     st.sidebar.divider()
 
-    # Quantitative Strategies Summary
-    st.sidebar.markdown("#### 📐 Screener Strategies")
+    # Quantitative Screeners Summary
+    st.sidebar.markdown("#### 📐 Quantitative Screeners")
     st.sidebar.markdown(
         """
     <div class="sidebar-card">

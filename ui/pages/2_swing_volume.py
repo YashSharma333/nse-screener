@@ -1,5 +1,5 @@
 """
-Strategy: Swing + Volume
+Screener: Swing + Volume
 =========================
 Systematic screening for institutional volume expansion and multi-timeframe bullish trend alignment
 across NIFTY 100, NIFTY Midcap 150, and NIFTY Smallcap 250 equities.
@@ -36,9 +36,9 @@ from ui.components.terminal_styles import apply_terminal_theme, render_terminal_
 
 
 def setup_page_config() -> None:
-    # Page setup for Swing + Volume strategy view
+    # Page setup for Swing + Volume screener view
     st.set_page_config(
-        page_title="Swing + Volume Strategy | Trading Terminal",
+        page_title="Swing + Volume Screener | Trading Terminal",
         page_icon="🌊",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -97,12 +97,7 @@ def main() -> None:
             return
 
         screener = StockScreener(snapshot)
-        if hasattr(screener, "strategy_swing_volume"):
-            qualifying = screener.strategy_swing_volume()
-        elif hasattr(screener, "strategy_liquid_volume"):
-            qualifying = screener.strategy_liquid_volume()
-        else:
-            qualifying = screener.liquid_1_5x_volume()
+        qualifying = screener.screen_swing_volume()
 
         # Telemetry KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -207,7 +202,7 @@ def main() -> None:
 
     except Exception as exc:
         logger.error("Swing + Volume page error: %s", exc, exc_info=True)
-        st.error(f"Strategy error: {exc}. Check logs/screener.log.")
+        st.error(f"Screener error: {exc}. Check logs/screener.log.")
 
 
 if __name__ == "__main__":

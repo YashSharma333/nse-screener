@@ -58,7 +58,7 @@ def main() -> None:
     nav = st.navigation(
         {
             "Market Terminal": [dashboard_page],
-            "Quantitative Strategies": [swing_volume_page, swing_momentum_page],
+            "Screeners": [swing_volume_page, swing_momentum_page],
         }
     )
     nav.run()
