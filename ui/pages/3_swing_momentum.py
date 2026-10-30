@@ -7,6 +7,7 @@ accumulation, strong medium-term trend velocity, and disciplined non-overheated 
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -20,16 +21,11 @@ from config.settings import setup_logging
 setup_logging()
 logger = logging.getLogger("ui.swing_momentum")
 
-from typing import Any
 
 import numpy as np
 import streamlit as st
 
-from src.db.data_service import (
-    compute_market_indicators,
-    get_latest_market_snapshot,
-    load_raw_market_data,
-)
+from src.db.data_service import get_market_data
 from src.screener import StockScreener
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
@@ -37,27 +33,13 @@ from ui.components.terminal_styles import apply_terminal_theme, render_terminal_
 
 def setup_page_config() -> None:
     # Page setup for Swing With Momentum screener view
-    st.set_page_config(
-        page_title="Swing With Momentum Screener | Trading Terminal",
-        page_icon="🚀",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
-
-
-def get_market_data() -> dict[str, Any]:
-    if "market_data_cache" not in st.session_state or st.session_state.market_data_cache is None:
-        raw_df, is_live, status_msg = load_raw_market_data()
-        with_indicators = compute_market_indicators(raw_df)
-        snapshot = get_latest_market_snapshot(with_indicators)
-        st.session_state.market_data_cache = {
-            "raw": raw_df,
-            "indicators": with_indicators,
-            "snapshot": snapshot,
-            "is_live": is_live,
-            "status_msg": status_msg,
-        }
-    return st.session_state.market_data_cache
+    with contextlib.suppress(Exception):
+        st.set_page_config(
+            page_title="Swing With Momentum Screener | Trading Terminal",
+            page_icon="🚀",
+            layout="wide",
+            initial_sidebar_state="expanded",
+        )
 
 
 def main() -> None:
@@ -73,9 +55,15 @@ def main() -> None:
         render_terminal_header(
             title="Swing With Momentum",
             subtitle="INSTITUTIONAL MOMENTUM & MULTI-HORIZON ACCUMULATION ALPHA",
-            status_text="LIVE MYSQL" if is_live else "DEMO MODE",
+            status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
             is_live=is_live,
         )
+
+        st.caption("ℹ️ *Prices are split/bonus adjusted.*")
+
+        if snapshot.empty:
+            st.info("No market data available yet in database. Please run the ETL pipeline.")
+            return
 
         # Compact Filter Chips Ribbon (Zero Verbose Essay)
         st.markdown(

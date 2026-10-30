@@ -53,6 +53,16 @@ def main() -> None:
         default=5,
         help="Number of days to check for incremental update if no prior data exists (default: 5)",
     )
+    parser.add_argument(
+        "--rebuild-adjusted",
+        action="store_true",
+        help="Recompute corporate action price adjustments (splits/bonuses) and update database",
+    )
+    parser.add_argument(
+        "--benchmarks",
+        action="store_true",
+        help="Download and ingest benchmark index prices standalone",
+    )
 
     args = parser.parse_args()
 
@@ -64,7 +74,15 @@ def main() -> None:
     )
 
     try:
-        if args.incremental:
+        if args.rebuild_adjusted:
+            logger.info("Executing standalone corporate action price adjustments...")
+            updated = etl.rebuild_adjusted_prices()
+            logger.info("Adjusted prices rebuild complete. Updated: %d rows.", updated)
+        elif args.benchmarks:
+            logger.info("Executing standalone benchmark index ingestion...")
+            count = etl.ingest_benchmarks()
+            logger.info("Benchmark ingestion complete. Ingested: %d records.", count)
+        elif args.incremental:
             logger.info("Executing incremental ETL update...")
             res = etl.run_incremental(lookback_days=args.lookback)
             logger.info(

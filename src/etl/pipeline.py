@@ -29,8 +29,13 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from config.settings import PROJECT_ROOT, setup_logging
 from src.db.models import DailyPrice
 from src.db.session import check_connection, get_db, init_db
+from src.etl.adjust import rebuild_adjusted
+from src.ingestion.benchmark import load_benchmarks
 from src.ingestion.downloader import NSEBhavcopyDownloader
-from src.ingestion.index_constituents import NSEIndexConstituents
+from src.ingestion.index_constituents import (
+    NSEIndexConstituents,
+    snapshot_index_constituents,
+)
 
 # ---------------------------------------------------------------------------
 # Initialise centralized logging
@@ -408,6 +413,12 @@ class BhavcopyETL:
                     "Auto-fetched constituent filter: %d symbols (Large Cap + Mid Cap + Small Cap)",
                     len(symbol_filter),
                 )
+                # Snapshot constituents to index_membership table
+                try:
+                    with get_db() as session:
+                        snapshot_index_constituents(session, result.per_index, as_of_date=fetch_end)
+                except Exception as snap_exc:
+                    logger.warning("Could not snapshot index constituents: %s", snap_exc)
             except Exception as exc:
                 logger.warning(
                     "Could not fetch index constituents (%s) — proceeding with all symbols",
@@ -441,7 +452,30 @@ class BhavcopyETL:
         # 3. Upsert into MySQL
         success, failed = self.load_to_db(stock_rows)
 
-        # 4. Summary
+        if success:
+            # 4. Rebuild adjusted prices
+            try:
+                rebuild_adjusted()
+            except Exception as adj_exc:
+                logger.warning("Could not rebuild adjusted prices: %s", adj_exc)
+
+            # 5. Ingest benchmarks for newly downloaded dates
+            try:
+                all_dates = sorted({row["date"] for rows in stock_rows.values() for row in rows})
+                if all_dates:
+                    load_benchmarks(all_dates)
+            except Exception as b_exc:
+                logger.warning("Could not load benchmarks: %s", b_exc)
+
+            # 6. Refresh pre-computed indicator cache
+            try:
+                from src.db.data_service import load_indicator_snapshot
+
+                load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+            except Exception as cache_exc:
+                logger.warning("Could not refresh indicator cache: %s", cache_exc)
+
+        # 7. Summary
         logger.info("=" * 62)
         if is_update:
             logger.info(
@@ -510,3 +544,31 @@ class BhavcopyETL:
             }
         finally:
             self.initial_days_back = orig_days_back
+
+    def rebuild_adjusted_prices(self, symbols: list[str] | None = None) -> int:
+        """Standalone helper to recompute corporate action adjustments."""
+        return rebuild_adjusted(symbols=symbols)
+
+    def ingest_benchmarks(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> int:
+        """Standalone helper to ingest benchmark index history."""
+        fetch_start = start_date or (date.today() - timedelta(days=self.initial_days_back))
+        fetch_end = end_date or date.today()
+
+        dates: list[date] = []
+        cur = fetch_start
+        while cur <= fetch_end:
+            if cur.weekday() < 5:  # Mon-Fri
+                dates.append(cur)
+            cur += timedelta(days=1)
+
+        logger.info(
+            "Ingesting benchmark history for %d dates (%s -> %s)",
+            len(dates),
+            fetch_start,
+            fetch_end,
+        )
+        return load_benchmarks(dates)
