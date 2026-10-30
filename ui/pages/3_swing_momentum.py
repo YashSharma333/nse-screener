@@ -16,22 +16,23 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import setup_logging
+
 setup_logging()
 logger = logging.getLogger("ui.swing_momentum")
 
 from typing import Any
-import streamlit as st
-import pandas as pd
+
 import numpy as np
+import streamlit as st
 
 from src.db.data_service import (
-    load_raw_market_data,
     compute_market_indicators,
     get_latest_market_snapshot,
+    load_raw_market_data,
 )
 from src.screener import StockScreener
-from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 from ui.components.stock_inspector import render_stock_inspector
+from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 
 
 def setup_page_config() -> None:
@@ -77,16 +78,19 @@ def main() -> None:
         )
 
         # Compact Filter Chips Ribbon (Zero Verbose Essay)
-        st.markdown("""
+        st.markdown(
+            """
         <div class="filter-ribbon">
             <span class="filter-chip chip-cyan">⚡ Baseline: 100% Swing + Volume Qualified</span>
             <span class="filter-chip chip-amber">🛡️ Anti-Climax: 60D Return &le; +40%</span>
             <span class="filter-chip chip-purple">📐 Base Spread: (C - C252)/C180 &le; 300%</span>
-            <span class="filter-chip chip-purple">📏 Horizon Ceiling: (C - C180)/C252 &le; 300%</span>
+            <span class="filter-chip chip-purple">📏 Ceiling: (C - C180)/C252 &le; 300%</span>
             <span class="filter-chip chip-green">🚀 Horizon Floor: (C - C180)/C252 &ge; +50%</span>
             <span class="filter-chip chip-cyan">🔥 Velocity: 120D Return &ge; +30%</span>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
 
         if snapshot.empty:
             st.info("Market data is empty. Run the ETL pipeline to ingest data.")
@@ -105,13 +109,21 @@ def main() -> None:
         with kpi1:
             st.metric("Momentum Alpha Equities", f"{len(qualifying)}")
         with kpi2:
-            median_120d = qualifying['return_120d'].median() if ('return_120d' in qualifying and not qualifying.empty) else 0.0
+            median_120d = (
+                qualifying["return_120d"].median()
+                if ("return_120d" in qualifying and not qualifying.empty)
+                else 0.0
+            )
             st.metric("Median 120D Return", f"{median_120d:+.1f}%")
         with kpi3:
-            median_60d = qualifying['return_60d'].median() if ('return_60d' in qualifying and not qualifying.empty) else 0.0
+            median_60d = (
+                qualifying["return_60d"].median()
+                if ("return_60d" in qualifying and not qualifying.empty)
+                else 0.0
+            )
             st.metric("Median 60D Return", f"{median_60d:+.1f}%")
         with kpi4:
-            avg_rsi = qualifying['rsi_14'].mean() if not qualifying.empty else 0.0
+            avg_rsi = qualifying["rsi_14"].mean() if not qualifying.empty else 0.0
             st.metric("Average RSI (14)", f"{avg_rsi:.1f}")
 
         st.markdown("---")
@@ -122,40 +134,53 @@ def main() -> None:
 
         # Prepare Clean Display Table
         qualifying = qualifying.copy()
-        c_180 = qualifying['close_180d'].replace(0, np.nan)
-        c_252 = qualifying['close_252d'].replace(0, np.nan)
-        vol_denom = qualifying['volume_sma_20'].replace(0, np.nan)
-        qualifying['ratio_252_180'] = ((qualifying['close'] - qualifying['close_252d']) / c_180) * 100.0
-        qualifying['ratio_180_252'] = ((qualifying['close'] - qualifying['close_180d']) / c_252) * 100.0
-        qualifying['vol_multiple'] = qualifying['volume'] / vol_denom
+        c_180 = qualifying["close_180d"].replace(0, np.nan)
+        c_252 = qualifying["close_252d"].replace(0, np.nan)
+        vol_denom = qualifying["volume_sma_20"].replace(0, np.nan)
+        qualifying["ratio_252_180"] = (
+            (qualifying["close"] - qualifying["close_252d"]) / c_180
+        ) * 100.0
+        qualifying["ratio_180_252"] = (
+            (qualifying["close"] - qualifying["close_180d"]) / c_252
+        ) * 100.0
+        qualifying["vol_multiple"] = qualifying["volume"] / vol_denom
 
         cols_to_show = [
-            'symbol', 'index_name', 'close', 'pct_change_daily',
-            'return_60d', 'return_120d',
-            'ratio_180_252', 'ratio_252_180',
-            'volume', 'vol_multiple',
-            'close_60d', 'close_120d', 'close_180d', 'close_252d',
-            'rsi_14'
+            "symbol",
+            "index_name",
+            "close",
+            "pct_change_daily",
+            "return_60d",
+            "return_120d",
+            "ratio_180_252",
+            "ratio_252_180",
+            "volume",
+            "vol_multiple",
+            "close_60d",
+            "close_120d",
+            "close_180d",
+            "close_252d",
+            "rsi_14",
         ]
         available_cols = [c for c in cols_to_show if c in qualifying.columns]
         display_df = qualifying[available_cols].copy()
 
         name_map = {
-            'symbol': 'Symbol',
-            'index_name': 'Index',
-            'close': 'Close',
-            'pct_change_daily': '% Change Daily',
-            'return_60d': '60D Return',
-            'return_120d': '120D Return',
-            'ratio_180_252': '(C - C180)/C252 %',
-            'ratio_252_180': '(C - C252)/C180 %',
-            'volume': 'Volume',
-            'vol_multiple': 'Vol Multiple',
-            'close_60d': 'Close 60D Ago',
-            'close_120d': 'Close 120D Ago',
-            'close_180d': 'Close 180D Ago',
-            'close_252d': 'Close 252D Ago',
-            'rsi_14': 'RSI (14)',
+            "symbol": "Symbol",
+            "index_name": "Index",
+            "close": "Close",
+            "pct_change_daily": "% Change Daily",
+            "return_60d": "60D Return",
+            "return_120d": "120D Return",
+            "ratio_180_252": "(C - C180)/C252 %",
+            "ratio_252_180": "(C - C252)/C180 %",
+            "volume": "Volume",
+            "vol_multiple": "Vol Multiple",
+            "close_60d": "Close 60D Ago",
+            "close_120d": "Close 120D Ago",
+            "close_180d": "Close 180D Ago",
+            "close_252d": "Close 252D Ago",
+            "rsi_14": "RSI (14)",
         }
         display_df = display_df.rename(columns=name_map)
 
@@ -177,7 +202,7 @@ def main() -> None:
                 "Close 180D Ago": st.column_config.NumberColumn(format="₹%.2f"),
                 "Close 252D Ago": st.column_config.NumberColumn(format="₹%.2f"),
                 "RSI (14)": st.column_config.NumberColumn(format="%.2f"),
-            }
+            },
         )
 
         st.download_button(

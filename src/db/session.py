@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from config.settings import setup_logging, PROJECT_ROOT
+from config.settings import PROJECT_ROOT, setup_logging
 from src.db.models import Base
 
 # ---------------------------------------------------------------------------
@@ -36,16 +36,13 @@ load_dotenv(PROJECT_ROOT / ".env")
 # ---------------------------------------------------------------------------
 # Connection parameters (all read from environment / .env)
 # ---------------------------------------------------------------------------
-MYSQL_USER     = os.getenv("MYSQL_USER", "root")
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
-MYSQL_HOST     = os.getenv("MYSQL_HOST", "localhost")
-MYSQL_PORT     = os.getenv("MYSQL_PORT", "3306")
-MYSQL_DB       = os.getenv("MYSQL_DB", "nse_screener")
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
+MYSQL_DB = os.getenv("MYSQL_DB", "nse_screener")
 
-DATABASE_URL = (
-    f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}"
-    f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
-)
+DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
 
 # ---------------------------------------------------------------------------
 # Engine (connection-pooled)
@@ -56,16 +53,19 @@ try:
         echo=False,
         pool_size=10,
         max_overflow=20,
-        pool_recycle=3600,       # recycle stale connections every hour
-        pool_pre_ping=True,      # verify connections before handing them out
+        pool_recycle=3600,  # recycle stale connections every hour
+        pool_pre_ping=True,  # verify connections before handing them out
     )
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     logger.info(
         "SQLAlchemy engine created  (host=%s, db=%s, pool_size=10)",
-        MYSQL_HOST, MYSQL_DB,
+        MYSQL_HOST,
+        MYSQL_DB,
     )
 except (ImportError, Exception) as exc:
-    logger.warning("Could not initialize MySQL SQLAlchemy engine (%s) — DB operations will be disabled.", exc)
+    logger.warning(
+        "Could not initialize MySQL SQLAlchemy engine (%s) — DB operations will be disabled.", exc
+    )
     engine = None
     SessionLocal = None
 
@@ -95,18 +95,22 @@ def init_db() -> None:
                 """)
                 col_exists = conn.execute(check_sql).scalar()
                 if col_exists == 0:
-                    conn.execute(text("""
+                    conn.execute(
+                        text("""
                         ALTER TABLE daily_prices
                         ADD COLUMN index_name VARCHAR(50) NULL,
                         ADD INDEX ix_daily_prices_index_name (index_name)
-                    """))
+                    """)
+                    )
                     conn.commit()
                     logger.info("Migrated daily_prices table: added index_name column.")
         except Exception as mig_err:
             logger.debug("Schema migration check skipped or failed: %s", mig_err)
 
     except Exception as exc:
-        logger.warning("Database tables could not be initialised (MySQL offline or unreachable): %s", exc)
+        logger.warning(
+            "Database tables could not be initialised (MySQL offline or unreachable): %s", exc
+        )
 
 
 @contextmanager
@@ -122,7 +126,9 @@ def get_db() -> Generator[Session, None, None]:
     ``session.close()`` is always called.
     """
     if SessionLocal is None:
-        raise RuntimeError("Database session factory is uninitialized. Ensure pymysql is installed and MySQL is configured.")
+        raise RuntimeError(
+            "Database session factory uninitialized. Ensure pymysql & MySQL are configured."
+        )
     session = SessionLocal()
     try:
         yield session

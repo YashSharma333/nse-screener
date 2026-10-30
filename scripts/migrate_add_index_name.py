@@ -14,8 +14,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sqlalchemy import text
+
 from config.settings import setup_logging
-from src.db.session import engine, check_connection
+from src.db.session import check_connection, engine
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -44,12 +45,14 @@ def migrate_schema() -> bool:
     try:
         with engine.connect() as conn:
             # Check if daily_prices table exists
-            table_check = conn.execute(text("""
+            table_check = conn.execute(
+                text("""
                 SELECT COUNT(*)
                 FROM information_schema.TABLES
                 WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = 'daily_prices'
-            """)).scalar()
+            """)
+            ).scalar()
 
             if table_check == 0:
                 logger.info("Table daily_prices does not exist yet. Run init_db() to create it.")

@@ -19,13 +19,11 @@ import logging
 import time
 import zipfile
 from datetime import date
-from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import requests
 
-from config.settings import setup_logging, PROJECT_ROOT
+from config.settings import PROJECT_ROOT, setup_logging
 
 # ---------------------------------------------------------------------------
 # Initialise centralized logging
@@ -51,15 +49,25 @@ NSE_HEADERS = {
 }
 
 _MONTHS = [
-    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
 ]
 
 # Retry / throttle defaults
 MAX_RETRIES = 3
-RETRY_WAIT = 6          # seconds between retries
-REQUEST_TIMEOUT = 25     # seconds per HTTP request
-REQUEST_DELAY = 0.8      # polite delay between daily downloads
+RETRY_WAIT = 6  # seconds between retries
+REQUEST_TIMEOUT = 25  # seconds per HTTP request
+REQUEST_DELAY = 0.8  # polite delay between daily downloads
 
 
 class NSEBhavcopyDownloader:
@@ -85,7 +93,7 @@ class NSEBhavcopyDownloader:
         self.retry_wait = retry_wait
         self.request_timeout = request_timeout
         self.request_delay = request_delay
-        self._session: Optional[requests.Session] = None
+        self._session: requests.Session | None = None
 
         # Ensure output directories exist
         RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -141,7 +149,7 @@ class NSEBhavcopyDownloader:
     # Parsing
     # ------------------------------------------------------------------
     @staticmethod
-    def _parse(content: bytes, fmt: str) -> Optional[pd.DataFrame]:
+    def _parse(content: bytes, fmt: str) -> pd.DataFrame | None:
         """Parse raw Bhavcopy bytes into a normalised DataFrame.
 
         Parameters
@@ -169,9 +177,7 @@ class NSEBhavcopyDownloader:
                         return None
                     df = pd.read_csv(io.BytesIO(zf.read(csv_name)))
             else:
-                df = pd.read_csv(
-                    io.StringIO(content.decode("utf-8", errors="replace"))
-                )
+                df = pd.read_csv(io.StringIO(content.decode("utf-8", errors="replace")))
 
             df.columns = df.columns.str.strip()
 
@@ -198,9 +204,7 @@ class NSEBhavcopyDownloader:
                 }
             )
 
-            df = df.rename(
-                columns={k: v for k, v in col_map.items() if k in df.columns}
-            )
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
 
             if "Symbol" not in df.columns:
                 logger.debug("Parsed CSV has no 'Symbol' column — skipping")
@@ -211,9 +215,7 @@ class NSEBhavcopyDownloader:
                 df = df[df["Series"].str.strip() == "EQ"]
 
             keep = [
-                c
-                for c in ["Symbol", "Open", "High", "Low", "Close", "Volume"]
-                if c in df.columns
+                c for c in ["Symbol", "Open", "High", "Low", "Close", "Volume"] if c in df.columns
             ]
             return df[keep].reset_index(drop=True)
 
@@ -224,7 +226,7 @@ class NSEBhavcopyDownloader:
     # ------------------------------------------------------------------
     # Public download entry-point
     # ------------------------------------------------------------------
-    def download_bhavcopy(self, d: date) -> Optional[pd.DataFrame]:
+    def download_bhavcopy(self, d: date) -> pd.DataFrame | None:
         """Download and parse a single day's Bhavcopy.
 
         Returns ``None`` when the date is a weekend / holiday / unavailable.
@@ -239,9 +241,7 @@ class NSEBhavcopyDownloader:
             try:
                 return pd.read_parquet(cache_path)
             except Exception as exc:
-                logger.warning(
-                    "Corrupt cache file %s (%s) — re-downloading", cache_path, exc
-                )
+                logger.warning("Corrupt cache file %s (%s) — re-downloading", cache_path, exc)
                 cache_path.unlink(missing_ok=True)
 
         session = self.get_session()
@@ -258,7 +258,9 @@ class NSEBhavcopyDownloader:
                     if resp.status_code == 403:
                         logger.warning(
                             "%s %s attempt %d → 403 — refreshing session",
-                            d, fmt, attempt,
+                            d,
+                            fmt,
+                            attempt,
                         )
                         session = self.refresh_session()
                         time.sleep(self.retry_wait)
@@ -266,12 +268,13 @@ class NSEBhavcopyDownloader:
 
                     if resp.status_code == 429:
                         # Respect Retry-After header; fall back to retry_wait
-                        retry_after = float(
-                            resp.headers.get("Retry-After", self.retry_wait)
-                        )
+                        retry_after = float(resp.headers.get("Retry-After", self.retry_wait))
                         logger.warning(
                             "%s %s attempt %d → 429 (rate-limited) — waiting %.0fs",
-                            d, fmt, attempt, retry_after,
+                            d,
+                            fmt,
+                            attempt,
+                            retry_after,
                         )
                         time.sleep(retry_after)
                         continue
@@ -283,7 +286,9 @@ class NSEBhavcopyDownloader:
                         df.to_parquet(cache_path, index=False)
                         logger.debug(
                             "%s downloaded via %s format (%d rows)",
-                            d, fmt, len(df),
+                            d,
+                            fmt,
+                            len(df),
                         )
                         return df
 
@@ -291,16 +296,12 @@ class NSEBhavcopyDownloader:
                     break
 
                 except requests.exceptions.Timeout:
-                    logger.warning(
-                        "%s %s attempt %d timed out", d, fmt, attempt
-                    )
+                    logger.warning("%s %s attempt %d timed out", d, fmt, attempt)
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
 
                 except requests.RequestException as exc:
-                    logger.warning(
-                        "%s %s attempt %d failed: %s", d, fmt, attempt, exc
-                    )
+                    logger.warning("%s %s attempt %d failed: %s", d, fmt, attempt, exc)
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
 
@@ -308,14 +309,18 @@ class NSEBhavcopyDownloader:
                     # Corrupt archive — log and skip this format; don't retry same URL
                     logger.warning(
                         "%s %s — corrupt ZIP archive: %s (skipping format)",
-                        d, fmt, exc,
+                        d,
+                        fmt,
+                        exc,
                     )
                     break
 
                 except Exception as exc:
                     logger.error(
                         "Unexpected error downloading %s (%s): %s",
-                        d, fmt, exc,
+                        d,
+                        fmt,
+                        exc,
                         exc_info=True,
                     )
                     break

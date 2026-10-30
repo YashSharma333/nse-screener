@@ -12,8 +12,6 @@ values so the expected output can be hand-verified.  Tests cover:
   - Edge cases (empty / single row)
 """
 
-import pytest
-import numpy as np
 import pandas as pd
 
 from src.computation.indicators import TechnicalCalculator
@@ -27,11 +25,11 @@ def _flat_df(n: int, close: float = 100.0, volume: int = 300_000) -> pd.DataFram
     dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
     return pd.DataFrame(
         {
-            "date":   dates,
-            "open":   close,
-            "high":   close + 1,
-            "low":    close - 1,
-            "close":  float(close),
+            "date": dates,
+            "open": close,
+            "high": close + 1,
+            "low": close - 1,
+            "close": float(close),
             "volume": float(volume),
         }
     )
@@ -63,11 +61,11 @@ class TestVolumeSMA20:
         dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
         df = pd.DataFrame(
             {
-                "date":   dates,
-                "open":   100.0,
-                "high":   101.0,
-                "low":    99.0,
-                "close":  100.0,
+                "date": dates,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
                 "volume": [float(i + 1) for i in range(n)],
             }
         )
@@ -133,11 +131,11 @@ class TestRSI:
         dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
         df = pd.DataFrame(
             {
-                "date":   dates,
-                "open":   [float(i + 100) for i in range(n)],
-                "high":   [float(i + 101) for i in range(n)],
-                "low":    [float(i + 99) for i in range(n)],
-                "close":  [float(i + 100) for i in range(n)],
+                "date": dates,
+                "open": [float(i + 100) for i in range(n)],
+                "high": [float(i + 101) for i in range(n)],
+                "low": [float(i + 99) for i in range(n)],
+                "close": [float(i + 100) for i in range(n)],
                 "volume": 100_000.0,
             }
         )
@@ -153,11 +151,11 @@ class TestRSI:
         dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
         df = pd.DataFrame(
             {
-                "date":   dates,
-                "open":   [float(100 - i) for i in range(n)],
-                "high":   [float(101 - i) for i in range(n)],
-                "low":    [float(99 - i) for i in range(n)],
-                "close":  [float(100 - i) for i in range(n)],
+                "date": dates,
+                "open": [float(100 - i) for i in range(n)],
+                "high": [float(101 - i) for i in range(n)],
+                "low": [float(99 - i) for i in range(n)],
+                "close": [float(100 - i) for i in range(n)],
                 "volume": 100_000.0,
             }
         )
@@ -190,11 +188,11 @@ class TestPctChange:
         closes = [100.0 * (1 + 0.005 * i) for i in range(n)]
         df = pd.DataFrame(
             {
-                "date":   dates,
-                "open":   closes,
-                "high":   [c + 1 for c in closes],
-                "low":    [c - 1 for c in closes],
-                "close":  closes,
+                "date": dates,
+                "open": closes,
+                "high": [c + 1 for c in closes],
+                "low": [c - 1 for c in closes],
+                "close": closes,
                 "volume": 100_000.0,
             }
         )
@@ -215,11 +213,11 @@ class TestPctChange:
         closes = [float(i + 1) * 10 for i in range(n)]  # 10, 20, ..., 800
         df = pd.DataFrame(
             {
-                "date":   dates,
-                "open":   closes,
-                "high":   [c + 1 for c in closes],
-                "low":    [c - 1 for c in closes],
-                "close":  closes,
+                "date": dates,
+                "open": closes,
+                "high": [c + 1 for c in closes],
+                "low": [c - 1 for c in closes],
+                "close": closes,
                 "volume": 100_000.0,
             }
         )
@@ -235,13 +233,35 @@ class TestPctChange:
 # Scenario: apply_all_indicators column completeness
 # ---------------------------------------------------------------------------
 EXPECTED_COLUMNS = [
-    "sma_50", "sma_200", "ema_12", "ema_20", "ema_26", "rsi_14",
-    "high_52w", "low_52w", "bb_upper", "bb_middle", "bb_lower",
-    "macd_line", "macd_signal", "macd_histogram", "daily_returns", "volatility_20",
-    "volume_sma_20", "high_252d_prev",
-    "pct_change_daily", "pct_change_1m", "pct_change_3m", "pct_change_6m", "pct_change_12m",
-    "close_60d", "close_120d", "close_180d", "close_252d",
-    "return_60d", "return_120d",
+    "sma_50",
+    "sma_200",
+    "ema_12",
+    "ema_20",
+    "ema_26",
+    "rsi_14",
+    "high_52w",
+    "low_52w",
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "macd_line",
+    "macd_signal",
+    "macd_histogram",
+    "daily_returns",
+    "volatility_20",
+    "volume_sma_20",
+    "high_252d_prev",
+    "pct_change_daily",
+    "pct_change_1m",
+    "pct_change_3m",
+    "pct_change_6m",
+    "pct_change_12m",
+    "close_60d",
+    "close_120d",
+    "close_180d",
+    "close_252d",
+    "return_60d",
+    "return_120d",
 ]
 
 

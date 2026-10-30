@@ -13,7 +13,6 @@ from sqlalchemy import (
     BigInteger,
     Column,
     Date,
-    Index,
     Numeric,
     String,
     UniqueConstraint,
@@ -26,6 +25,7 @@ from sqlalchemy.orm import DeclarativeBase
 # ---------------------------------------------------------------------------
 class Base(DeclarativeBase):
     """Shared declarative base for all ORM models."""
+
     pass
 
 
@@ -42,19 +42,17 @@ class DailyPrice(Base):
 
     __tablename__ = "daily_prices"
 
-    id         = Column(BigInteger, primary_key=True, autoincrement=True)
-    symbol     = Column(String(20), nullable=False, index=True)
-    date       = Column(Date,       nullable=False, index=True)
-    open       = Column(Numeric(10, 2), nullable=True)
-    high       = Column(Numeric(10, 2), nullable=True)
-    low        = Column(Numeric(10, 2), nullable=True)
-    close      = Column(Numeric(10, 2), nullable=True)
-    volume     = Column(BigInteger,     nullable=True)
-    index_name = Column(String(50),     nullable=True, index=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    open = Column(Numeric(10, 2), nullable=True)
+    high = Column(Numeric(10, 2), nullable=True)
+    low = Column(Numeric(10, 2), nullable=True)
+    close = Column(Numeric(10, 2), nullable=True)
+    volume = Column(BigInteger, nullable=True)
+    index_name = Column(String(50), nullable=True, index=True)
 
-    __table_args__ = (
-        UniqueConstraint("symbol", "date", name="uq_symbol_date"),
-    )
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_symbol_date"),)
 
     def __repr__(self) -> str:
         return (
@@ -75,42 +73,38 @@ class TechnicalIndicator(Base):
 
     __tablename__ = "technical_indicators"
 
-    id     = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, index=True)
-    date   = Column(Date,       nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
 
     # Moving averages
-    sma_50  = Column(Numeric(10, 2), nullable=True)
+    sma_50 = Column(Numeric(10, 2), nullable=True)
     sma_200 = Column(Numeric(10, 2), nullable=True)
-    ema_12  = Column(Numeric(10, 2), nullable=True)
-    ema_26  = Column(Numeric(10, 2), nullable=True)
+    ema_12 = Column(Numeric(10, 2), nullable=True)
+    ema_26 = Column(Numeric(10, 2), nullable=True)
 
     # Momentum
     rsi_14 = Column(Numeric(10, 4), nullable=True)
 
     # Range
     high_52w = Column(Numeric(10, 2), nullable=True)
-    low_52w  = Column(Numeric(10, 2), nullable=True)
+    low_52w = Column(Numeric(10, 2), nullable=True)
 
     # Bollinger Bands
-    bb_upper  = Column(Numeric(10, 2), nullable=True)
+    bb_upper = Column(Numeric(10, 2), nullable=True)
     bb_middle = Column(Numeric(10, 2), nullable=True)
-    bb_lower  = Column(Numeric(10, 2), nullable=True)
+    bb_lower = Column(Numeric(10, 2), nullable=True)
 
     # MACD
-    macd_line      = Column(Numeric(10, 4), nullable=True)
-    macd_signal    = Column(Numeric(10, 4), nullable=True)
+    macd_line = Column(Numeric(10, 4), nullable=True)
+    macd_signal = Column(Numeric(10, 4), nullable=True)
     macd_histogram = Column(Numeric(10, 4), nullable=True)
 
     # Volatility
     daily_returns = Column(Numeric(10, 6), nullable=True)
     volatility_20 = Column(Numeric(10, 6), nullable=True)
 
-    __table_args__ = (
-        UniqueConstraint("symbol", "date", name="uq_indicator_symbol_date"),
-    )
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_indicator_symbol_date"),)
 
     def __repr__(self) -> str:
-        return (
-            f"<TechnicalIndicator(symbol={self.symbol!r}, date={self.date})>"
-        )
+        return f"<TechnicalIndicator(symbol={self.symbol!r}, date={self.date})>"

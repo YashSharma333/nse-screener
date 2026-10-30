@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Optional, Tuple
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
 from config.settings import setup_logging
-from src.db.session import engine, check_connection
 from src.computation.indicators import TechnicalCalculator
+from src.db.session import check_connection, engine
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -26,7 +26,11 @@ def generate_demo_dataset(num_days: int = 300) -> pd.DataFrame:
     """Generate realistic synthetic multi-stock data for UI preview when DB is offline."""
     np.random.seed(42)
     end_dt = date.today()
-    date_range = [end_dt - timedelta(days=i) for i in range(num_days * 2) if (end_dt - timedelta(days=i)).weekday() < 5]
+    date_range = [
+        end_dt - timedelta(days=i)
+        for i in range(num_days * 2)
+        if (end_dt - timedelta(days=i)).weekday() < 5
+    ]
     date_range = sorted(date_range[:num_days])
 
     stocks = [
@@ -71,7 +75,7 @@ def generate_demo_dataset(num_days: int = 300) -> pd.DataFrame:
                 d_drift = drift
 
             daily_shock = np.random.normal(d_drift, 0.010)
-            cur_price *= (1.0 + daily_shock)
+            cur_price *= 1.0 + daily_shock
             high_price = cur_price * (1.0 + abs(np.random.normal(0.006, 0.003)))
             low_price = cur_price * (1.0 - abs(np.random.normal(0.006, 0.003)))
             open_price = (high_price + low_price) / 2.0
@@ -83,21 +87,23 @@ def generate_demo_dataset(num_days: int = 300) -> pd.DataFrame:
                 vol_mult = np.random.uniform(0.85, 1.25)
             cur_vol = int(base_vol * vol_mult)
 
-            all_rows.append({
-                "symbol": symbol,
-                "date": dt,
-                "open": round(open_price, 2),
-                "high": round(high_price, 2),
-                "low": round(low_price, 2),
-                "close": round(cur_price, 2),
-                "volume": cur_vol,
-                "index_name": index_name,
-            })
+            all_rows.append(
+                {
+                    "symbol": symbol,
+                    "date": dt,
+                    "open": round(open_price, 2),
+                    "high": round(high_price, 2),
+                    "low": round(low_price, 2),
+                    "close": round(cur_price, 2),
+                    "volume": cur_vol,
+                    "index_name": index_name,
+                }
+            )
 
     return pd.DataFrame(all_rows)
 
 
-def load_raw_market_data() -> Tuple[pd.DataFrame, bool, str]:
+def load_raw_market_data() -> tuple[pd.DataFrame, bool, str]:
     """Fetch all daily prices from MySQL. Falls back to synthetic demo data if DB is unavailable."""
     if not check_connection():
         logger.warning("Database unavailable. Falling back to synthetic demonstration dataset.")
@@ -119,14 +125,18 @@ def load_raw_market_data() -> Tuple[pd.DataFrame, bool, str]:
             return df, False, "daily_prices is empty — run ETL pipeline or use demo mode"
 
         # Ensure correct data types
-        df['date'] = pd.to_datetime(df['date']).dt.date
-        df['close'] = pd.to_numeric(df['close'], errors='coerce')
-        df['open'] = pd.to_numeric(df['open'], errors='coerce')
-        df['high'] = pd.to_numeric(df['high'], errors='coerce')
-        df['low'] = pd.to_numeric(df['low'], errors='coerce')
-        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        df["open"] = pd.to_numeric(df["open"], errors="coerce")
+        df["high"] = pd.to_numeric(df["high"], errors="coerce")
+        df["low"] = pd.to_numeric(df["low"], errors="coerce")
+        df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
 
-        logger.info("Loaded %d daily price records across %d symbols from MySQL.", len(df), df['symbol'].nunique())
+        logger.info(
+            "Loaded %d daily price records across %d symbols from MySQL.",
+            len(df),
+            df["symbol"].nunique(),
+        )
         return df, True, f"Live MySQL: {len(df):,} records ({df['symbol'].nunique()} symbols)"
 
     except Exception as exc:
@@ -141,8 +151,8 @@ def compute_market_indicators(raw_df: pd.DataFrame) -> pd.DataFrame:
         return raw_df
 
     processed_list = []
-    for _, group in raw_df.groupby('symbol', as_index=False):
-        group_sorted = group.sort_values(by='date').copy()
+    for _, group in raw_df.groupby("symbol", as_index=False):
+        group_sorted = group.sort_values(by="date").copy()
         with_indicators = TechnicalCalculator.apply_all_indicators(group_sorted)
         processed_list.append(with_indicators)
 
@@ -158,8 +168,8 @@ def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame
         return pd.DataFrame()
 
     latest = (
-        with_indicators_df.sort_values(by=['symbol', 'date'])
-        .groupby('symbol', as_index=False)
+        with_indicators_df.sort_values(by=["symbol", "date"])
+        .groupby("symbol", as_index=False)
         .last()
     )
     return latest

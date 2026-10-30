@@ -22,15 +22,13 @@ import logging
 import time
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
 
-import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-from config.settings import setup_logging, PROJECT_ROOT
+from config.settings import PROJECT_ROOT, setup_logging
 from src.db.models import DailyPrice
-from src.db.session import get_db, init_db, engine, check_connection
+from src.db.session import check_connection, get_db, init_db
 from src.ingestion.downloader import NSEBhavcopyDownloader
 from src.ingestion.index_constituents import NSEIndexConstituents
 
@@ -44,9 +42,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
-INITIAL_DAYS_BACK = 1100   # ~3 year lookback on the very first run
-DOWNLOAD_DELAY = 0.8       # polite gap between daily downloads
-DB_BATCH_SIZE = 1000       # rows per INSERT batch
+INITIAL_DAYS_BACK = 1100  # ~3 year lookback on the very first run
+DOWNLOAD_DELAY = 0.8  # polite gap between daily downloads
+DB_BATCH_SIZE = 1000  # rows per INSERT batch
 
 
 class BhavcopyETL:
@@ -63,13 +61,17 @@ class BhavcopyETL:
         initial_days_back: int = INITIAL_DAYS_BACK,
         download_delay: float = DOWNLOAD_DELAY,
         batch_size: int = DB_BATCH_SIZE,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
     ) -> None:
         self.initial_days_back = initial_days_back
         self.download_delay = download_delay
         self.batch_size = batch_size
         self._downloader = NSEBhavcopyDownloader()
-        self.cache_dir = cache_dir if cache_dir is not None else getattr(self._downloader, "_cache_dir", RAW_DIR / "bhavcopy_cache")
+        self.cache_dir = (
+            cache_dir
+            if cache_dir is not None
+            else getattr(self._downloader, "_cache_dir", RAW_DIR / "bhavcopy_cache")
+        )
 
         # Ensure the bhavcopy cache directory exists
         RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,9 +153,7 @@ class BhavcopyETL:
         if last_stored is None:
             start = today - timedelta(days=self.initial_days_back)
             logger.info("Mode: FIRST RUN  (no historical data found in DB or cache)")
-            logger.info(
-                "Range: %s → %s  (%d days back)", start, today, self.initial_days_back
-            )
+            logger.info("Range: %s → %s  (%d days back)", start, today, self.initial_days_back)
             return start, today, False
 
         start = last_stored + timedelta(days=1)
@@ -185,8 +185,8 @@ class BhavcopyETL:
         self,
         start: date,
         end: date,
-        symbol_filter: Optional[set[str]] = None,
-        symbol_index_map: Optional[dict[str, str]] = None,
+        symbol_filter: set[str] | None = None,
+        symbol_index_map: dict[str, str] | None = None,
     ) -> dict[str, list[dict]]:
         """Download Bhavcopy files for each weekday and bucket rows by symbol.
 
@@ -214,9 +214,7 @@ class BhavcopyETL:
             logger.info("No trading weekdays to process in range %s → %s.", start, end)
             return stock_rows
 
-        logger.info(
-            "Scanning %d potential trading days (%s → %s) …", total, start, end
-        )
+        logger.info("Scanning %d potential trading days (%s → %s) …", total, start, end)
 
         for idx, d in enumerate(all_dates, 1):
             try:
@@ -243,20 +241,18 @@ class BhavcopyETL:
                 idx_name = symbol_index_map.get(sym) if symbol_index_map else None
                 stock_rows[sym].append(
                     {
-                        "symbol":     sym,
-                        "date":       d,
-                        "open":       row.get("Open"),
-                        "high":       row.get("High"),
-                        "low":        row.get("Low"),
-                        "close":      row.get("Close"),
-                        "volume":     row.get("Volume"),
+                        "symbol": sym,
+                        "date": d,
+                        "open": row.get("Open"),
+                        "high": row.get("High"),
+                        "low": row.get("Low"),
+                        "close": row.get("Close"),
+                        "volume": row.get("Volume"),
                         "index_name": idx_name,
                     }
                 )
 
-            logger.info(
-                "  [%3d/%d]  %s  ✓  (%d rows)", idx, total, d, len(df)
-            )
+            logger.info("  [%3d/%d]  %s  ✓  (%d rows)", idx, total, d, len(df))
             time.sleep(self.download_delay)
 
         logger.info("%d trading days processed.", trading_days)
@@ -319,7 +315,16 @@ class BhavcopyETL:
             logger.info("  ✓ %d rows upserted for %d symbols", total_inserted, len(success))
         except Exception as bulk_exc:
             err_msg = str(bulk_exc).lower()
-            if any(k in err_msg for k in ["uninitialized", "can't connect", "connection refused", "operation not permitted", "2003"]):
+            if any(
+                k in err_msg
+                for k in [
+                    "uninitialized",
+                    "can't connect",
+                    "connection refused",
+                    "operation not permitted",
+                    "2003",
+                ]
+            ):
                 logger.warning(
                     "MySQL is unreachable — Bhavcopy data is preserved in local Parquet cache. "
                     "Skipping DB load. Rows will be upserted once MySQL is available.",
@@ -348,7 +353,8 @@ class BhavcopyETL:
 
         logger.info(
             "  Symbol-isolated load complete: ✓ %d succeeded  ✗ %d failed",
-            len(success), len(failed),
+            len(success),
+            len(failed),
         )
         return sorted(success), sorted(failed)
 
@@ -357,8 +363,8 @@ class BhavcopyETL:
     # ------------------------------------------------------------------
     def run(
         self,
-        symbol_filter: Optional[set[str]] = None,
-        symbol_index_map: Optional[dict[str, str]] = None,
+        symbol_filter: set[str] | None = None,
+        symbol_index_map: dict[str, str] | None = None,
         skip_constituent_filter: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Execute the full ETL pipeline."""
@@ -366,7 +372,9 @@ class BhavcopyETL:
         fetch_start, fetch_end, is_update = self.resolve_date_range()
 
         if fetch_start > fetch_end:
-            logger.info("All data is up to date (%s > %s). Nothing to fetch.", fetch_start, fetch_end)
+            logger.info(
+                "All data is up to date (%s > %s). Nothing to fetch.", fetch_start, fetch_end
+            )
             return [], []
 
         # 2. Build the symbol filter and index map (auto-fetch unless overridden)
@@ -377,9 +385,7 @@ class BhavcopyETL:
             )
             idx_map = symbol_index_map or {}
         elif skip_constituent_filter:
-            logger.info(
-                "Constituent filter SKIPPED — all EQ stocks will be retained"
-            )
+            logger.info("Constituent filter SKIPPED — all EQ stocks will be retained")
             symbol_filter = None
             idx_map = {}
         else:
@@ -389,13 +395,12 @@ class BhavcopyETL:
                 symbol_filter = result.symbols
                 idx_map = dict(result)
                 logger.info(
-                    "Auto-fetched constituent filter: %d symbols "
-                    "(Large Cap + Mid Cap + Small Cap)",
+                    "Auto-fetched constituent filter: %d symbols (Large Cap + Mid Cap + Small Cap)",
                     len(symbol_filter),
                 )
             except Exception as exc:
                 logger.warning(
-                    "Could not fetch index constituents (%s) — proceeding with all available symbols",
+                    "Could not fetch index constituents (%s) — proceeding with all symbols",
                     exc,
                 )
                 symbol_filter = None
@@ -416,7 +421,11 @@ class BhavcopyETL:
         )
 
         if not stock_rows:
-            logger.info("No new trading day data found in range %s → %s (market closed or already current).", fetch_start, fetch_end)
+            logger.info(
+                "No new data found in range %s → %s (closed or current).",
+                fetch_start,
+                fetch_end,
+            )
             return [], []
 
         # 3. Upsert into MySQL
@@ -427,12 +436,14 @@ class BhavcopyETL:
         if is_update:
             logger.info(
                 "  UPDATE COMPLETE  ✓ %d stocks loaded  |  ✗ %d failed",
-                len(success), len(failed),
+                len(success),
+                len(failed),
             )
         else:
             logger.info(
                 "  FIRST RUN DONE   ✓ %d stocks loaded  |  ✗ %d failed",
-                len(success), len(failed),
+                len(success),
+                len(failed),
             )
         logger.info("=" * 62)
 
@@ -462,18 +473,19 @@ class BhavcopyETL:
             if failed:
                 return {
                     "status": "error",
-                    "message": f"Database load failed for {len(failed)} symbols. Check database connection/logs.",
+                    "message": f"DB load failed for {len(failed)} symbols. Check logs.",
                     "symbols_updated": 0,
                     "failed_count": len(failed),
                 }
 
-            # No rows: either up-to-date, holiday, or MySQL was unreachable (load_to_db returned ([], []))
+            # No rows: either up-to-date, holiday, or MySQL was unreachable
             if not check_connection():
                 return {
                     "status": "offline",
-                    "message": "Local Parquet cache is current. MySQL is offline — data will sync when MySQL is available.",
+                    "message": "Parquet cache current. MySQL offline — syncs when online.",
                     "symbols_updated": 0,
                 }
+
             return {
                 "status": "up_to_date",
                 "message": "Market data is already up to date with the latest trading session.",

@@ -23,7 +23,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
-LOG_BACKUP_COUNT = 3             # keep 3 rotated copies
+LOG_BACKUP_COUNT = 3  # keep 3 rotated copies
 
 
 def setup_logging() -> None:

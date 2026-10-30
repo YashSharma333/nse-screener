@@ -23,8 +23,6 @@ from __future__ import annotations
 import io
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Optional
 
 import pandas as pd
 import requests
@@ -44,8 +42,8 @@ _BASE_URL = "https://nsearchives.nseindia.com/content/indices"
 
 # (logical name, CSV filename on NSE, minimum expected count)
 _INDEX_SPECS: list[tuple[str, str, int]] = [
-    ("NIFTY 100",          "ind_nifty100list.csv",          90),
-    ("NIFTY Midcap 150",   "ind_niftymidcap150list.csv",   140),
+    ("NIFTY 100", "ind_nifty100list.csv", 90),
+    ("NIFTY Midcap 150", "ind_niftymidcap150list.csv", 140),
     ("NIFTY Smallcap 250", "ind_niftysmallcap250list.csv", 230),
 ]
 
@@ -61,7 +59,7 @@ _NSE_HEADERS = {
 }
 
 MAX_RETRIES = 3
-RETRY_WAIT = 5        # seconds between retries
+RETRY_WAIT = 5  # seconds between retries
 REQUEST_TIMEOUT = 20  # seconds per HTTP request
 
 
@@ -73,10 +71,10 @@ class ConstituentResult(dict):
 
     def __init__(
         self,
-        symbol_to_index: Optional[dict[str, str]] = None,
-        symbols: Optional[set[str]] = None,
-        per_index: Optional[dict[str, set[str]]] = None,
-        failed_indices: Optional[list[str]] = None,
+        symbol_to_index: dict[str, str] | None = None,
+        symbols: set[str] | None = None,
+        per_index: dict[str, set[str]] | None = None,
+        failed_indices: list[str] | None = None,
     ) -> None:
         mapping = symbol_to_index or {}
         super().__init__(mapping)
@@ -121,7 +119,7 @@ class NSEIndexConstituents:
         self.max_retries = max_retries
         self.retry_wait = retry_wait
         self.request_timeout = request_timeout
-        self._session: Optional[requests.Session] = None
+        self._session: requests.Session | None = None
 
     # ------------------------------------------------------------------
     # Session management
@@ -156,7 +154,7 @@ class NSEIndexConstituents:
         name: str,
         filename: str,
         min_expected: int,
-    ) -> Optional[set[str]]:
+    ) -> set[str] | None:
         """Download one index CSV and extract the symbol column.
 
         Returns ``None`` if all retries are exhausted.
@@ -171,7 +169,8 @@ class NSEIndexConstituents:
                 if resp.status_code == 403:
                     logger.warning(
                         "  %s attempt %d → 403 — refreshing session",
-                        name, attempt,
+                        name,
+                        attempt,
                     )
                     session = self._refresh_session()
                     time.sleep(self.retry_wait)
@@ -190,7 +189,8 @@ class NSEIndexConstituents:
                 if sym_col is None:
                     logger.error(
                         "  %s: 'Symbol' column not found — columns are: %s",
-                        name, df.columns.tolist(),
+                        name,
+                        df.columns.tolist(),
                     )
                     return None  # schema change — no amount of retrying helps
 
@@ -199,7 +199,10 @@ class NSEIndexConstituents:
                 if len(symbols) < min_expected:
                     logger.warning(
                         "  %s attempt %d: only %d symbols (expected ≥%d)",
-                        name, attempt, len(symbols), min_expected,
+                        name,
+                        attempt,
+                        len(symbols),
+                        min_expected,
                     )
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
@@ -212,22 +215,25 @@ class NSEIndexConstituents:
             except requests.exceptions.Timeout:
                 logger.warning(
                     "  %s attempt %d timed out (timeout=%ds)",
-                    name, attempt, self.request_timeout,
+                    name,
+                    attempt,
+                    self.request_timeout,
                 )
                 if attempt < self.max_retries:
                     time.sleep(self.retry_wait)
 
             except requests.RequestException as exc:
-                logger.warning(
-                    "  %s attempt %d network error: %s", name, attempt, exc
-                )
+                logger.warning("  %s attempt %d network error: %s", name, attempt, exc)
                 if attempt < self.max_retries:
                     time.sleep(self.retry_wait)
                     session = self._refresh_session()
 
             except Exception as exc:
                 logger.error(
-                    "  %s: unexpected error: %s", name, exc, exc_info=True,
+                    "  %s: unexpected error: %s",
+                    name,
+                    exc,
+                    exc_info=True,
                 )
                 return None
 
@@ -278,9 +284,7 @@ class NSEIndexConstituents:
             len(_INDEX_SPECS),
         )
         if result.failed_indices:
-            logger.warning(
-                "  Failed indices: %s", ", ".join(result.failed_indices)
-            )
+            logger.warning("  Failed indices: %s", ", ".join(result.failed_indices))
         logger.info("-" * 50)
 
         if not result.symbols:

@@ -7,6 +7,7 @@ Executes massive historical loads or incremental updates into MySQL.
 import argparse
 import logging
 import sys
+
 from config.settings import setup_logging
 from src.etl.pipeline import BhavcopyETL
 
@@ -75,7 +76,7 @@ def main() -> None:
         else:
             success, failed = etl.run(skip_constituent_filter=args.skip_constituents)
             logger.info(
-                "ETL Pipeline execution completed. Successfully loaded: %d symbols, Failed: %d symbols.",
+                "ETL Pipeline completed. Loaded: %d symbols, Failed: %d symbols.",
                 len(success),
                 len(failed),
             )
