@@ -26,4 +26,5 @@ data/processed/*
 .DS_Store
 
 # Streamlit
-.streamlit/
+.streamlit/.coverage
+htmlcov/
