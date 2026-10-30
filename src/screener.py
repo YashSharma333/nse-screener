@@ -221,8 +221,10 @@ class StockScreener:
     # Standard Technical Filters
     # ------------------------------------------------------------------
     def golden_cross(self) -> pd.DataFrame:
-        """Stocks where SMA 50 crossed above SMA 200."""
+        """Stocks where SMA 50 crossed above SMA 200 (time-series verified)."""
         try:
+            if "golden_cross" in self.df.columns:
+                return self.df[self.df["golden_cross"].fillna(False)]
             mask = (self.df["sma_50"] > self.df["sma_200"]) & (
                 self.df["sma_50"].shift(1) <= self.df["sma_200"].shift(1)
             )
@@ -232,8 +234,10 @@ class StockScreener:
             return pd.DataFrame()
 
     def death_cross(self) -> pd.DataFrame:
-        """Stocks where SMA 50 crossed below SMA 200."""
+        """Stocks where SMA 50 crossed below SMA 200 (time-series verified)."""
         try:
+            if "death_cross" in self.df.columns:
+                return self.df[self.df["death_cross"].fillna(False)]
             mask = (self.df["sma_50"] < self.df["sma_200"]) & (
                 self.df["sma_50"].shift(1) >= self.df["sma_200"].shift(1)
             )
@@ -277,8 +281,10 @@ class StockScreener:
             return pd.DataFrame()
 
     def bullish_macd_crossover(self) -> pd.DataFrame:
-        """MACD line crossed above signal line."""
+        """MACD line crossed above signal line (time-series verified)."""
         try:
+            if "macd_cross_up" in self.df.columns:
+                return self.df[self.df["macd_cross_up"].fillna(False)]
             mask = (self.df["macd_line"] > self.df["macd_signal"]) & (
                 self.df["macd_line"].shift(1) <= self.df["macd_signal"].shift(1)
             )

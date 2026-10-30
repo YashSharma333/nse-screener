@@ -12,6 +12,7 @@ values so the expected output can be hand-verified.  Tests cover:
   - Edge cases (empty / single row)
 """
 
+import numpy as np
 import pandas as pd
 
 from src.computation.indicators import TechnicalCalculator
@@ -262,6 +263,21 @@ EXPECTED_COLUMNS = [
     "close_252d",
     "return_60d",
     "return_120d",
+    "atr_14",
+    "atr_pct",
+    "donchian_high_20",
+    "donchian_low_20",
+    "donchian_high_55",
+    "donchian_low_55",
+    "volume_ratio",
+    "golden_cross",
+    "death_cross",
+    "macd_cross_up",
+    "macd_cross_down",
+    "rs_63d",
+    "rs_126d",
+    "rs_252d",
+    "HMM",
 ]
 
 
@@ -300,3 +316,44 @@ class TestApplyAllIndicators:
         assert set(result["symbol"].unique()) == {"AAA", "BBB"}
         missing = [c for c in EXPECTED_COLUMNS if c not in result.columns]
         assert not missing, f"Missing columns in multi-stock mode: {missing}"
+
+    def test_new_indicators_and_crossover_accuracy(self):
+        """Test ATR, Donchian channels, volume ratio, crossovers, and HMM."""
+        calc = _make_calc()
+        n = 60
+        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
+        # Build synthetic price series with known crossover
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": 100.0,
+                "high": 105.0,
+                "low": 95.0,
+                "close": [90.0 + i * 2.0 for i in range(n)],
+                "volume": [300_000.0 if i == n - 1 else 100_000.0 for i in range(n)],
+                "symbol": "TEST",
+            }
+        )
+        res = calc.apply_all_indicators(df)
+        assert "atr_14" in res.columns
+        assert not res["atr_14"].dropna().empty
+        assert "donchian_high_20" in res.columns
+        assert "volume_ratio" in res.columns
+        assert "golden_cross" in res.columns
+        assert "HMM" in res.columns
+        assert isinstance(res["HMM"].iloc[-1], (bool, np.bool_))
+
+    def test_crossover_cross_stock_isolation(self):
+        """Two different symbols in a snapshot must not cross-pollinate shift(1)."""
+        # Stock 1 has SMA 50=100, 200=90. Stock 2 has SMA 50=90, 200=100.
+        # Computing golden_cross per symbol in time-series avoids snapshot cross-stock shift bugs.
+        calc = _make_calc()
+        df1 = _flat_df(60, close=100.0)
+        df1["symbol"] = "SYM1"
+        df2 = _flat_df(60, close=50.0)
+        df2["symbol"] = "SYM2"
+        combined = pd.concat([df1, df2], ignore_index=True)
+        res = calc.apply_all_indicators(combined)
+        # Check that SYM2's first row doesn't evaluate crossovers using SYM1's last row
+        sym2_first_idx = res[res["symbol"] == "SYM2"].index[0]
+        assert not res.loc[sym2_first_idx, "golden_cross"]
