@@ -13,9 +13,12 @@ from sqlalchemy import (
     BigInteger,
     Column,
     Date,
+    DateTime,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase
 
@@ -42,7 +45,7 @@ class DailyPrice(Base):
 
     __tablename__ = "daily_prices"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
     open = Column(Numeric(10, 2), nullable=True)
@@ -52,6 +55,13 @@ class DailyPrice(Base):
     volume = Column(BigInteger, nullable=True)
     prev_close = Column(Numeric(10, 2), nullable=True)
     index_name = Column(String(50), nullable=True, index=True)
+
+    # Corporate-action adjusted price and volume columns
+    adj_open = Column(Numeric(14, 4), nullable=True)
+    adj_high = Column(Numeric(14, 4), nullable=True)
+    adj_low = Column(Numeric(14, 4), nullable=True)
+    adj_close = Column(Numeric(14, 4), nullable=True)
+    adj_volume = Column(BigInteger, nullable=True)
 
     __table_args__ = (UniqueConstraint("symbol", "date", name="uq_symbol_date"),)
 
@@ -63,7 +73,7 @@ class DailyPrice(Base):
 
 
 # ---------------------------------------------------------------------------
-# Technical indicator model (placeholder for future use)
+# Technical indicator model (UNUSED: legacy table preserved for schema compatibility)
 # ---------------------------------------------------------------------------
 class TechnicalIndicator(Base):
     """Pre-computed technical indicators per stock per day.
@@ -74,7 +84,7 @@ class TechnicalIndicator(Base):
 
     __tablename__ = "technical_indicators"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
 
@@ -109,3 +119,85 @@ class TechnicalIndicator(Base):
 
     def __repr__(self) -> str:
         return f"<TechnicalIndicator(symbol={self.symbol!r}, date={self.date})>"
+
+
+# ---------------------------------------------------------------------------
+# Corporate-action adjustment factors
+# ---------------------------------------------------------------------------
+class AdjFactor(Base):
+    """Detected split, bonus, and corporate-action adjustment factors."""
+
+    __tablename__ = "adj_factors"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    factor = Column(Numeric(18, 8), nullable=False)
+    ratio_kind = Column(String(20), nullable=False)
+    detected_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_adj_factors_symbol_date"),)
+
+    def __repr__(self) -> str:
+        return (
+            f"<AdjFactor(symbol={self.symbol!r}, date={self.date}, "
+            f"factor={self.factor}, kind={self.ratio_kind!r})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Benchmark index prices
+# ---------------------------------------------------------------------------
+class BenchmarkPrice(Base):
+    """Daily benchmark closing price for market indices."""
+
+    __tablename__ = "benchmark_prices"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    index_code = Column(String(40), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    close = Column(Numeric(14, 4), nullable=False)
+    source = Column(String(20), nullable=False)
+
+    __table_args__ = (UniqueConstraint("index_code", "date", name="uq_benchmark_code_date"),)
+
+    def __repr__(self) -> str:
+        return (
+            f"<BenchmarkPrice(index={self.index_code!r}, date={self.date}, "
+            f"close={self.close}, source={self.source!r})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Historical index membership
+# ---------------------------------------------------------------------------
+class IndexMembership(Base):
+    """Historical point-in-time snapshot and validity range of index constituents."""
+
+    __tablename__ = "index_membership"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    index_code = Column(String(50), nullable=False, index=True)
+    valid_from = Column(Date, nullable=False, index=True)
+    valid_to = Column(Date, nullable=True)
+    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "index_code",
+            "valid_from",
+            name="uq_membership_symbol_code_valid_from",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<IndexMembership(symbol={self.symbol!r}, index={self.index_code!r}, "
+            f"valid_from={self.valid_from}, valid_to={self.valid_to})>"
+        )

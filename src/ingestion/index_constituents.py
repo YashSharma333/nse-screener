@@ -23,11 +23,16 @@ from __future__ import annotations
 import io
 import logging
 import time
+from datetime import date
 
 import pandas as pd
 import requests
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session
 
 from config.settings import setup_logging
+from src.db.models import IndexMembership
+from src.db.session import get_db
 
 # ---------------------------------------------------------------------------
 # Initialise centralized logging
@@ -299,3 +304,119 @@ class NSEIndexConstituents:
         """Fetch index constituents and return a dictionary mapping symbol -> index name."""
         result = self.fetch_all()
         return dict(result)
+
+
+def normalize_index_code(name: str) -> str:
+    """Normalize human-readable index name to canonical code (e.g. 'NIFTY 100' -> 'NIFTY_100')."""
+    return name.strip().upper().replace(" ", "_")
+
+
+def snapshot_index_constituents(
+    session: Session,
+    per_index: dict[str, set[str]],
+    as_of_date: date | None = None,
+) -> dict[str, int]:
+    """Snapshot current index constituents into index_membership table.
+
+    Sets valid_to = as_of_date for removed constituents and inserts new ones
+    with valid_from = as_of_date and valid_to = NULL.
+
+    Returns:
+        dict with counts of added and retired memberships.
+    """
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    added_count = 0
+    retired_count = 0
+
+    for raw_name, symbols in per_index.items():
+        code = normalize_index_code(raw_name)
+
+        # Query currently active members (valid_to is NULL)
+        stmt = select(IndexMembership).where(
+            and_(
+                IndexMembership.index_code == code,
+                IndexMembership.valid_to.is_(None),
+            )
+        )
+        active_members = session.scalars(stmt).all()
+        active_symbol_map = {m.symbol: m for m in active_members}
+
+        # 1. Retire members no longer in current index constituents
+        for sym, member in active_symbol_map.items():
+            if sym not in symbols:
+                member.valid_to = as_of_date
+                retired_count += 1
+
+        # 2. Insert new members
+        for sym in symbols:
+            if sym not in active_symbol_map:
+                new_member = IndexMembership(
+                    symbol=sym,
+                    index_code=code,
+                    valid_from=as_of_date,
+                    valid_to=None,
+                )
+                session.add(new_member)
+                added_count += 1
+
+    session.flush()
+    logger.info(
+        "Index constituent snapshot complete (date=%s): +%d added, -%d retired",
+        as_of_date,
+        added_count,
+        retired_count,
+    )
+    return {"added": added_count, "retired": retired_count}
+
+
+def get_index_constituents(
+    index_code: str,
+    on_date: date | None = None,
+    session: Session | None = None,
+) -> list[str]:
+    """Query active constituent tickers for an index code on a given date.
+
+    Args:
+        index_code: Normalized or display code (e.g. 'NIFTY_100' or 'NIFTY 100')
+        on_date: Target date to check membership for (defaults to today)
+        session: Optional SQLAlchemy session. If not provided, acquires one from pool.
+
+    Returns:
+        Sorted list of active ticker symbols.
+    """
+    code = normalize_index_code(index_code)
+    target_date = on_date or date.today()
+
+    def _query(s: Session) -> list[str]:
+        stmt = (
+            select(IndexMembership.symbol)
+            .where(
+                and_(
+                    IndexMembership.index_code == code,
+                    IndexMembership.valid_from <= target_date,
+                    or_(
+                        IndexMembership.valid_to.is_(None),
+                        IndexMembership.valid_to > target_date,
+                    ),
+                )
+            )
+            .order_by(IndexMembership.symbol)
+        )
+        return list(s.scalars(stmt).all())
+
+    if session is not None:
+        return _query(session)
+
+    try:
+        with get_db() as s:
+            return _query(s)
+    except Exception as exc:
+        logger.warning(
+            "Could not query index_membership for %s on %s: %s",
+            index_code,
+            target_date,
+            exc,
+        )
+        return []
