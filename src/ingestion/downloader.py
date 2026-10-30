@@ -141,7 +141,8 @@ class NSEBhavcopyDownloader:
     def _url_zip(d: date) -> str:
         """Build the *zip-format* Bhavcopy URL (historical archives)."""
         return (
-            "https://nsearchives.nseindia.com/content/cm/"
+            "https://nsearchives.nseindia.com/content/historical/EQUITIES/"
+            f"{d.year}/{_MONTHS[d.month - 1]}/"
             f"cm{d.strftime('%d')}{_MONTHS[d.month - 1]}{d.year}bhav.csv.zip"
         )
 
@@ -190,6 +191,7 @@ class NSEBhavcopyDownloader:
                     "HIGH_PRICE": "High",
                     "LOW_PRICE": "Low",
                     "CLOSE_PRICE": "Close",
+                    "PREV_CLOSE": "PrevClose",
                     "TTL_TRD_QNTY": "Volume",
                 }
                 if fmt == "new"
@@ -200,6 +202,7 @@ class NSEBhavcopyDownloader:
                     "HIGH": "High",
                     "LOW": "Low",
                     "CLOSE": "Close",
+                    "PREVCLOSE": "PrevClose",
                     "TOTTRDQTY": "Volume",
                 }
             )
@@ -215,7 +218,9 @@ class NSEBhavcopyDownloader:
                 df = df[df["Series"].str.strip() == "EQ"]
 
             keep = [
-                c for c in ["Symbol", "Open", "High", "Low", "Close", "Volume"] if c in df.columns
+                c
+                for c in ["Symbol", "Open", "High", "Low", "Close", "PrevClose", "Volume"]
+                if c in df.columns
             ]
             return df[keep].reset_index(drop=True)
 
@@ -239,7 +244,13 @@ class NSEBhavcopyDownloader:
         if cache_path.exists():
             logger.debug("Cache hit for %s", d)
             try:
-                return pd.read_parquet(cache_path)
+                cached_df = pd.read_parquet(cache_path)
+                if "PrevClose" not in cached_df.columns:
+                    logger.info(
+                        "Cached parquet for %s lacks PrevClose schema — treating as cache miss", d
+                    )
+                else:
+                    return cached_df
             except Exception as exc:
                 logger.warning("Corrupt cache file %s (%s) — re-downloading", cache_path, exc)
                 cache_path.unlink(missing_ok=True)

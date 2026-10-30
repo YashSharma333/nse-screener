@@ -223,9 +223,17 @@ class BhavcopyETL:
                 logger.error("Failed to download Bhavcopy for %s: %s", d, exc)
                 continue
 
+            if idx % 50 == 0 or idx == total:
+                logger.info(
+                    "  Backfill progress: processed %d / %d days (%.1f%%)",
+                    idx,
+                    total,
+                    (idx / total) * 100,
+                )
+
             if df is None or df.empty:
-                logger.info("  [%3d/%d]  %s  — holiday / weekend", idx, total, d)
-                time.sleep(0.2)
+                logger.debug("  [%3d/%d]  %s  — holiday / weekend / 404", idx, total, d)
+                time.sleep(0.05)
                 continue
 
             trading_days += 1
@@ -247,6 +255,7 @@ class BhavcopyETL:
                         "high": row.get("High"),
                         "low": row.get("Low"),
                         "close": row.get("Close"),
+                        "prev_close": row.get("PrevClose"),
                         "volume": row.get("Volume"),
                         "index_name": idx_name,
                     }
@@ -297,6 +306,7 @@ class BhavcopyETL:
                     high=stmt.inserted.high,
                     low=stmt.inserted.low,
                     close=stmt.inserted.close,
+                    prev_close=stmt.inserted.prev_close,
                     volume=stmt.inserted.volume,
                     index_name=stmt.inserted.index_name,
                 )

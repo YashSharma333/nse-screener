@@ -50,6 +50,7 @@ class DailyPrice(Base):
     low = Column(Numeric(10, 2), nullable=True)
     close = Column(Numeric(10, 2), nullable=True)
     volume = Column(BigInteger, nullable=True)
+    prev_close = Column(Numeric(10, 2), nullable=True)
     index_name = Column(String(50), nullable=True, index=True)
 
     __table_args__ = (UniqueConstraint("symbol", "date", name="uq_symbol_date"),)

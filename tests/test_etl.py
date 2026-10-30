@@ -395,3 +395,66 @@ class TestResolveDateRange:
 
         assert res["status"] in ("offline", "up_to_date")
         assert res.get("symbols_updated", 0) == 0
+
+    def test_downloader_parse_preserves_prev_close(self):
+        """Downloader._parse must extract and preserve PrevClose column for both formats."""
+        from src.ingestion.downloader import NSEBhavcopyDownloader
+
+        # 1. New CSV format
+        new_csv = (
+            b"SYMBOL, SERIES, DATE1, PREV_CLOSE, OPEN_PRICE, HIGH_PRICE, "
+            b"LOW_PRICE, CLOSE_PRICE, TTL_TRD_QNTY\n"
+            b"RELIANCE, EQ, 25-Oct-2024, 2680.00, 2685.00, 2700.00, 2670.00, 2690.00, 100000\n"
+        )
+        df_new = NSEBhavcopyDownloader._parse(new_csv, fmt="new")
+        assert df_new is not None
+        assert "PrevClose" in df_new.columns
+        assert df_new.iloc[0]["PrevClose"] == 2680.00
+
+        # 2. Historical ZIP format
+        import io
+        import zipfile
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            zip_content = (
+                "SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY\n"
+                "TCS,EQ,3400.0,3450.0,3390.0,3420.0,3420.0,3380.0,50000\n"
+            )
+            zf.writestr("cm25OCT2018bhav.csv", zip_content)
+
+        df_zip = NSEBhavcopyDownloader._parse(zip_buf.getvalue(), fmt="zip")
+        assert df_zip is not None
+        assert "PrevClose" in df_zip.columns
+        assert df_zip.iloc[0]["PrevClose"] == 3380.0
+
+    def test_cache_miss_on_legacy_schema(self, tmp_path):
+        """Reading a cache file without PrevClose must trigger cache miss."""
+        from src.ingestion.downloader import NSEBhavcopyDownloader
+
+        d = date(2024, 1, 15)
+        cache_file = tmp_path / f"{d.isoformat()}.parquet"
+        # Old schema without PrevClose
+        legacy_df = pd.DataFrame(
+            {
+                "Symbol": ["INFY"],
+                "Open": [1500.0],
+                "High": [1520.0],
+                "Low": [1490.0],
+                "Close": [1510.0],
+                "Volume": [10000],
+            }
+        )
+        legacy_df.to_parquet(cache_file, index=False)
+
+        downloader = NSEBhavcopyDownloader()
+        with (
+            patch("src.ingestion.downloader.CACHE_DIR", tmp_path),
+            patch.object(downloader, "get_session") as mock_session,
+        ):
+            # Session returns 404 so download_bhavcopy returns None instead of legacy_df
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            mock_session.return_value.get.return_value = mock_resp
+            result = downloader.download_bhavcopy(d)
+            assert result is None

@@ -12,7 +12,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 "setup_project.py" = ["T201"]
 "tests/*" = ["ARG", "PT009", "PT018"]
 "ui/*" = ["E402"]
-"migrations/versions/*" = ["E501"]
+"migrations/*" = ["E402", "E501"]
+
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
