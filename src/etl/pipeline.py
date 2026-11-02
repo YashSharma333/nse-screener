@@ -152,8 +152,16 @@ class BhavcopyETL:
         if cache_last_stored is not None:
             logger.info("Found latest date in local Parquet cache: %s", cache_last_stored)
 
-        available_dates = [d for d in [db_last_stored, cache_last_stored] if d is not None]
-        last_stored = max(available_dates) if available_dates else None
+        # MySQL is the authority for "last loaded" when available.
+        # Only fall back to the Parquet cache date when MySQL is empty or
+        # offline — this prevents a desync where cached files exist but
+        # were never upserted into MySQL.
+        if db_last_stored is not None:
+            last_stored = db_last_stored
+        elif cache_last_stored is not None:
+            last_stored = cache_last_stored
+        else:
+            last_stored = None
 
         if last_stored is None:
             start = today - timedelta(days=self.initial_days_back)
@@ -498,6 +506,11 @@ class BhavcopyETL:
 
         Returns a dictionary summary with counts and status.
         """
+        # Pre-flight: check MySQL reachability *before* running so we can
+        # distinguish "already up-to-date" from "database is offline" when
+        # run() returns ([], []).
+        db_online = check_connection()
+
         orig_days_back = self.initial_days_back
         try:
             # For incremental updates with no prior data, limit scan window to lookback_days
@@ -522,8 +535,8 @@ class BhavcopyETL:
                     "failed_count": len(failed),
                 }
 
-            # No rows: either up-to-date, holiday, or MySQL was unreachable
-            if not check_connection():
+            # No rows returned — use the pre-flight check to classify
+            if not db_online:
                 return {
                     "status": "offline",
                     "message": "Parquet cache current. MySQL offline — syncs when online.",

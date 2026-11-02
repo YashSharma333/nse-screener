@@ -63,6 +63,11 @@ def main() -> None:
         action="store_true",
         help="Download and ingest benchmark index prices standalone",
     )
+    parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Rebuild the pre-computed indicator Parquet cache from MySQL without downloading",
+    )
 
     args = parser.parse_args()
 
@@ -74,7 +79,20 @@ def main() -> None:
     )
 
     try:
-        if args.rebuild_adjusted:
+        if args.refresh_cache:
+            logger.info("Rebuilding indicator Parquet cache from MySQL...")
+            from src.db.data_service import load_indicator_snapshot
+
+            snapshot, _full, is_live, msg = load_indicator_snapshot(
+                use_adjusted=True, force_refresh=True
+            )
+            logger.info(
+                "Indicator cache rebuilt: %d symbols, live=%s (%s)",
+                len(snapshot),
+                is_live,
+                msg,
+            )
+        elif args.rebuild_adjusted:
             logger.info("Executing standalone corporate action price adjustments...")
             updated = etl.rebuild_adjusted_prices()
             logger.info("Adjusted prices rebuild complete. Updated: %d rows.", updated)

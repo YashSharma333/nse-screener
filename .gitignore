@@ -16,6 +16,7 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+reports/*.csv
 
 # Environment Variables
 .env

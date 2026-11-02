@@ -265,7 +265,14 @@ def load_indicator_snapshot(
 
 
 def ensure_data_initialized() -> bool:
-    """Check if database has data; if empty and DB is online, automatically run ETL pipeline."""
+    """Check if database has data; if empty and DB is online, automatically run ETL pipeline.
+
+    Also ensures the pre-computed indicator Parquet cache exists so the
+    Dashboard can display data even when the ETL pipeline reports
+    "up_to_date" (no new rows downloaded).
+
+    Returns True when data is available (either already present or freshly loaded).
+    """
     if not check_connection():
         return False
 
@@ -276,6 +283,7 @@ def ensure_data_initialized() -> bool:
 
         with engine.connect() as conn:
             cnt = conn.execute(text("SELECT COUNT(*) FROM daily_prices")).scalar() or 0
+
         if cnt == 0:
             logger.info(
                 "daily_prices is empty on startup. Automatically running ETL pipeline backfill..."
@@ -285,6 +293,14 @@ def ensure_data_initialized() -> bool:
             etl = BhavcopyETL(initial_days_back=30)
             etl.run()
             return True
+
+        # MySQL has data but indicator cache is missing — build it now so
+        # the Dashboard has something to show without needing another ETL run.
+        if not INDICATORS_CACHE_PATH.exists():
+            logger.info("MySQL has %d rows but indicator cache is missing — rebuilding...", cnt)
+            load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+
+        return True
     except Exception as exc:
         logger.warning("Error during automatic database initialization: %s", exc)
     return False
