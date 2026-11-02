@@ -18,7 +18,7 @@ def apply_terminal_theme() -> None:
     .stApp {
         background-color: #080c14;
         color: #f1f5f9;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
 
     /* Main block padding */
@@ -32,9 +32,10 @@ def apply_terminal_theme() -> None:
 
     /* Sidebar Styling */
     section[data-testid="stSidebar"] {
-        background: radial-gradient(circle at 15% 15%, rgba(14, 165, 233, 0.08) 0%, transparent 45%),
-                    radial-gradient(circle at 85% 85%, rgba(168, 85, 247, 0.08) 0%, transparent 45%),
-                    linear-gradient(180deg, #0d131f 0%, #080c14 100%);
+        background:
+            radial-gradient(circle at 15% 15%, rgba(14, 165, 233, 0.08) 0%, transparent 45%),
+            radial-gradient(circle at 85% 85%, rgba(168, 85, 247, 0.08) 0%, transparent 45%),
+            linear-gradient(180deg, #0d131f 0%, #080c14 100%);
         border-right: 1px solid #1e293b;
     }
     section[data-testid="stSidebar"] .stMarkdown h1,
@@ -97,7 +98,9 @@ def apply_terminal_theme() -> None:
         transition: color 0.15s ease;
     }
     a[data-testid="stSidebarNavLink"]:hover {
-        background: linear-gradient(135deg, rgba(14, 165, 233, 0.18) 0%, rgba(30, 41, 59, 0.85) 100%) !important;
+        background:
+            linear-gradient(135deg, rgba(14, 165, 233, 0.18) 0%, rgba(30, 41, 59, 0.85) 100%)
+            !important;
         border-color: rgba(56, 189, 248, 0.55) !important;
         transform: translateX(4px);
         box-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
@@ -108,10 +111,14 @@ def apply_terminal_theme() -> None:
 
     /* Active Page Styling with Glowing Neon Accent */
     a[data-testid="stSidebarNavLink"][aria-current="page"] {
-        background: linear-gradient(135deg, rgba(14, 165, 233, 0.25) 0%, rgba(15, 23, 42, 0.95) 100%) !important;
+        background:
+            linear-gradient(135deg, rgba(14, 165, 233, 0.25) 0%, rgba(15, 23, 42, 0.95) 100%)
+            !important;
         border: 1px solid #38bdf8 !important;
         border-left: 4px solid #00f0ff !important;
-        box-shadow: 0 0 16px rgba(0, 240, 255, 0.3), inset 0 0 10px rgba(56, 189, 248, 0.12) !important;
+        box-shadow:
+            0 0 16px rgba(0, 240, 255, 0.3),
+            inset 0 0 10px rgba(56, 189, 248, 0.12) !important;
     }
     a[data-testid="stSidebarNavLink"][aria-current="page"] span {
         color: #ffffff !important;
@@ -258,9 +265,10 @@ def apply_terminal_theme() -> None:
         border: 1px solid rgba(244, 63, 94, 0.35);
     }
 
-    /* Sidebar Index Cards & Strategy Cards */
+    /* Sidebar Index Cards & Screener Cards */
     .sidebar-header-box {
-        background: linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(30, 41, 59, 0.4) 100%);
+        background:
+            linear-gradient(135deg, rgba(14, 165, 233, 0.15) 0%, rgba(30, 41, 59, 0.4) 100%);
         border: 1px solid rgba(56, 189, 248, 0.25);
         border-radius: 8px;
         padding: 12px 14px;
@@ -331,7 +339,9 @@ def apply_terminal_theme() -> None:
     render_sidebar_controls()
 
 
-def render_terminal_header(title: str, subtitle: str, status_text: str, is_live: bool = True) -> None:
+def render_terminal_header(
+    title: str, subtitle: str, status_text: str, is_live: bool = True
+) -> None:
     """Renders the top Bloomberg-style header bar with connection badges."""
     badge_class = "badge-live" if is_live else "badge-demo"
     html = f"""
@@ -351,12 +361,15 @@ def render_terminal_header(title: str, subtitle: str, status_text: str, is_live:
 def render_sidebar_controls() -> None:
     """Render unified production-grade sidebar telemetry and data pipeline triggers."""
     # Top branding box: modern trading terminal identity
-    st.sidebar.markdown("""
+    st.sidebar.markdown(
+        """
     <div class="sidebar-header-box">
         <div class="sidebar-brand-title">📈 TRADING TERMINAL</div>
         <div class="sidebar-brand-subtitle">NSE Quantitative Screener</div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
     # Market Data Pipeline trigger with safe incremental execution
     st.sidebar.markdown("#### 🔄 Ingestion Engine")
@@ -368,6 +381,7 @@ def render_sidebar_controls() -> None:
         help="Incrementally fetch latest Bhavcopy records and sync MySQL without full re-download",
     ):
         from src.etl.pipeline import BhavcopyETL
+
         st.session_state.is_updating_etl = True
         try:
             with st.spinner("Syncing latest market data..."):
@@ -398,7 +412,8 @@ def render_sidebar_controls() -> None:
 
     # Tracked Universe Telemetry
     st.sidebar.markdown("#### 🎯 Tracked Universe")
-    st.sidebar.markdown("""
+    st.sidebar.markdown(
+        """
     <div class="index-badge-card" style="border-left-color: #38bdf8;">
         <strong>NIFTY 100</strong> · Large Cap Core (100)
     </div>
@@ -408,13 +423,16 @@ def render_sidebar_controls() -> None:
     <div class="index-badge-card" style="border-left-color: #f59e0b;">
         <strong>NIFTY Smallcap 250</strong> · High-Beta Smallcaps (250)
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
     st.sidebar.divider()
 
-    # Quantitative Strategies Summary
-    st.sidebar.markdown("#### 📐 Screener Strategies")
-    st.sidebar.markdown("""
+    # Quantitative Screeners Summary
+    st.sidebar.markdown("#### 📐 Quantitative Screeners")
+    st.sidebar.markdown(
+        """
     <div class="sidebar-card">
         <span style="color:#00f0ff; font-weight:700;">🌊 Swing + Volume</span><br/>
         <span style="color:#94a3b8; font-size:0.75rem;">Breakout & Volume Expansion</span>
@@ -423,7 +441,9 @@ def render_sidebar_controls() -> None:
         <span style="color:#a855f7; font-weight:700;">🚀 Swing With Momentum</span><br/>
         <span style="color:#94a3b8; font-size:0.75rem;">Multi-Horizon Stage Growth</span>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
     st.sidebar.divider()
     st.sidebar.caption("NSE Screener Terminal v2.2 · Production")

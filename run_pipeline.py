@@ -7,6 +7,7 @@ Executes massive historical loads or incremental updates into MySQL.
 import argparse
 import logging
 import sys
+
 from config.settings import setup_logging
 from src.etl.pipeline import BhavcopyETL
 
@@ -52,6 +53,21 @@ def main() -> None:
         default=5,
         help="Number of days to check for incremental update if no prior data exists (default: 5)",
     )
+    parser.add_argument(
+        "--rebuild-adjusted",
+        action="store_true",
+        help="Recompute corporate action price adjustments (splits/bonuses) and update database",
+    )
+    parser.add_argument(
+        "--benchmarks",
+        action="store_true",
+        help="Download and ingest benchmark index prices standalone",
+    )
+    parser.add_argument(
+        "--refresh-cache",
+        action="store_true",
+        help="Rebuild the pre-computed indicator Parquet cache from MySQL without downloading",
+    )
 
     args = parser.parse_args()
 
@@ -63,7 +79,28 @@ def main() -> None:
     )
 
     try:
-        if args.incremental:
+        if args.refresh_cache:
+            logger.info("Rebuilding indicator Parquet cache from MySQL...")
+            from src.db.data_service import load_indicator_snapshot
+
+            snapshot, _full, is_live, msg = load_indicator_snapshot(
+                use_adjusted=True, force_refresh=True
+            )
+            logger.info(
+                "Indicator cache rebuilt: %d symbols, live=%s (%s)",
+                len(snapshot),
+                is_live,
+                msg,
+            )
+        elif args.rebuild_adjusted:
+            logger.info("Executing standalone corporate action price adjustments...")
+            updated = etl.rebuild_adjusted_prices()
+            logger.info("Adjusted prices rebuild complete. Updated: %d rows.", updated)
+        elif args.benchmarks:
+            logger.info("Executing standalone benchmark index ingestion...")
+            count = etl.ingest_benchmarks()
+            logger.info("Benchmark ingestion complete. Ingested: %d records.", count)
+        elif args.incremental:
             logger.info("Executing incremental ETL update...")
             res = etl.run_incremental(lookback_days=args.lookback)
             logger.info(
@@ -75,7 +112,7 @@ def main() -> None:
         else:
             success, failed = etl.run(skip_constituent_filter=args.skip_constituents)
             logger.info(
-                "ETL Pipeline execution completed. Successfully loaded: %d symbols, Failed: %d symbols.",
+                "ETL Pipeline completed. Loaded: %d symbols, Failed: %d symbols.",
                 len(success),
                 len(failed),
             )

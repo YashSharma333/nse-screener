@@ -1,8 +1,8 @@
 """
 NSE Trading Terminal - Application Entrypoint
 ===========================================
-Production-grade quantitative stock screening terminal for the National Stock Exchange of India.
-Unified navigation directly to the Master Dashboard and Quantitative Strategies (no 'app' splash page).
+Production-grade quantitative stock screening terminal for the NSE.
+Unified navigation directly to the Master Dashboard and Screeners.
 """
 
 from __future__ import annotations
@@ -17,10 +17,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import setup_logging
+
 setup_logging()
 logger = logging.getLogger("ui.app")
 
 import streamlit as st
+
 from ui.components.terminal_styles import apply_terminal_theme
 
 
@@ -56,7 +58,7 @@ def main() -> None:
     nav = st.navigation(
         {
             "Market Terminal": [dashboard_page],
-            "Quantitative Strategies": [swing_volume_page, swing_momentum_page],
+            "Screeners": [swing_volume_page, swing_momentum_page],
         }
     )
     nav.run()

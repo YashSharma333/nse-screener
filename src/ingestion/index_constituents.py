@@ -23,13 +23,16 @@ from __future__ import annotations
 import io
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from datetime import date
 
 import pandas as pd
 import requests
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session
 
 from config.settings import setup_logging
+from src.db.models import IndexMembership
+from src.db.session import get_db
 
 # ---------------------------------------------------------------------------
 # Initialise centralized logging
@@ -44,8 +47,8 @@ _BASE_URL = "https://nsearchives.nseindia.com/content/indices"
 
 # (logical name, CSV filename on NSE, minimum expected count)
 _INDEX_SPECS: list[tuple[str, str, int]] = [
-    ("NIFTY 100",          "ind_nifty100list.csv",          90),
-    ("NIFTY Midcap 150",   "ind_niftymidcap150list.csv",   140),
+    ("NIFTY 100", "ind_nifty100list.csv", 90),
+    ("NIFTY Midcap 150", "ind_niftymidcap150list.csv", 140),
     ("NIFTY Smallcap 250", "ind_niftysmallcap250list.csv", 230),
 ]
 
@@ -61,7 +64,7 @@ _NSE_HEADERS = {
 }
 
 MAX_RETRIES = 3
-RETRY_WAIT = 5        # seconds between retries
+RETRY_WAIT = 5  # seconds between retries
 REQUEST_TIMEOUT = 20  # seconds per HTTP request
 
 
@@ -73,10 +76,10 @@ class ConstituentResult(dict):
 
     def __init__(
         self,
-        symbol_to_index: Optional[dict[str, str]] = None,
-        symbols: Optional[set[str]] = None,
-        per_index: Optional[dict[str, set[str]]] = None,
-        failed_indices: Optional[list[str]] = None,
+        symbol_to_index: dict[str, str] | None = None,
+        symbols: set[str] | None = None,
+        per_index: dict[str, set[str]] | None = None,
+        failed_indices: list[str] | None = None,
     ) -> None:
         mapping = symbol_to_index or {}
         super().__init__(mapping)
@@ -121,7 +124,7 @@ class NSEIndexConstituents:
         self.max_retries = max_retries
         self.retry_wait = retry_wait
         self.request_timeout = request_timeout
-        self._session: Optional[requests.Session] = None
+        self._session: requests.Session | None = None
 
     # ------------------------------------------------------------------
     # Session management
@@ -156,7 +159,7 @@ class NSEIndexConstituents:
         name: str,
         filename: str,
         min_expected: int,
-    ) -> Optional[set[str]]:
+    ) -> set[str] | None:
         """Download one index CSV and extract the symbol column.
 
         Returns ``None`` if all retries are exhausted.
@@ -171,7 +174,8 @@ class NSEIndexConstituents:
                 if resp.status_code == 403:
                     logger.warning(
                         "  %s attempt %d → 403 — refreshing session",
-                        name, attempt,
+                        name,
+                        attempt,
                     )
                     session = self._refresh_session()
                     time.sleep(self.retry_wait)
@@ -190,7 +194,8 @@ class NSEIndexConstituents:
                 if sym_col is None:
                     logger.error(
                         "  %s: 'Symbol' column not found — columns are: %s",
-                        name, df.columns.tolist(),
+                        name,
+                        df.columns.tolist(),
                     )
                     return None  # schema change — no amount of retrying helps
 
@@ -199,7 +204,10 @@ class NSEIndexConstituents:
                 if len(symbols) < min_expected:
                     logger.warning(
                         "  %s attempt %d: only %d symbols (expected ≥%d)",
-                        name, attempt, len(symbols), min_expected,
+                        name,
+                        attempt,
+                        len(symbols),
+                        min_expected,
                     )
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
@@ -212,22 +220,25 @@ class NSEIndexConstituents:
             except requests.exceptions.Timeout:
                 logger.warning(
                     "  %s attempt %d timed out (timeout=%ds)",
-                    name, attempt, self.request_timeout,
+                    name,
+                    attempt,
+                    self.request_timeout,
                 )
                 if attempt < self.max_retries:
                     time.sleep(self.retry_wait)
 
             except requests.RequestException as exc:
-                logger.warning(
-                    "  %s attempt %d network error: %s", name, attempt, exc
-                )
+                logger.warning("  %s attempt %d network error: %s", name, attempt, exc)
                 if attempt < self.max_retries:
                     time.sleep(self.retry_wait)
                     session = self._refresh_session()
 
             except Exception as exc:
                 logger.error(
-                    "  %s: unexpected error: %s", name, exc, exc_info=True,
+                    "  %s: unexpected error: %s",
+                    name,
+                    exc,
+                    exc_info=True,
                 )
                 return None
 
@@ -278,9 +289,7 @@ class NSEIndexConstituents:
             len(_INDEX_SPECS),
         )
         if result.failed_indices:
-            logger.warning(
-                "  Failed indices: %s", ", ".join(result.failed_indices)
-            )
+            logger.warning("  Failed indices: %s", ", ".join(result.failed_indices))
         logger.info("-" * 50)
 
         if not result.symbols:
@@ -295,3 +304,119 @@ class NSEIndexConstituents:
         """Fetch index constituents and return a dictionary mapping symbol -> index name."""
         result = self.fetch_all()
         return dict(result)
+
+
+def normalize_index_code(name: str) -> str:
+    """Normalize human-readable index name to canonical code (e.g. 'NIFTY 100' -> 'NIFTY_100')."""
+    return name.strip().upper().replace(" ", "_")
+
+
+def snapshot_index_constituents(
+    session: Session,
+    per_index: dict[str, set[str]],
+    as_of_date: date | None = None,
+) -> dict[str, int]:
+    """Snapshot current index constituents into index_membership table.
+
+    Sets valid_to = as_of_date for removed constituents and inserts new ones
+    with valid_from = as_of_date and valid_to = NULL.
+
+    Returns:
+        dict with counts of added and retired memberships.
+    """
+    if as_of_date is None:
+        as_of_date = date.today()
+
+    added_count = 0
+    retired_count = 0
+
+    for raw_name, symbols in per_index.items():
+        code = normalize_index_code(raw_name)
+
+        # Query currently active members (valid_to is NULL)
+        stmt = select(IndexMembership).where(
+            and_(
+                IndexMembership.index_code == code,
+                IndexMembership.valid_to.is_(None),
+            )
+        )
+        active_members = session.scalars(stmt).all()
+        active_symbol_map = {m.symbol: m for m in active_members}
+
+        # 1. Retire members no longer in current index constituents
+        for sym, member in active_symbol_map.items():
+            if sym not in symbols:
+                member.valid_to = as_of_date
+                retired_count += 1
+
+        # 2. Insert new members
+        for sym in symbols:
+            if sym not in active_symbol_map:
+                new_member = IndexMembership(
+                    symbol=sym,
+                    index_code=code,
+                    valid_from=as_of_date,
+                    valid_to=None,
+                )
+                session.add(new_member)
+                added_count += 1
+
+    session.flush()
+    logger.info(
+        "Index constituent snapshot complete (date=%s): +%d added, -%d retired",
+        as_of_date,
+        added_count,
+        retired_count,
+    )
+    return {"added": added_count, "retired": retired_count}
+
+
+def get_index_constituents(
+    index_code: str,
+    on_date: date | None = None,
+    session: Session | None = None,
+) -> list[str]:
+    """Query active constituent tickers for an index code on a given date.
+
+    Args:
+        index_code: Normalized or display code (e.g. 'NIFTY_100' or 'NIFTY 100')
+        on_date: Target date to check membership for (defaults to today)
+        session: Optional SQLAlchemy session. If not provided, acquires one from pool.
+
+    Returns:
+        Sorted list of active ticker symbols.
+    """
+    code = normalize_index_code(index_code)
+    target_date = on_date or date.today()
+
+    def _query(s: Session) -> list[str]:
+        stmt = (
+            select(IndexMembership.symbol)
+            .where(
+                and_(
+                    IndexMembership.index_code == code,
+                    IndexMembership.valid_from <= target_date,
+                    or_(
+                        IndexMembership.valid_to.is_(None),
+                        IndexMembership.valid_to > target_date,
+                    ),
+                )
+            )
+            .order_by(IndexMembership.symbol)
+        )
+        return list(s.scalars(stmt).all())
+
+    if session is not None:
+        return _query(session)
+
+    try:
+        with get_db() as s:
+            return _query(s)
+    except Exception as exc:
+        logger.warning(
+            "Could not query index_membership for %s on %s: %s",
+            index_code,
+            target_date,
+            exc,
+        )
+        return []

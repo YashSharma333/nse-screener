@@ -1,11 +1,11 @@
-import os
 from pathlib import Path
+
 
 def create_project_structure():
     """Generates the production directory tree and files for the NSE screener."""
-    
+
     base_dir = Path.cwd()
-    
+
     directories = [
         "config",
         "data/raw",
@@ -16,9 +16,9 @@ def create_project_structure():
         "src/computation",
         "ui/components",
         "ui/pages",
-        "tests"
+        "tests",
     ]
-    
+
     files = [
         "config/settings.py",
         "src/__init__.py",
@@ -37,7 +37,7 @@ def create_project_structure():
         ".env.example",
         ".gitignore",
         "Dockerfile",
-        "requirements.txt"
+        "requirements.txt",
     ]
 
     print("Initializing project structure...")
@@ -53,6 +53,7 @@ def create_project_structure():
         print(f"Created file: {file_path}")
 
     print("\nProject scaffolding complete. You are ready to build.")
+
 
 if __name__ == "__main__":
     create_project_structure()

@@ -107,11 +107,11 @@ CREATE INDEX ix_daily_prices_index_name ON daily_prices (index_name);
 
 ---
 
-## 📐 Trading Strategies & Screening Rules
+## 📐 Quantitative Screeners
 
-The screener includes two pre-built swing trading strategies:
+The project includes two pre-built quantitative swing screeners:
 
-### Strategy 1: "Swing + Volume"
+### Screener 1: "Swing + Volume"
 Finds stocks in a strong uptrend that are experiencing a fresh surge in trading volume near their 52-week highs.
 
 - **Stock Universe:** Must belong to NIFTY 100, NIFTY Midcap 150, or NIFTY Smallcap 250.
@@ -122,10 +122,10 @@ Finds stocks in a strong uptrend that are experiencing a fresh surge in trading 
 
 ---
 
-### Strategy 2: "Swing With Momentum"
-Builds on Strategy 1 by demanding steady, intermediate price gain while filtering out stocks that have already run up too fast (overheated).
+### Screener 2: "Swing With Momentum"
+Builds on Screener 1 by demanding steady, intermediate price gain while filtering out stocks that have already run up too fast (overheated).
 
-- **Prerequisite:** Must meet all conditions of Strategy 1.
+- **Prerequisite:** Must meet all conditions of Screener 1.
 - **Not Overextended:** 60-day return is 40% or less (avoids buying at the tail end of explosive spikes).
 - **Steady Long-Term Gain:** Positive multi-month gain between 180 and 252 trading days.
 - **Medium-Term Strength:** 120-day return is at least 30%.
@@ -220,7 +220,7 @@ nse-screener/
 ├── src/
 │   ├── computation/
 │   │   ├── indicators.py         # Moving averages, RSI, and return calculations
-│   │   └── screener.py           # Stock screener strategy rules
+│   │   └── screener.py           # Re-export shim for screener rules
 │   ├── db/
 │   │   ├── data_service.py       # Database queries and demo data generation
 │   │   ├── models.py             # SQLAlchemy database tables
@@ -235,7 +235,7 @@ nse-screener/
 │   ├── test_etl.py               # Tests for data downloading and database loading
 │   ├── test_indicators.py        # Tests for indicator math and calculations
 │   ├── test_pipeline.py          # Tests for data models and mappings
-│   ├── test_screener.py          # Tests for screening strategy logic
+│   ├── test_screener.py          # Tests for screening logic
 │   └── test_ui_pages.py          # Tests for Streamlit web pages
 ├── ui/
 │   ├── Dashboard.py              # Main screener dashboard page
@@ -243,10 +243,10 @@ nse-screener/
 │   │   ├── stock_inspector.py    # Candlestick chart and technical indicators view
 │   │   └── terminal_styles.py    # Dark terminal theme and sidebar navigation styling
 │   └── pages/
-│       ├── 2_swing_volume.py     # Strategy page: Swing + Volume
-│       └── 3_swing_momentum.py   # Strategy page: Swing With Momentum
+│       ├── 2_swing_volume.py     # Screener page: Swing + Volume
+│       └── 3_swing_momentum.py   # Screener page: Swing With Momentum
 ├── PROJECT_GUIDE.md              # Detailed architecture and code guide
-├── pytest.ini                    # Test runner configuration
+├── pyproject.toml                # Project configuration, ruff & pytest-cov settings
 ├── requirements.txt              # Project Python dependencies
 ├── run_pipeline.py               # CLI tool to run the data pipeline
 └── README.md                     # Project documentation

@@ -140,8 +140,8 @@ This is the **first thing imported** by every other module. It does two things:
 **1. Defines path constants:**
 ```python
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # /nse-screener/
-LOGS_DIR     = PROJECT_ROOT / "logs"
-LOG_FILE     = LOGS_DIR / "screener.log"
+LOGS_DIR = PROJECT_ROOT / "logs"
+LOG_FILE = LOGS_DIR / "screener.log"
 ```
 
 **2. Defines `setup_logging()`:**
@@ -190,18 +190,20 @@ A second table `technical_indicators` is defined in models.py but is a **placeho
 `src/db/models.py` defines ORM models using **SQLAlchemy 2.x declarative syntax**:
 
 ```python
-class Base(DeclarativeBase): pass
+class Base(DeclarativeBase):
+    pass
+
 
 class DailyPrice(Base):
     __tablename__ = "daily_prices"
-    id         = Column(BigInteger, primary_key=True, autoincrement=True)
-    symbol     = Column(String(20), nullable=False, index=True)
-    date       = Column(Date, nullable=False, index=True)
-    open       = Column(Numeric(10, 2))
-    high       = Column(Numeric(10, 2))
-    low        = Column(Numeric(10, 2))
-    close      = Column(Numeric(10, 2))
-    volume     = Column(BigInteger)
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    open = Column(Numeric(10, 2))
+    high = Column(Numeric(10, 2))
+    low = Column(Numeric(10, 2))
+    close = Column(Numeric(10, 2))
+    volume = Column(BigInteger)
     index_name = Column(String(50), index=True)
     __table_args__ = (UniqueConstraint("symbol", "date", name="uq_symbol_date"),)
 ```
@@ -218,19 +220,21 @@ This issues `CREATE TABLE IF NOT EXISTS` for every model — **idempotent, safe 
 
 ```python
 # session.py — runs at import time
-load_dotenv(PROJECT_ROOT / ".env")   # reads MYSQL_USER, PASSWORD, HOST, PORT, DB
+load_dotenv(PROJECT_ROOT / ".env")  # reads MYSQL_USER, PASSWORD, HOST, PORT, DB
 
 DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
 
 try:
-    engine = create_engine(DATABASE_URL,
-        pool_size=10, max_overflow=20,
-        pool_recycle=3600,    # recycle stale connections every hour
-        pool_pre_ping=True,   # test conn before handing it out
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=10,
+        max_overflow=20,
+        pool_recycle=3600,  # recycle stale connections every hour
+        pool_pre_ping=True,  # test conn before handing it out
     )
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 except (ImportError, Exception):
-    engine = None        # pymysql not installed or other startup error
+    engine = None  # pymysql not installed or other startup error
     SessionLocal = None  # DB features gracefully disabled
 ```
 
@@ -321,9 +325,9 @@ NSE Bhavcopy contains ~1900+ listed stocks. The app filters down to the **NIFTY 
 
 ```python
 result = NSEIndexConstituents().fetch_all()
-result.symbols          # {'RELIANCE', 'TCS', 'DIXON', ...}  (~500 total)
-result['RELIANCE']      # → "NIFTY 100"
-result['DIXON']         # → "NIFTY Midcap 150"
+result.symbols  # {'RELIANCE', 'TCS', 'DIXON', ...}  (~500 total)
+result["RELIANCE"]  # → "NIFTY 100"
+result["DIXON"]  # → "NIFTY Midcap 150"
 ```
 
 The ETL uses this as a symbol filter — only rows matching these ~500 symbols are stored in MySQL. This keeps the DB focused and avoids noise from penny stocks and micro-caps.
@@ -338,7 +342,7 @@ The **orchestrator** that ties ingestion → filter → load into one flow.
 
 ```python
 etl = BhavcopyETL()
-etl.run()              # full pipeline
+etl.run()  # full pipeline
 etl.run_incremental()  # UI-triggered lightweight update
 ```
 
@@ -493,9 +497,7 @@ result = TechnicalCalculator.apply_all_indicators(raw_df)
 If `df` has multiple symbols, it **groups by symbol** and processes each independently — critical because rolling calculations must not bleed across different stocks:
 
 ```python
-sorted_df.groupby('symbol', group_keys=False).apply(
-    _apply_with_symbol, include_groups=False
-)
+sorted_df.groupby("symbol", group_keys=False).apply(_apply_with_symbol, include_groups=False)
 ```
 
 **All columns added to the DataFrame:**
@@ -522,7 +524,7 @@ Takes a **snapshot DataFrame** (one row per symbol = latest day) and applies boo
 
 ```python
 screener = StockScreener(snapshot_df)
-results  = screener.strategy_swing_volume()
+results = screener.strategy_swing_volume()
 ```
 
 #### Strategy 1: Swing + Volume
@@ -567,8 +569,8 @@ Rules 8's ratios detect stocks with **sustained 6-12 month growth** that isn't p
 
 **Method aliases (backward compatible):**
 ```python
-strategy_swing_volume()     == liquid_1_5x_volume()   == swing_volume()
-strategy_swing_momentum()   == liquid_1_5x_volume_momentum() == swing_momentum()
+strategy_swing_volume() == liquid_1_5x_volume() == swing_volume()
+strategy_swing_momentum() == liquid_1_5x_volume_momentum() == swing_momentum()
 ```
 
 ---
@@ -616,8 +618,8 @@ Sets up `sys.path` and acts as the Streamlit multi-page router. Streamlit auto-d
 
 **Session state keys:**
 ```python
-st.session_state.etl_status         # {"status": "success"|"offline"|..., "message": ...}
-st.session_state.is_updating_etl    # bool — disables the button while ETL runs
+st.session_state.etl_status  # {"status": "success"|"offline"|..., "message": ...}
+st.session_state.is_updating_etl  # bool — disables the button while ETL runs
 st.session_state.market_data_cache  # {"raw": df, "indicators": df, "snapshot": df, ...}
 ```
 
@@ -634,7 +636,7 @@ return cache
 **`run_incremental_update()`** — triggered by "🔄 Update Latest Market Data" button:
 ```python
 etl = BhavcopyETL()
-result = etl.run_incremental()          # max 5-day lookback
+result = etl.run_incremental()  # max 5-day lookback
 st.session_state.etl_status = result
 st.session_state.market_data_cache = None  # bust cache → fresh reload on next run
 ```
@@ -650,10 +652,10 @@ st.session_state.market_data_cache = None  # bust cache → fresh reload on next
 
 Both share the same session cache as Dashboard (so switching pages doesn't reload data):
 ```python
-data = get_market_data()          # reads session cache
+data = get_market_data()  # reads session cache
 snapshot = data["snapshot"]
 screener = StockScreener(snapshot)
-qualifying = screener.strategy_swing_volume()   # apply filter rules
+qualifying = screener.strategy_swing_volume()  # apply filter rules
 ```
 Display: KPI tiles, qualifying stocks table, CSV export, StockInspector.
 

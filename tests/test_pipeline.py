@@ -1,7 +1,7 @@
 import unittest
-from unittest.mock import patch, MagicMock
-from src.ingestion.index_constituents import ConstituentResult, NSEIndexConstituents
+
 from src.db.models import DailyPrice
+from src.ingestion.index_constituents import ConstituentResult
 from src.screener import StockScreener
 
 
@@ -26,15 +26,16 @@ class TestIngestionAndModels(unittest.TestCase):
 
     def test_daily_price_model_index_name(self):
         self.assertTrue(hasattr(DailyPrice, "index_name"))
-        col = getattr(DailyPrice, "index_name")
+        col = DailyPrice.index_name
         self.assertEqual(col.name, "index_name")
 
     def test_screener_empty_dataframe(self):
         import pandas as pd
+
         empty_df = pd.DataFrame()
         screener = StockScreener(empty_df)
-        self.assertTrue(screener.strategy_liquid_volume().empty)
-        self.assertTrue(screener.strategy_liquid_momentum().empty)
+        self.assertTrue(screener.screen_swing_volume().empty)
+        self.assertTrue(screener.screen_swing_momentum().empty)
 
 
 if __name__ == "__main__":

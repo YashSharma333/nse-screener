@@ -16,30 +16,33 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.settings import setup_logging
+
 setup_logging()
 logger = logging.getLogger("ui.dashboard")
 
-import streamlit as st
+import contextlib
+
 import pandas as pd
+import streamlit as st
 
 from src.db.data_service import (
-    load_raw_market_data,
-    compute_market_indicators,
-    get_latest_market_snapshot,
+    clear_market_data_cache,
+    get_market_data,
 )
 from src.etl.pipeline import BhavcopyETL
-from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 from ui.components.stock_inspector import render_stock_inspector
+from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 
 
 def setup_page_config() -> None:
     # Configure high-resolution widescreen layout for trading terminal
-    st.set_page_config(
-        page_title="Master Dashboard | NSE Trading Terminal",
-        page_icon="📊",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
+    with contextlib.suppress(Exception):
+        st.set_page_config(
+            page_title="Master Dashboard | NSE Trading Terminal",
+            page_icon="📊",
+            layout="wide",
+            initial_sidebar_state="expanded",
+        )
 
 
 def initialize_session_state() -> None:
@@ -47,8 +50,6 @@ def initialize_session_state() -> None:
         st.session_state.etl_status = None
     if "is_updating_etl" not in st.session_state:
         st.session_state.is_updating_etl = False
-    if "market_data_cache" not in st.session_state:
-        st.session_state.market_data_cache = None
 
 
 def run_incremental_update() -> None:
@@ -59,7 +60,7 @@ def run_incremental_update() -> None:
             etl = BhavcopyETL()
             result = etl.run_incremental()
             st.session_state.etl_status = result
-            st.session_state.market_data_cache = None
+            clear_market_data_cache()
     except Exception as exc:
         logger.error("Incremental ETL trigger error: %s", exc, exc_info=True)
         st.session_state.etl_status = {"status": "error", "message": str(exc)}
@@ -67,44 +68,29 @@ def run_incremental_update() -> None:
         st.session_state.is_updating_etl = False
 
 
-def get_market_data():
-    if "market_data_cache" not in st.session_state or st.session_state.market_data_cache is None:
-        raw_df, is_live, status_msg = load_raw_market_data()
-        with_indicators = compute_market_indicators(raw_df)
-        snapshot = get_latest_market_snapshot(with_indicators)
-        st.session_state.market_data_cache = {
-            "raw": raw_df,
-            "indicators": with_indicators,
-            "snapshot": snapshot,
-            "is_live": is_live,
-            "status_msg": status_msg,
-        }
-    return st.session_state.market_data_cache
-
-
 def format_master_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Map raw technical indicator columns to clean presentation names."""
     col_mapping = {
-        'symbol': 'Symbol',
-        'index_name': 'Index Category',
-        'date': 'Date',
-        'close': 'Close',
-        'volume': 'Volume',
-        'pct_change_daily': '% Change Daily',
-        'pct_change_1m': '% Change 1M',
-        'pct_change_3m': '% Change 3M',
-        'pct_change_6m': '% Change 6M',
-        'pct_change_12m': '% Change 12M',
-        'sma_50': 'SMA 50',
-        'sma_200': 'SMA 200',
-        'ema_12': 'EMA 12',
-        'ema_20': 'EMA 20',
-        'ema_26': 'EMA 26',
-        'rsi_14': 'RSI',
+        "symbol": "Symbol",
+        "index_name": "Index Category",
+        "date": "Date",
+        "close": "Close",
+        "volume": "Volume",
+        "pct_change_daily": "% Change Daily",
+        "pct_change_1m": "% Change 1M",
+        "pct_change_3m": "% Change 3M",
+        "pct_change_6m": "% Change 6M",
+        "pct_change_12m": "% Change 12M",
+        "sma_50": "SMA 50",
+        "sma_200": "SMA 200",
+        "ema_12": "EMA 12",
+        "ema_20": "EMA 20",
+        "ema_26": "EMA 26",
+        "rsi_14": "RSI",
     }
 
     formatted = df.copy()
-    existing_cols = [c for c in col_mapping.keys() if c in formatted.columns]
+    existing_cols = [c for c in col_mapping if c in formatted.columns]
     formatted = formatted[existing_cols].rename(columns=col_mapping)
     return formatted
 
@@ -122,12 +108,21 @@ def main() -> None:
         render_terminal_header(
             title="NSE Master Market Screener",
             subtitle="CROSS-SECTIONAL TECHNICAL & QUANTITATIVE SNAPSHOT",
-            status_text="LIVE MYSQL" if is_live else "DEMO MODE",
+            status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
             is_live=is_live,
         )
 
+        st.caption("ℹ️ *Prices are split/bonus adjusted.*")
+
+        if not is_live:
+            st.warning(
+                "⚠️ MySQL database is currently unreachable. "
+                "Please verify that MySQL is running and your `.env` credentials are correct. "
+                "Demo data fallback has been removed."
+            )
+
         # Top Control Bar with Update Trigger
-        col_ctrl1, col_ctrl2 = st.columns([3, 1])
+        _col_ctrl1, col_ctrl2 = st.columns([3, 1])
         with col_ctrl2:
             if st.button(
                 "🔄 Update Latest Market Data",
@@ -149,7 +144,10 @@ def main() -> None:
                 st.error(f"✗ Update failed: {msg}")
 
         if snapshot.empty:
-            st.info("No market data available to display. Please run the ETL pipeline.")
+            st.info(
+                "No market data available yet in database. "
+                "Click 'Update Latest Market Data' above to fetch."
+            )
             return
 
         formatted_df = format_master_dataframe(snapshot)
@@ -157,16 +155,29 @@ def main() -> None:
         # Filters Row
         f1, f2, f3 = st.columns([1.5, 1.5, 3])
         with f1:
-            indices = sorted(formatted_df['Index Category'].dropna().unique().tolist())
+            indices = sorted(formatted_df["Index Category"].dropna().unique().tolist())
             selected_indices = st.multiselect("Index Filter", options=indices, default=indices)
         with f2:
             search_query = st.text_input("Search Symbol", placeholder="e.g. RELIANCE, TCS")
         with f3:
             all_display_cols = list(formatted_df.columns)
             primary_defaults = [
-                'Symbol', 'Index Category', 'Date', 'Close', 'Volume',
-                '% Change Daily', '% Change 1M', '% Change 3M', '% Change 6M', '% Change 12M',
-                'SMA 50', 'SMA 200', 'EMA 12', 'EMA 20', 'EMA 26', 'RSI'
+                "Symbol",
+                "Index Category",
+                "Date",
+                "Close",
+                "Volume",
+                "% Change Daily",
+                "% Change 1M",
+                "% Change 3M",
+                "% Change 6M",
+                "% Change 12M",
+                "SMA 50",
+                "SMA 200",
+                "EMA 12",
+                "EMA 20",
+                "EMA 26",
+                "RSI",
             ]
             valid_defaults = [c for c in primary_defaults if c in all_display_cols]
             selected_cols = st.multiselect(
@@ -178,10 +189,10 @@ def main() -> None:
         # Apply Filters
         filtered_df = formatted_df.copy()
         if selected_indices:
-            filtered_df = filtered_df[filtered_df['Index Category'].isin(selected_indices)]
+            filtered_df = filtered_df[filtered_df["Index Category"].isin(selected_indices)]
         if search_query.strip():
             filtered_df = filtered_df[
-                filtered_df['Symbol'].str.contains(search_query.strip().upper(), na=False)
+                filtered_df["Symbol"].str.contains(search_query.strip().upper(), na=False)
             ]
 
         # Summary KPIs
@@ -189,14 +200,20 @@ def main() -> None:
         with kpi1:
             st.metric("Displayed Equities", len(filtered_df))
         with kpi2:
-            avg_daily_change = filtered_df['% Change Daily'].mean() if '% Change Daily' in filtered_df else 0.0
+            avg_daily_change = (
+                filtered_df["% Change Daily"].mean() if "% Change Daily" in filtered_df else 0.0
+            )
             st.metric("Mean Daily Change", f"{avg_daily_change:+.2f}%")
         with kpi3:
-            advances = (filtered_df['% Change Daily'] > 0).sum() if '% Change Daily' in filtered_df else 0
-            declines = (filtered_df['% Change Daily'] < 0).sum() if '% Change Daily' in filtered_df else 0
+            advances = (
+                (filtered_df["% Change Daily"] > 0).sum() if "% Change Daily" in filtered_df else 0
+            )
+            declines = (
+                (filtered_df["% Change Daily"] < 0).sum() if "% Change Daily" in filtered_df else 0
+            )
             st.metric("Advance / Decline", f"{advances} / {declines}")
         with kpi4:
-            median_rsi = filtered_df['RSI'].median() if 'RSI' in filtered_df else 0.0
+            median_rsi = filtered_df["RSI"].median() if "RSI" in filtered_df else 0.0
             st.metric("Median 14D RSI", f"{median_rsi:.1f}")
 
         st.markdown("---")
@@ -245,7 +262,11 @@ def main() -> None:
 
         # Interactive Technical Stock Inspector Drilldown
         indicators_df = data.get("indicators", pd.DataFrame())
-        default_sym = display_view["Symbol"].iloc[0] if not display_view.empty and "Symbol" in display_view.columns else None
+        default_sym = (
+            display_view["Symbol"].iloc[0]
+            if not display_view.empty and "Symbol" in display_view.columns
+            else None
+        )
         render_stock_inspector(indicators_df, default_symbol=default_sym, key_prefix="dash")
 
     except Exception as exc:

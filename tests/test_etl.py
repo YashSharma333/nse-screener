@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -33,11 +33,10 @@ from src.etl.pipeline import BhavcopyETL
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-@pytest.fixture()
+@pytest.fixture
 def etl(tmp_path, monkeypatch):
     """Return a BhavcopyETL with init_db and NSEBhavcopyDownloader mocked out."""
-    with patch("src.etl.pipeline.init_db"), \
-         patch("src.etl.pipeline.NSEBhavcopyDownloader"):
+    with patch("src.etl.pipeline.init_db"), patch("src.etl.pipeline.NSEBhavcopyDownloader"):
         instance = BhavcopyETL(cache_dir=tmp_path / "bhavcopy_cache")
     return instance
 
@@ -63,16 +62,48 @@ def _sample_stock_rows() -> dict[str, list[dict]]:
     d2 = date(2024, 6, 11)
     return {
         "RELIANCE": [
-            {"symbol": "RELIANCE", "date": d1, "open": 2900.0, "high": 2950.0,
-             "low": 2880.0, "close": 2930.0, "volume": 500_000, "index_name": "NIFTY 100"},
-            {"symbol": "RELIANCE", "date": d2, "open": 2930.0, "high": 2970.0,
-             "low": 2910.0, "close": 2960.0, "volume": 520_000, "index_name": "NIFTY 100"},
+            {
+                "symbol": "RELIANCE",
+                "date": d1,
+                "open": 2900.0,
+                "high": 2950.0,
+                "low": 2880.0,
+                "close": 2930.0,
+                "volume": 500_000,
+                "index_name": "NIFTY 100",
+            },
+            {
+                "symbol": "RELIANCE",
+                "date": d2,
+                "open": 2930.0,
+                "high": 2970.0,
+                "low": 2910.0,
+                "close": 2960.0,
+                "volume": 520_000,
+                "index_name": "NIFTY 100",
+            },
         ],
         "INFY": [
-            {"symbol": "INFY", "date": d1, "open": 1400.0, "high": 1430.0,
-             "low": 1390.0, "close": 1420.0, "volume": 300_000, "index_name": "NIFTY 100"},
-            {"symbol": "INFY", "date": d2, "open": 1420.0, "high": 1450.0,
-             "low": 1410.0, "close": 1440.0, "volume": 310_000, "index_name": "NIFTY 100"},
+            {
+                "symbol": "INFY",
+                "date": d1,
+                "open": 1400.0,
+                "high": 1430.0,
+                "low": 1390.0,
+                "close": 1420.0,
+                "volume": 300_000,
+                "index_name": "NIFTY 100",
+            },
+            {
+                "symbol": "INFY",
+                "date": d2,
+                "open": 1420.0,
+                "high": 1450.0,
+                "low": 1410.0,
+                "close": 1440.0,
+                "volume": 310_000,
+                "index_name": "NIFTY 100",
+            },
         ],
     }
 
@@ -112,8 +143,8 @@ class TestLoadToDbHappyPath:
         stock_rows = _sample_stock_rows()
 
         with patch("src.etl.pipeline.get_db", get_db_ctx):
-            s1, f1 = etl.load_to_db(stock_rows)
-            s2, f2 = etl.load_to_db(stock_rows)
+            _s1, f1 = etl.load_to_db(stock_rows)
+            _s2, f2 = etl.load_to_db(stock_rows)
 
         assert f1 == [] and f2 == []
         # execute called once per load_to_db call (2 total)
@@ -165,7 +196,7 @@ class TestCollectNewRowsHolidays:
         etl._downloader.download_bhavcopy.return_value = None
         # One weekday range
         start = date(2024, 6, 10)  # Monday
-        end   = date(2024, 6, 10)
+        end = date(2024, 6, 10)
         result = etl.collect_new_rows(start, end)
         assert result == {}
 
@@ -173,7 +204,7 @@ class TestCollectNewRowsHolidays:
         """download_bhavcopy returning an empty DataFrame must yield zero rows."""
         etl._downloader.download_bhavcopy.return_value = pd.DataFrame()
         start = date(2024, 6, 10)
-        end   = date(2024, 6, 10)
+        end = date(2024, 6, 10)
         result = etl.collect_new_rows(start, end)
         assert result == {}
 
@@ -181,7 +212,7 @@ class TestCollectNewRowsHolidays:
         """Exception in download_bhavcopy must be caught; loop continues."""
         etl._downloader.download_bhavcopy.side_effect = ConnectionError("timeout")
         start = date(2024, 6, 10)
-        end   = date(2024, 6, 14)  # Mon–Fri = 5 weekdays
+        end = date(2024, 6, 14)  # Mon–Fri = 5 weekdays
         result = etl.collect_new_rows(start, end)
         assert result == {}
         # All 5 weekdays attempted despite exception
@@ -192,18 +223,19 @@ class TestCollectNewRowsHolidays:
         bhavcopy = pd.DataFrame(
             {
                 "Symbol": ["RELIANCE", "INFY", "TCS"],
-                "Open":   [2900.0, 1400.0, 3500.0],
-                "High":   [2950.0, 1430.0, 3550.0],
-                "Low":    [2880.0, 1390.0, 3480.0],
-                "Close":  [2930.0, 1420.0, 3520.0],
+                "Open": [2900.0, 1400.0, 3500.0],
+                "High": [2950.0, 1430.0, 3550.0],
+                "Low": [2880.0, 1390.0, 3480.0],
+                "Close": [2930.0, 1420.0, 3520.0],
                 "Volume": [500_000, 300_000, 200_000],
             }
         )
         etl._downloader.download_bhavcopy.return_value = bhavcopy
         start = date(2024, 6, 10)
-        end   = date(2024, 6, 10)
+        end = date(2024, 6, 10)
         result = etl.collect_new_rows(
-            start, end,
+            start,
+            end,
             symbol_filter={"RELIANCE", "INFY"},
             symbol_index_map={"RELIANCE": "NIFTY 100", "INFY": "NIFTY 100"},
         )
@@ -242,13 +274,14 @@ class TestResolveDateRange:
 
     def test_db_exception_falls_back_to_first_run(self, etl):
         """If the DB connection raises, resolve_date_range falls back gracefully."""
+
         @contextmanager
         def _get_db_raises():
             raise ConnectionError("cannot connect")
             yield  # unreachable, but required for generator syntax
 
         with patch("src.etl.pipeline.get_db", _get_db_raises):
-            start, end, is_update = etl.resolve_date_range()
+            start, _end, is_update = etl.resolve_date_range()
 
         assert is_update is False
         assert start == date.today() - timedelta(days=etl.initial_days_back)
@@ -307,9 +340,11 @@ class TestResolveDateRange:
             session.execute.return_value = result
             yield session
 
-        with patch("src.etl.pipeline.get_db", _get_db_current), \
-             patch("src.etl.pipeline.check_connection", return_value=True), \
-             patch.object(etl, "collect_new_rows") as mock_collect:
+        with (
+            patch("src.etl.pipeline.get_db", _get_db_current),
+            patch("src.etl.pipeline.check_connection", return_value=True),
+            patch.object(etl, "collect_new_rows") as mock_collect,
+        ):
             res = etl.run_incremental()
             assert res["status"] == "up_to_date"
             mock_collect.assert_not_called()
@@ -335,23 +370,91 @@ class TestResolveDateRange:
     def test_init_db_graceful_on_operational_error(self):
         """init_db must log a warning and return gracefully when the DB is offline."""
         from src.db.session import init_db
-        with patch("src.db.session.Base.metadata.create_all", side_effect=Exception("Connection refused")):
+
+        with patch(
+            "src.db.session.Base.metadata.create_all", side_effect=Exception("Connection refused")
+        ):
             # Must not raise
             init_db()
 
     def test_run_incremental_returns_offline_when_db_unreachable(self, etl, tmp_path):
         """When MySQL is unreachable but parquet cache is current, run_incremental
         must return status='offline' rather than 'error' or 'success'."""
-        today = date.today()
+        date.today()
 
         @contextmanager
         def _get_db_raises():
             raise Exception("Can't connect to MySQL server (2003)")
             yield
 
-        with patch("src.etl.pipeline.get_db", _get_db_raises), \
-             patch("src.etl.pipeline.check_connection", return_value=False):
+        with (
+            patch("src.etl.pipeline.get_db", _get_db_raises),
+            patch("src.etl.pipeline.check_connection", return_value=False),
+        ):
             res = etl.run_incremental()
 
         assert res["status"] in ("offline", "up_to_date")
         assert res.get("symbols_updated", 0) == 0
+
+    def test_downloader_parse_preserves_prev_close(self):
+        """Downloader._parse must extract and preserve PrevClose column for both formats."""
+        from src.ingestion.downloader import NSEBhavcopyDownloader
+
+        # 1. New CSV format
+        new_csv = (
+            b"SYMBOL, SERIES, DATE1, PREV_CLOSE, OPEN_PRICE, HIGH_PRICE, "
+            b"LOW_PRICE, CLOSE_PRICE, TTL_TRD_QNTY\n"
+            b"RELIANCE, EQ, 25-Oct-2024, 2680.00, 2685.00, 2700.00, 2670.00, 2690.00, 100000\n"
+        )
+        df_new = NSEBhavcopyDownloader._parse(new_csv, fmt="new")
+        assert df_new is not None
+        assert "PrevClose" in df_new.columns
+        assert df_new.iloc[0]["PrevClose"] == 2680.00
+
+        # 2. Historical ZIP format
+        import io
+        import zipfile
+
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as zf:
+            zip_content = (
+                "SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY\n"
+                "TCS,EQ,3400.0,3450.0,3390.0,3420.0,3420.0,3380.0,50000\n"
+            )
+            zf.writestr("cm25OCT2018bhav.csv", zip_content)
+
+        df_zip = NSEBhavcopyDownloader._parse(zip_buf.getvalue(), fmt="zip")
+        assert df_zip is not None
+        assert "PrevClose" in df_zip.columns
+        assert df_zip.iloc[0]["PrevClose"] == 3380.0
+
+    def test_cache_miss_on_legacy_schema(self, tmp_path):
+        """Reading a cache file without PrevClose must trigger cache miss."""
+        from src.ingestion.downloader import NSEBhavcopyDownloader
+
+        d = date(2024, 1, 15)
+        cache_file = tmp_path / f"{d.isoformat()}.parquet"
+        # Old schema without PrevClose
+        legacy_df = pd.DataFrame(
+            {
+                "Symbol": ["INFY"],
+                "Open": [1500.0],
+                "High": [1520.0],
+                "Low": [1490.0],
+                "Close": [1510.0],
+                "Volume": [10000],
+            }
+        )
+        legacy_df.to_parquet(cache_file, index=False)
+
+        downloader = NSEBhavcopyDownloader()
+        with (
+            patch("src.ingestion.downloader.CACHE_DIR", tmp_path),
+            patch.object(downloader, "get_session") as mock_session,
+        ):
+            # Session returns 404 so download_bhavcopy returns None instead of legacy_df
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            mock_session.return_value.get.return_value = mock_resp
+            result = downloader.download_bhavcopy(d)
+            assert result is None

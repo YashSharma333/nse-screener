@@ -9,8 +9,8 @@ and RSI oscillator telemetry.
 from __future__ import annotations
 
 import pandas as pd
-import streamlit as st
 import plotly.graph_objects as go
+import streamlit as st
 from plotly.subplots import make_subplots
 
 
@@ -40,7 +40,7 @@ def render_stock_inspector(
             options=all_symbols,
             index=default_idx,
             key=f"{key_prefix}_stock_select",
-            help="Choose an equity to inspect candlestick action, moving average stacks, volume, and RSI.",
+            help="Choose an equity to inspect candlestick action, MAs, volume, and RSI.",
         )
     with col_lookback:
         lookback_days = st.selectbox(
@@ -130,7 +130,7 @@ def render_stock_inspector(
                 x=stock_df["date"],
                 y=stock_df["ema_20"],
                 name="EMA 20",
-                line=dict(color="#00f0ff", width=1.5),
+                line={"color": "#00f0ff", "width": 1.5},
             ),
             row=1,
             col=1,
@@ -141,7 +141,7 @@ def render_stock_inspector(
                 x=stock_df["date"],
                 y=stock_df["sma_50"],
                 name="SMA 50",
-                line=dict(color="#fbbf24", width=1.5),
+                line={"color": "#fbbf24", "width": 1.5},
             ),
             row=1,
             col=1,
@@ -152,7 +152,7 @@ def render_stock_inspector(
                 x=stock_df["date"],
                 y=stock_df["sma_200"],
                 name="SMA 200",
-                line=dict(color="#a855f7", width=1.5),
+                line={"color": "#a855f7", "width": 1.5},
             ),
             row=1,
             col=1,
@@ -161,7 +161,7 @@ def render_stock_inspector(
     # 2. Volume Bars
     vol_colors = [
         "#10b981" if c >= o else "#f43f5e"
-        for c, o in zip(stock_df["close"], stock_df["open"])
+        for c, o in zip(stock_df["close"], stock_df["open"], strict=False)
     ]
     fig.add_trace(
         go.Bar(
@@ -179,7 +179,7 @@ def render_stock_inspector(
                 x=stock_df["date"],
                 y=stock_df["volume_sma_20"],
                 name="Vol SMA 20",
-                line=dict(color="#f59e0b", width=1.5),
+                line={"color": "#f59e0b", "width": 1.5},
             ),
             row=2,
             col=1,
@@ -192,7 +192,7 @@ def render_stock_inspector(
                 x=stock_df["date"],
                 y=stock_df["rsi_14"],
                 name="RSI (14)",
-                line=dict(color="#38bdf8", width=1.5),
+                line={"color": "#38bdf8", "width": 1.5},
             ),
             row=3,
             col=1,
@@ -204,16 +204,16 @@ def render_stock_inspector(
     fig.update_layout(
         template="plotly_dark",
         height=620,
-        margin=dict(l=30, r=30, t=40, b=20),
+        margin={"l": 30, "r": 30, "t": 40, "b": 20},
         xaxis_rangeslider_visible=False,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(size=10),
-        ),
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "right",
+            "x": 1,
+            "font": {"size": 10},
+        },
         paper_bgcolor="#0b0f17",
         plot_bgcolor="#0e1422",
     )
