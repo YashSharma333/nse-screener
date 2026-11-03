@@ -60,3 +60,20 @@ RELIANCE, EQ, 25-Oct-2024, 2680.00, 2682.00, 2715.00, 2670.00, 2695.00, 2697.50,
 ```csv
 20MICRONS,EQ,39,39.95,38.65,39.1,39.15,39.8,23830,930979.3,25-OCT-2018,271,INE144J01027,
 ```
+
+---
+
+## 3. Historical Verification & URL Availability Empirics
+
+Live HTTP archive probes across distinct epochs (tested against NSE official archives):
+
+| Year Tested | Sample Date | New Format (`sec_bhavdata_full_...`) | Historical Zip Format (`cm...bhav.csv.zip`) | Parsed Columns Normalization |
+|---|---|---|---|---|
+| **2022** | 2022-06-10 | **200 OK** | **200 OK** | Both formats parsed into standard OHLCV |
+| **2019** | 2019-06-10 | **404 Not Found** | **200 OK** | Zip format parsed into standard OHLCV |
+| **2016** | 2016-06-10 | **404 Not Found** | **200 OK** | Zip format parsed into standard OHLCV |
+
+### Backfill & `--days-back` Recommendations
+- For historical runs going back up to **10+ years (~3650 days)**, the pipeline automatically falls back from the new CSV format to the historical ZIP format.
+- `downloader._parse()` seamlessly normalizes `OPEN_PRICE` / `OPEN`, `PREV_CLOSE` / `PREVCLOSE`, and `TTL_TRD_QNTY` / `TOTTRDQTY`.
+- When requesting older years (e.g. `--days-back 3650`), the system processes missing dates in 100-day chunks, records holidays in `non_trading_days.json`, and safely persists chunks incrementally.

@@ -48,6 +48,17 @@ def main() -> None:
         help="Run incremental update for recent days only instead of full backfill",
     )
     parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Backfill missing historical dates within --days-back window in bounded chunks",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=100,
+        help="Number of candidate days per backfill chunk (default: 100)",
+    )
+    parser.add_argument(
         "--lookback",
         type=int,
         default=5,
@@ -108,6 +119,22 @@ def main() -> None:
                 res.get("status"),
                 res.get("message"),
                 res.get("symbols_updated", 0),
+            )
+        elif args.backfill:
+            logger.info(
+                "Executing backwards backfill mode (days_back=%d, chunk_size=%d)...",
+                args.days_back,
+                args.chunk_size,
+            )
+            success, failed = etl.run_backfill(
+                days_back=args.days_back,
+                chunk_days=args.chunk_size,
+                skip_constituent_filter=args.skip_constituents,
+            )
+            logger.info(
+                "Backfill completed. Loaded: %d symbols, Failed: %d symbols.",
+                len(success),
+                len(failed),
             )
         else:
             success, failed = etl.run(skip_constituent_filter=args.skip_constituents)

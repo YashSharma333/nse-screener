@@ -18,17 +18,18 @@ repeated downloads for the same date are instant.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import date, timedelta
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from config.settings import PROJECT_ROOT, setup_logging
 from src.db.models import DailyPrice
 from src.db.session import check_connection, get_db, init_db
+from src.db.upsert import upsert_rows
 from src.etl.adjust import rebuild_adjusted
 from src.ingestion.benchmark import load_benchmarks
 from src.ingestion.downloader import NSEBhavcopyDownloader
@@ -83,11 +84,64 @@ class BhavcopyETL:
         if isinstance(self.cache_dir, Path):
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+        target_cache = self.cache_dir if self.cache_dir is not None else RAW_DIR / "bhavcopy_cache"
+        self.non_trading_path = target_cache / "non_trading_days.json"
+
         # Ensure DB tables exist if MySQL is reachable
         try:
             init_db()
         except Exception as exc:
             logger.warning("Database init_db skipped during ETL setup: %s", exc)
+
+    def get_non_trading_days(self) -> set[date]:
+        """Load confirmed non-trading dates (holidays, 404s) from JSON cache."""
+        if not self.non_trading_path.exists():
+            return set()
+        try:
+            raw = json.loads(self.non_trading_path.read_text(encoding="utf-8"))
+            return {date.fromisoformat(d) for d in raw}
+        except Exception as exc:
+            logger.warning("Could not read non_trading_days.json: %s", exc)
+            return set()
+
+    def record_non_trading_days(self, dates: set[date] | list[date]) -> None:
+        """Atomically persist confirmed non-trading dates to JSON cache."""
+        if not dates:
+            return
+        existing = self.get_non_trading_days()
+        merged = existing.union(dates)
+        iso_list = sorted(d.isoformat() for d in merged)
+        tmp_path = self.non_trading_path.with_suffix(".json.tmp")
+        try:
+            self.non_trading_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(iso_list, indent=2), encoding="utf-8")
+            tmp_path.replace(self.non_trading_path)
+        except Exception as exc:
+            logger.warning("Could not write non_trading_days.json: %s", exc)
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+
+    def get_stored_dates(self) -> set[date]:
+        """Retrieve distinct dates already stored in daily_prices."""
+        query = text("SELECT DISTINCT date FROM daily_prices")
+        try:
+            with get_db() as session:
+                rows = session.execute(query).fetchall()
+                result: set[date] = set()
+                for r in rows:
+                    if not r or not r[0]:
+                        continue
+                    val = r[0]
+                    if isinstance(val, date):
+                        result.add(val)
+                    elif isinstance(val, str):
+                        result.add(date.fromisoformat(val[:10]))
+                    else:
+                        result.add(date.fromisoformat(str(val)[:10]))
+                return result
+        except Exception as exc:
+            logger.warning("Could not fetch stored dates from daily_prices: %s", exc)
+            return set()
 
     # ------------------------------------------------------------------
     # Step 1 — Resolve date range (MySQL-backed)
@@ -246,6 +300,7 @@ class BhavcopyETL:
 
             if df is None or df.empty:
                 logger.debug("  [%3d/%d]  %s  — holiday / weekend / 404", idx, total, d)
+                self.record_non_trading_days([d])
                 time.sleep(0.05)
                 continue
 
@@ -255,7 +310,8 @@ class BhavcopyETL:
             if symbol_filter is not None:
                 df = df[df["Symbol"].isin(symbol_filter)]
 
-            for _, row in df.iterrows():
+            records = df.to_dict("records")
+            for row in records:
                 sym = row["Symbol"]
                 if sym not in stock_rows:
                     stock_rows[sym] = []
@@ -281,7 +337,7 @@ class BhavcopyETL:
         return stock_rows
 
     # ------------------------------------------------------------------
-    # Step 3 — Load to MySQL (upsert)
+    # Step 3 — Load to DB (upsert)
     # ------------------------------------------------------------------
     def load_to_db(
         self,
@@ -289,8 +345,8 @@ class BhavcopyETL:
     ) -> tuple[list[str], list[str]]:
         """Batch-insert rows into ``daily_prices`` with upsert semantics.
 
-        Uses MySQL's ``INSERT … ON DUPLICATE KEY UPDATE`` via the
-        SQLAlchemy MySQL dialect so re-runs never violate the
+        Uses dialect-agnostic upsert (MySQL ON DUPLICATE KEY UPDATE,
+        SQLite ON CONFLICT DO UPDATE) so re-runs never violate the
         ``(symbol, date)`` unique constraint.
 
         Returns
@@ -301,7 +357,7 @@ class BhavcopyETL:
         failed: list[str] = []
         total_inserted = 0
 
-        logger.info("Loading data into MySQL (daily_prices) …")
+        logger.info("Loading data into DB (daily_prices) …")
 
         if not stock_rows:
             logger.warning("No rows to load.")
@@ -311,19 +367,8 @@ class BhavcopyETL:
         logger.info("  Total rows to upsert: %d across %d symbols", total_rows, len(stock_rows))
 
         def _upsert_batch(session, batch: list[dict]) -> None:
-            """Execute a single INSERT … ON DUPLICATE KEY UPDATE batch."""
-            stmt = mysql_insert(DailyPrice).values(batch)
-            session.execute(
-                stmt.on_duplicate_key_update(
-                    open=stmt.inserted.open,
-                    high=stmt.inserted.high,
-                    low=stmt.inserted.low,
-                    close=stmt.inserted.close,
-                    prev_close=stmt.inserted.prev_close,
-                    volume=stmt.inserted.volume,
-                    index_name=stmt.inserted.index_name,
-                )
-            )
+            """Execute a single dialect-agnostic upsert batch."""
+            upsert_rows(session, DailyPrice, batch, index_elements=["symbol", "date"])
 
         # --- Fast path: commit all symbols in one transaction ---
         all_rows: list[dict] = [r for rows in stock_rows.values() for r in rows]
@@ -389,8 +434,22 @@ class BhavcopyETL:
         symbol_filter: set[str] | None = None,
         symbol_index_map: dict[str, str] | None = None,
         skip_constituent_filter: bool = False,
+        backfill: bool = False,
+        chunk_days: int = 100,
     ) -> tuple[list[str], list[str]]:
-        """Execute the full ETL pipeline."""
+        """Execute the ETL pipeline.
+
+        If `backfill=True`, executes backwards backfill mode scanning missing
+        historical dates in chunked batches. Otherwise executes standard update.
+        """
+        if backfill:
+            return self.run_backfill(
+                chunk_days=chunk_days,
+                symbol_filter=symbol_filter,
+                symbol_index_map=symbol_index_map,
+                skip_constituent_filter=skip_constituent_filter,
+            )
+
         # 1. Decide the date window first (queries MySQL & local cache)
         fetch_start, fetch_end, is_update = self.resolve_date_range()
 
@@ -500,6 +559,188 @@ class BhavcopyETL:
         logger.info("=" * 62)
 
         return success, failed
+
+    def run_backfill(
+        self,
+        days_back: int | None = None,
+        chunk_days: int = 100,
+        as_of_date: date | None = None,
+        symbol_filter: set[str] | None = None,
+        symbol_index_map: dict[str, str] | None = None,
+        skip_constituent_filter: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        """Backwards historical backfill in bounded chunks.
+
+        Computes all candidate weekdays in [today - days_back, today],
+        subtracts dates already stored in daily_prices and dates confirmed
+        as non-trading (holidays/404), and downloads missing dates in chunks of
+        `chunk_days`. After each chunk, rows are committed to the DB, ensuring
+        bounded memory and safe resumes on failure.
+
+        Post-backfill hooks (rebuild_adjusted, load_benchmarks, refresh_indicator_cache)
+        are executed once at the end of the entire backfill.
+        """
+        lookback = days_back if days_back is not None else self.initial_days_back
+        today = as_of_date or date.today()
+        start = today - timedelta(days=lookback)
+
+        logger.info(
+            "Initializing backwards backfill (lookback=%d days, chunk_days=%d)",
+            lookback,
+            chunk_days,
+        )
+
+        all_weekdays = list(self._weekdays(start, today))
+        stored_dates = self.get_stored_dates()
+        non_trading_days = self.get_non_trading_days()
+
+        missing_dates = sorted(
+            [d for d in all_weekdays if d not in stored_dates and d not in non_trading_days]
+        )
+
+        logger.info(
+            "Backfill scan: %d total weekdays in window (%s -> %s). "
+            "Already stored: %d, Known non-trading: %d, Missing to download: %d.",
+            len(all_weekdays),
+            start,
+            today,
+            len(stored_dates),
+            len(non_trading_days),
+            len(missing_dates),
+        )
+
+        if not missing_dates:
+            logger.info(
+                "All dates in range are already stored or known non-trading. Nothing to backfill."
+            )
+            return [], []
+
+        if symbol_filter is not None:
+            idx_map = symbol_index_map or {}
+        elif skip_constituent_filter:
+            symbol_filter = None
+            idx_map = {}
+        else:
+            try:
+                fetcher = NSEIndexConstituents()
+                result = fetcher.fetch_all()
+                symbol_filter = result.symbols
+                idx_map = dict(result)
+                try:
+                    with get_db() as session:
+                        snapshot_index_constituents(session, result.per_index, as_of_date=today)
+                except Exception as snap_exc:
+                    logger.warning("Could not snapshot index constituents: %s", snap_exc)
+            except Exception as exc:
+                logger.warning(
+                    "Could not fetch index constituents (%s) - proceeding with all symbols", exc
+                )
+                symbol_filter = None
+                idx_map = {}
+
+        all_success_symbols: set[str] = set()
+        all_failed_symbols: set[str] = set()
+        all_loaded_dates: set[date] = set()
+
+        total_chunks = (len(missing_dates) + chunk_days - 1) // chunk_days
+
+        for chunk_idx in range(total_chunks):
+            chunk_slice = missing_dates[chunk_idx * chunk_days : (chunk_idx + 1) * chunk_days]
+            logger.info(
+                "--- Processing Backfill Chunk %d / %d (%d dates: %s -> %s) ---",
+                chunk_idx + 1,
+                total_chunks,
+                len(chunk_slice),
+                chunk_slice[0],
+                chunk_slice[-1],
+            )
+
+            chunk_stock_rows: dict[str, list[dict]] = {}
+            chunk_non_trading: set[date] = set()
+
+            for d in chunk_slice:
+                try:
+                    df = self._downloader.download_bhavcopy(d)
+                except Exception as dl_exc:
+                    logger.error(
+                        "Download failed for %s (network/error): %s - will retry on next run",
+                        d,
+                        dl_exc,
+                    )
+                    continue
+
+                if df is None or df.empty:
+                    logger.debug("%s is a confirmed holiday / non-trading date", d)
+                    chunk_non_trading.add(d)
+                    time.sleep(0.05)
+                    continue
+
+                all_loaded_dates.add(d)
+
+                if symbol_filter is not None:
+                    df = df[df["Symbol"].isin(symbol_filter)]
+
+                records = df.to_dict("records")
+                for row in records:
+                    sym = row["Symbol"]
+                    if sym not in chunk_stock_rows:
+                        chunk_stock_rows[sym] = []
+                    idx_name = idx_map.get(sym)
+                    chunk_stock_rows[sym].append(
+                        {
+                            "symbol": sym,
+                            "date": d,
+                            "open": row.get("Open"),
+                            "high": row.get("High"),
+                            "low": row.get("Low"),
+                            "close": row.get("Close"),
+                            "prev_close": row.get("PrevClose"),
+                            "volume": row.get("Volume"),
+                            "index_name": idx_name,
+                        }
+                    )
+                time.sleep(self.download_delay)
+
+            if chunk_non_trading:
+                self.record_non_trading_days(chunk_non_trading)
+
+            if chunk_stock_rows:
+                success, failed = self.load_to_db(chunk_stock_rows)
+                all_success_symbols.update(success)
+                all_failed_symbols.update(failed)
+                logger.info(
+                    "✓ Chunk %d/%d committed: %d symbols loaded (%d rows)",
+                    chunk_idx + 1,
+                    total_chunks,
+                    len(success),
+                    sum(len(v) for v in chunk_stock_rows.values()),
+                )
+
+        if all_loaded_dates and all_success_symbols:
+            logger.info("Executing post-backfill rebuilds...")
+            try:
+                rebuild_adjusted()
+            except Exception as adj_exc:
+                logger.warning("Could not rebuild adjusted prices: %s", adj_exc)
+
+            try:
+                load_benchmarks(sorted(all_loaded_dates))
+            except Exception as b_exc:
+                logger.warning("Could not load benchmarks: %s", b_exc)
+
+            try:
+                from src.db.data_service import load_indicator_snapshot
+
+                load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+            except Exception as cache_exc:
+                logger.warning("Could not refresh indicator cache: %s", cache_exc)
+
+        logger.info(
+            "Backfill completed: %d total symbols loaded across %d new trading dates.",
+            len(all_success_symbols),
+            len(all_loaded_dates),
+        )
+        return sorted(all_success_symbols), sorted(all_failed_symbols)
 
     def run_incremental(self, lookback_days: int = 5) -> dict:
         """Incremental update trigger: fetches only the most recent Bhavcopy data.

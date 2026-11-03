@@ -25,10 +25,10 @@ logger = logging.getLogger("ui.swing_volume")
 import numpy as np
 import streamlit as st
 
-from src.db.data_service import get_market_data
 from src.screener import StockScreener
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
+from ui.data import get_market_data, render_uninitialized_prompt
 
 
 def setup_page_config() -> None:
@@ -62,7 +62,7 @@ def main() -> None:
         st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
         if snapshot.empty:
-            st.info("No market data available yet in database. Please run the ETL pipeline.")
+            render_uninitialized_prompt()
             return
 
         # Compact Filter Chips Ribbon (Zero Verbose Essay)

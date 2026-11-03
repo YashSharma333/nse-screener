@@ -25,13 +25,10 @@ import contextlib
 import pandas as pd
 import streamlit as st
 
-from src.db.data_service import (
-    clear_market_data_cache,
-    get_market_data,
-)
 from src.etl.pipeline import BhavcopyETL
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
+from ui.data import get_market_data, render_uninitialized_prompt
 
 
 def setup_page_config() -> None:
@@ -60,7 +57,6 @@ def run_incremental_update() -> None:
             etl = BhavcopyETL()
             result = etl.run_incremental()
             st.session_state.etl_status = result
-            clear_market_data_cache()
     except Exception as exc:
         logger.error("Incremental ETL trigger error: %s", exc, exc_info=True)
         st.session_state.etl_status = {"status": "error", "message": str(exc)}
@@ -144,10 +140,7 @@ def main() -> None:
                 st.error(f"✗ Update failed: {msg}")
 
         if snapshot.empty:
-            st.info(
-                "No market data available yet in database. "
-                "Click 'Update Latest Market Data' above to fetch."
-            )
+            render_uninitialized_prompt()
             return
 
         formatted_df = format_master_dataframe(snapshot)
