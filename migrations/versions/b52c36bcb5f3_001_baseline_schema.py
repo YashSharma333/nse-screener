@@ -76,5 +76,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("technical_indicators")
-    op.drop_table("daily_prices")
+    # Never drop price data in production or downgrade; recreate the schema explicitly if needed.
+    pass

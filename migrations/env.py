@@ -29,6 +29,12 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
+    # Prioritize explicitly configured SQLAlchemy URL or DATABASE_URL
+    ini_url = config.get_main_option("sqlalchemy.url")
+    if ini_url and not ini_url.startswith("mysql://user:pass@localhost/dbname"):
+        return ini_url
+    if db_url := os.getenv("DATABASE_URL"):
+        return db_url
     user = os.getenv("MYSQL_USER", "root")
     password = os.getenv("MYSQL_PASSWORD", "")
     host = os.getenv("MYSQL_HOST", "localhost")
