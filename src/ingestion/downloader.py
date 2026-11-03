@@ -256,14 +256,17 @@ class NSEBhavcopyDownloader:
                 cache_path.unlink(missing_ok=True)
 
         session = self.get_session()
+        last_network_exc: requests.RequestException | None = None
 
         for fmt, url in [("new", self._url_new(d)), ("zip", self._url_zip(d))]:
+            format_network_exc: requests.RequestException | None = None
             for attempt in range(1, self.max_retries + 1):
                 try:
                     resp = session.get(url, timeout=self.request_timeout)
 
                     if resp.status_code == 404:
                         logger.debug("%s %s → 404 (not available)", d, fmt)
+                        format_network_exc = None
                         break  # try next format
 
                     if resp.status_code == 403:
@@ -304,15 +307,18 @@ class NSEBhavcopyDownloader:
                         return df
 
                     # Empty parse result — no point retrying the same format
+                    format_network_exc = None
                     break
 
-                except requests.exceptions.Timeout:
+                except requests.exceptions.Timeout as exc:
                     logger.warning("%s %s attempt %d timed out", d, fmt, attempt)
+                    format_network_exc = exc
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
 
                 except requests.RequestException as exc:
                     logger.warning("%s %s attempt %d failed: %s", d, fmt, attempt, exc)
+                    format_network_exc = exc
                     if attempt < self.max_retries:
                         time.sleep(self.retry_wait)
 
@@ -324,6 +330,7 @@ class NSEBhavcopyDownloader:
                         fmt,
                         exc,
                     )
+                    format_network_exc = None
                     break
 
                 except Exception as exc:
@@ -334,8 +341,16 @@ class NSEBhavcopyDownloader:
                         exc,
                         exc_info=True,
                     )
+                    format_network_exc = None
                     break
 
-        # Neither format yielded data — likely a holiday
+            if format_network_exc is not None:
+                last_network_exc = format_network_exc
+
+        if last_network_exc is not None:
+            # Propagate network failures so caller never misinterprets them as holidays
+            raise last_network_exc
+
+        # Neither format yielded data — clean 404 or empty archive (likely a holiday)
         logger.debug("%s — no Bhavcopy available (holiday / weekend)", d)
         return None
