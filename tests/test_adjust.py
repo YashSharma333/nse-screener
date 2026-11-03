@@ -3,8 +3,16 @@
 from datetime import date, timedelta
 
 import pandas as pd
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
-from src.etl.adjust import cumulative_factors, detect_events
+from src.db.models import AdjFactor, Base, DailyPrice
+from src.etl.adjust import (
+    adjust_new_rows,
+    cumulative_factors,
+    detect_events,
+    rebuild_adjusted,
+)
 
 
 def _build_series(
@@ -115,3 +123,187 @@ def test_seed_a_false_split_after_missing_day():
     events = detect_events(df)
     assert len(events) == 0
 
+
+def test_cross_sectional_guard_market_wide_missing_day():
+    """If >15% of active symbols show an event on the same date, guard skips all events."""
+    d1 = date(2024, 1, 2)
+    d2 = date(2024, 1, 3)
+    symbols = [f"SYM{i}" for i in range(10)]
+    records = []
+    # 3 symbols show a ratio of 0.90 (30% > 15% threshold)
+    for i, s in enumerate(symbols):
+        records.append({"symbol": s, "date": d1, "close": 100.0, "prev_close": 100.0})
+        prev_c = 90.0 if i < 3 else 100.0
+        records.append({"symbol": s, "date": d2, "close": 95.0, "prev_close": prev_c})
+
+    df = pd.DataFrame(records)
+    events = detect_events(df)
+    # Market-wide data glitch on d2 is skipped
+    assert events.empty
+
+
+def test_first_row_ignored():
+    """First row of symbol has no prior close so ratio cannot be formed."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["XYZ"],
+            "date": [date(2024, 1, 1)],
+            "close": [100.0],
+            "prev_close": [50.0],  # 50 vs 100 but no prior row
+        }
+    )
+    events = detect_events(df)
+    assert events.empty
+
+
+def test_sqlite_rebuild_adjusted_and_stale_removal():
+    """Test full adjusted price rebuild, SQLite upsert, and stale event deletion."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    d1 = date(2024, 1, 1)
+    d2 = date(2024, 1, 2)
+    d3 = date(2024, 1, 3)
+
+    with Session(engine) as session:
+        # Pre-insert a stale event for RELIANCE on d1
+        session.add(AdjFactor(symbol="RELIANCE", date=d1, factor=0.5, ratio_kind="material"))
+        # Insert raw daily prices: RELIANCE has 1:2 split on d2 (close=2000, next prev_close=1000)
+        prices = [
+            DailyPrice(
+                symbol="RELIANCE",
+                date=d1,
+                open=2000.0,
+                high=2050.0,
+                low=1950.0,
+                close=2000.0,
+                prev_close=2000.0,
+                volume=10000,
+            ),
+            DailyPrice(
+                symbol="RELIANCE",
+                date=d2,
+                open=1000.0,
+                high=1050.0,
+                low=980.0,
+                close=1020.0,
+                prev_close=1000.0,
+                volume=20000,
+            ),
+            DailyPrice(
+                symbol="RELIANCE",
+                date=d3,
+                open=1020.0,
+                high=1040.0,
+                low=1010.0,
+                close=1030.0,
+                prev_close=1020.0,
+                volume=15000,
+            ),
+            DailyPrice(
+                symbol="TCS",
+                date=d1,
+                open=3500.0,
+                high=3550.0,
+                low=3480.0,
+                close=3500.0,
+                prev_close=3500.0,
+                volume=5000,
+            ),
+            DailyPrice(
+                symbol="TCS",
+                date=d2,
+                open=3510.0,
+                high=3560.0,
+                low=3490.0,
+                close=3520.0,
+                prev_close=3500.0,
+                volume=6000,
+            ),
+        ]
+        session.add_all(prices)
+        session.commit()
+
+        # Rebuild adjusted prices
+        updated = rebuild_adjusted(session=session)
+        session.commit()
+        assert updated == 5
+
+        # Verify stale event on d1 was removed and newly detected event on d2 was added
+        stored_factors = session.scalars(select(AdjFactor).order_by(AdjFactor.date)).all()
+        assert len(stored_factors) == 1
+        assert stored_factors[0].symbol == "RELIANCE"
+        assert stored_factors[0].date == d2
+        assert float(stored_factors[0].factor) == 0.5
+
+        # Verify adjusted prices for RELIANCE
+        rel_d1 = session.scalars(
+            select(DailyPrice).where(DailyPrice.symbol == "RELIANCE", DailyPrice.date == d1)
+        ).one()
+        assert float(rel_d1.adj_close) == 1000.0  # 2000 * 0.5
+        assert rel_d1.adj_volume == 20000  # 10000 / 0.5
+
+        rel_d2 = session.scalars(
+            select(DailyPrice).where(DailyPrice.symbol == "RELIANCE", DailyPrice.date == d2)
+        ).one()
+        assert float(rel_d2.adj_close) == 1020.0  # Factor after event is 1.0
+
+        # Verify TCS had no event so adj_close == close
+        tcs_d1 = session.scalars(
+            select(DailyPrice).where(DailyPrice.symbol == "TCS", DailyPrice.date == d1)
+        ).one()
+        assert float(tcs_d1.adj_close) == 3500.0
+
+        # Idempotency: second rebuild produces identical state
+        updated_2 = rebuild_adjusted(session=session)
+        session.commit()
+        assert updated_2 == 5
+
+
+def test_sqlite_adjust_new_rows_incremental():
+    """Test adjust_new_rows: fills adj_* = raw when no event, rebuilds when new event."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    d1 = date(2024, 1, 1)
+    d2 = date(2024, 1, 2)
+
+    with Session(engine) as session:
+        # 1. Normal trading day with no event
+        new_df = pd.DataFrame(
+            [
+                {
+                    "symbol": "INFY",
+                    "date": d1,
+                    "open": 1500.0,
+                    "high": 1520.0,
+                    "low": 1490.0,
+                    "close": 1510.0,
+                    "prev_close": 1500.0,
+                    "volume": 50000,
+                },
+                {
+                    "symbol": "INFY",
+                    "date": d2,
+                    "open": 1515.0,
+                    "high": 1530.0,
+                    "low": 1505.0,
+                    "close": 1525.0,
+                    "prev_close": 1510.0,
+                    "volume": 60000,
+                },
+            ]
+        )
+        for r in new_df.to_dict("records"):
+            session.add(DailyPrice(**r))
+        session.commit()
+
+        # Adjust new rows
+        count = adjust_new_rows(new_df, session=session)
+        session.commit()
+        assert count == 2
+
+        infy_d1 = session.scalars(
+            select(DailyPrice).where(DailyPrice.symbol == "INFY", DailyPrice.date == d1)
+        ).one()
+        assert float(infy_d1.adj_close) == 1510.0
