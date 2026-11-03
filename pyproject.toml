@@ -18,6 +18,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "-q --cov=src --cov-report=term-missing"
+addopts = "-q --cov=src --cov-report=term-missing --cov-fail-under=70"
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
 
 
