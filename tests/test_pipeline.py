@@ -2,7 +2,7 @@ import unittest
 
 from src.db.models import DailyPrice
 from src.ingestion.index_constituents import ConstituentResult
-from src.screener import StockScreener
+from src.screeners import SwingMomentumScreener, SwingVolumeScreener
 
 
 class TestIngestionAndModels(unittest.TestCase):
@@ -33,9 +33,8 @@ class TestIngestionAndModels(unittest.TestCase):
         import pandas as pd
 
         empty_df = pd.DataFrame()
-        screener = StockScreener(empty_df)
-        self.assertTrue(screener.screen_swing_volume().empty)
-        self.assertTrue(screener.screen_swing_momentum().empty)
+        self.assertTrue(SwingVolumeScreener().run(empty_df).empty)
+        self.assertTrue(SwingMomentumScreener().run(empty_df).empty)
 
 
 if __name__ == "__main__":
