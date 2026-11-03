@@ -401,3 +401,56 @@ def test_seed_c_relative_strength_misaligned():
             f"Symbol {sym} expected {n - 63} non-null rs_63d, got {len(valid_rs)}"
         )
 
+
+def test_relative_strength_flat_and_falling_benchmark():
+    """F4: Verify relative performance formula behaves properly when benchmark is flat or falling.
+
+    Formula: (close / close.shift(N)) / (bench / bench.shift(N)) - 1
+    0.10 means 10% outperformance.
+    """
+    n = 70
+    dates = pd.date_range(end="2024-06-30", periods=n, freq="B").date
+
+    # Case 1: Benchmark is flat (20000 -> 20000, ratio=1.0)
+    flat_bench = pd.DataFrame({"date": dates, "close": 20000.0})
+    # Stock gained 10% (100 -> 110)
+    stock_df = pd.DataFrame(
+        {
+            "date": dates,
+            "open": 100.0,
+            "high": 110.0,
+            "low": 95.0,
+            "close": [100.0 if i < 63 else 110.0 for i in range(n)],
+            "volume": 300_000.0,
+        }
+    )
+    res_flat = TechnicalCalculator.apply_all_indicators(stock_df, benchmark_df=flat_bench)
+    # stock ratio = 110 / 100 = 1.10. Bench ratio = 1.0. RS = 1.10 / 1.0 - 1 = 0.10
+    rs_val = res_flat["rs_63d"].iloc[-1]
+    assert abs(rs_val - 0.10) < 1e-4
+
+    # Case 2: Benchmark fell 5% (ratio = 0.95), stock remained flat at 100.0 (ratio = 1.0)
+    falling_bench = pd.DataFrame(
+        {
+            "date": dates,
+            "close": [20000.0 if i < 63 else 19000.0 for i in range(n)],
+        }
+    )
+    flat_stock_df = pd.DataFrame(
+        {
+            "date": dates,
+            "open": 100.0,
+            "high": 105.0,
+            "low": 95.0,
+            "close": 100.0,
+            "volume": 300_000.0,
+        }
+    )
+    res_falling = TechnicalCalculator.apply_all_indicators(
+        flat_stock_df, benchmark_df=falling_bench
+    )
+    # Stock ratio on day 63 was 1.0 (flat). Bench ratio = 0.95. RS = 1.0 / 0.95 - 1 = +0.05263
+    # Stock outperformed falling benchmark -> positive RS!
+    rs_falling_val = res_falling["rs_63d"].iloc[63]
+    assert rs_falling_val > 0
+    assert abs(rs_falling_val - (1.0 / 0.95 - 1.0)) < 1e-4
