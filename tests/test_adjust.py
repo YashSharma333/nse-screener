@@ -95,3 +95,23 @@ def test_cumulative_factors_two_events():
     # On or after event 2 (day 20 onward): factor = 1.0
     assert abs(cum_factors[20] - 1.0) < 1e-4
     assert abs(cum_factors[29] - 1.0) < 1e-4
+
+
+def test_seed_a_false_split_after_missing_day():
+    """Seed A: A single missing day in DB causes prev_close/close_{t-1} to look like a split.
+
+    Dates: 2024-01-02, 03, 05, 08 (2024-01-04 is missing).
+    Raw closes: 100, 104, 98, 99. Prev closes: 99, 100, 101, 98.
+    Expected: no event detected.
+    """
+    df = pd.DataFrame(
+        {
+            "symbol": ["ABC", "ABC", "ABC", "ABC"],
+            "date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 5), date(2024, 1, 8)],
+            "close": [100.0, 104.0, 98.0, 99.0],
+            "prev_close": [99.0, 100.0, 101.0, 98.0],
+        }
+    )
+    events = detect_events(df)
+    assert len(events) == 0
+

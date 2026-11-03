@@ -357,3 +357,47 @@ class TestApplyAllIndicators:
         # Check that SYM2's first row doesn't evaluate crossovers using SYM1's last row
         sym2_first_idx = res[res["symbol"] == "SYM2"].index[0]
         assert not res.loc[sym2_first_idx, "golden_cross"]
+
+
+def test_seed_c_relative_strength_misaligned():
+    """Seed C: Three symbols concatenated with default RangeIndex plus a benchmark frame.
+
+    apply_all_indicators(df, benchmark_df=b) gives non-null rs_63d only for the first
+    symbol; the others are all NaN due to index misalignment when merging.
+    Expected: every symbol has non-null rs_63d values after the 63-day lookback.
+    """
+    n = 100
+    dates = pd.date_range(end="2024-06-30", periods=n, freq="B").date
+    bench_df = pd.DataFrame(
+        {
+            "date": dates,
+            "close": [20000.0 + i * 10.0 for i in range(n)],
+        }
+    )
+
+    frames = []
+    for sym in ["SYM1", "SYM2", "SYM3"]:
+        sub = pd.DataFrame(
+            {
+                "date": dates,
+                "symbol": sym,
+                "open": 100.0,
+                "high": 105.0,
+                "low": 95.0,
+                "close": [100.0 + float(i) for i in range(n)],
+                "volume": 300_000.0,
+            }
+        )
+        frames.append(sub)
+
+    combined = pd.concat(frames, ignore_index=True)
+    res = TechnicalCalculator.apply_all_indicators(combined, benchmark_df=bench_df)
+
+    for sym in ["SYM1", "SYM2", "SYM3"]:
+        sym_res = res[res["symbol"] == sym]
+        valid_rs = sym_res["rs_63d"].dropna()
+        assert not valid_rs.empty, f"Symbol {sym} has all NaN rs_63d!"
+        assert len(valid_rs) == n - 63, (
+            f"Symbol {sym} expected {n - 63} non-null rs_63d, got {len(valid_rs)}"
+        )
+

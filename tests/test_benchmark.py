@@ -48,3 +48,40 @@ def test_nse_index_source_handles_404_gracefully():
     d = date(2024, 10, 26)
     prices = source.fetch_prices(d)
     assert prices is None
+
+
+def test_seed_b_benchmark_code_mismatch():
+    """Seed B: Benchmark rows stored as 'NIFTY 500' but queried as 'NIFTY_500'.
+
+    Expected: returns the benchmark rows, but currently returns 0 rows due to
+    string replacement of space with underscore in data_service.py.
+    """
+    from unittest.mock import patch
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from src.db.models import Base, BenchmarkPrice
+    from src.db.data_service import get_benchmark_returns
+
+    sqlite_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(sqlite_engine)
+
+    with Session(sqlite_engine) as session:
+        session.add(
+            BenchmarkPrice(
+                index_code="NIFTY 500",
+                date=date(2024, 1, 1),
+                close=22000.0,
+                source="NSE",
+            )
+        )
+        session.commit()
+
+    with patch("src.db.data_service.engine", sqlite_engine), patch(
+        "src.db.data_service.check_connection", return_value=True
+    ):
+        df = get_benchmark_returns("NIFTY_500")
+
+    assert not df.empty
+    assert len(df) == 1
+    assert df.iloc[0]["close"] == 22000.0
+
