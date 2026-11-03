@@ -4,11 +4,12 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.31+-FF4B4B.svg)](https://streamlit.io/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1.svg)](https://www.mysql.com/)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00.svg)](https://www.sqlalchemy.org/)
+[![Alembic](https://img.shields.io/badge/Alembic-1.13+-red.svg)](https://alembic.sqlalchemy.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A clean, fast, and automated stock screener and market terminal for stocks on the **National Stock Exchange of India (NSE)**.
 
-The system automatically downloads official daily NSE Bhavcopy market reports, saves clean price history into a MySQL database, calculates key technical indicators like moving averages and momentum metrics, and displays filtered stock setups on a modern, dark-themed **Streamlit** web terminal.
+The system automatically downloads official daily NSE Bhavcopy market reports, saves clean price history into a MySQL database with corporate action adjustments (splits/bonuses), calculates modular technical indicators (grouped by price, volume, crossovers, and momentum), and displays filtered stock setups on a modern, dark-themed **Streamlit** web terminal.
 
 ---
 
@@ -18,15 +19,16 @@ When scanning and analyzing Indian equities, traders and investors frequently ru
 
 1. **Penny Stock Clutter & Low Liquidity:** There are over 2,000 listed stocks on the NSE. Scanning all of them includes illiquid, micro-cap stocks with unpredictable swings and execution risks.
 2. **Fragile NSE Downloads:** Downloading daily reports directly from the exchange often breaks because of network timeouts, rate limits, or missing trading holiday data.
-3. **Messy & Duplicate Data:** Daily price files must be loaded cleanly without creating duplicate records or slowing down database queries.
+3. **Corporate Actions Distorting Technicals:** Stock splits and bonus issues create artificial price drops on unadjusted charts, triggering false breakdown signals and invalidating moving averages.
 4. **Time-Consuming Manual Scanning:** Finding stocks that have strong uptrends, unusual volume surges, and healthy price momentum usually requires manually checking hundreds of charts each day.
 
 **NSE Screener** automates the entire process:
 - **Filters the Top 500 Quality Stocks:** Strictly tracks constituents of **NIFTY 100**, **NIFTY Midcap 150**, and **NIFTY Smallcap 250**.
 - **Smart & Reliable Downloader:** Downloads daily Bhavcopies with browser session handling, retries, and local file caching so you never download the same day twice.
-- **Clean Database Storage:** Stores OHLCV prices in MySQL 8.0 with automatic deduplication using composite keys `(symbol, date)`.
-- **Calculates 35+ Technical Indicators:** Computes moving averages (SMA 20/50/200, EMA 20), RSI, 52-week rolling highs, and multi-period percentage returns (1D, 1M, 3M, 6M, 12M) per stock.
-- **Interactive Web Terminal:** Displays ready-to-trade swing setups, customizable tables, and multi-panel candlestick charts.
+- **Corporate Action Split/Bonus Adjustments:** Detects splits/bonuses using official NSE previous closes and continuously computes split-adjusted prices (`adj_open`, `adj_high`, `adj_low`, `adj_close`).
+- **Benchmark Ingestion:** Ingests official NSE index benchmarks (`NIFTY 50`, `NIFTY 500`, etc.) and aligns stock performance against the broader market.
+- **Calculates 35+ Domain-Grouped Indicators:** Computes moving averages (SMA, EMA), Bollinger Bands, RSI, MACD, Volume ratios, 52-week rolling highs, and relative strength vs NIFTY 500.
+- **Interactive Web Terminal:** Displays ready-to-trade swing setups, customizable tables, and multi-panel candlestick charts with decoupled, high-performance caching.
 
 ---
 
@@ -37,18 +39,25 @@ The project follows a simple, robust pipeline:
 ```mermaid
 flowchart LR
     A["NSE Portal\n(Daily Bhavcopy Reports)"] --> B["Python Downloader\n(Automatic Retries & Cache)"]
-    B --> C["Local Cache\n(data/raw/)"]
-    C --> D["MySQL Database\n(daily_prices Table)"]
-    D --> E["Indicator Engine\n(MAs, RSI, Momentum)"]
-    E --> F["Streamlit Dashboard\n(Filters, Tables & Charts)"]
+    B --> C["Local Parquet Cache\n(data/raw/)"]
+    C --> D["Database Engine\n(daily_prices Table)"]
+    D --> E["Adjustment Engine\n(Corporate Actions)"]
+    E --> F["Benchmark Engine\n(NIFTY 500 / Indices)"]
+    F --> G["Indicator Engine\n(Price, Vol, Cross, Mom)"]
+    G --> H["Streamlit Dashboard\n(Filters, Tables & Charts)"]
 ```
 
 ### Key Workflow Highlights
-- **Smart Downloader (`src/ingestion/`):** Connects to the NSE portal using browser-like headers, handles session cookies, and retries automatically on network errors.
-- **Local File Cache (`data/raw/`):** Converts raw daily files to Apache Parquet format. If you run the pipeline again, it reads from cache instead of downloading again.
-- **Safe Database Loader (`src/etl/pipeline.py`):** Loads rows in batches of 1,000 using MySQL's `INSERT ... ON DUPLICATE KEY UPDATE`. It safely skips or updates already-stored dates.
-- **Indicator Calculations (`src/computation/indicators.py`):** Computes indicators grouped strictly by stock symbol to avoid mixing data across different companies.
-- **Interactive UI (`ui/`):** Built with Streamlit, featuring a dark Bloomberg-style theme, responsive navigation cards, and interactive Plotly candlestick charts.
+- **Smart Downloader (`src/ingestion/downloader.py`):** Connects to the NSE portal using browser-like headers, handles session cookies, and falls back across new and historical archive formats. Detailed column specifications are documented in [docs/bhavcopy_columns.md](docs/bhavcopy_columns.md).
+- **Benchmark Indices (`src/ingestion/benchmark.py`):** Downloads and normalizes official NSE index files with canonical codes detailed in [docs/index_files.md](docs/index_files.md).
+- **Safe Database Loader (`src/etl/pipeline.py`):** Loads rows in bounded chunks using dialect-agnostic upserts (`INSERT ... ON DUPLICATE KEY UPDATE` on MySQL, `ON CONFLICT DO UPDATE` on SQLite).
+- **Corporate Action Adjustments (`src/etl/adjust.py`):** Detects splits and bonus issues, enforces cross-sectional sanity checks, and vectorizes cumulative factor adjustments.
+- **Indicators Grouped by Nature (`src/computation/indicators/`):**
+  - `price.py`: SMA, EMA, WMA, Bollinger Bands, ATR, 52-week High/Low, rolling volatility.
+  - `volume.py`: Volume SMAs, volume expansion ratios, dry-up volume tests.
+  - `crossovers.py`: Golden Cross, Death Cross, MACD crossovers.
+  - `momentum.py`: RSI, MACD histogram, Relative Strength vs benchmark, cross-sectional percentile rankings.
+- **High-Performance UI (`ui/data.py`):** Uses Streamlit caching with multi-factor cache tokens tied to Parquet mtime and metadata sidecar hashes.
 
 ---
 
@@ -57,61 +66,34 @@ flowchart LR
 | Component | Technologies Used | What It Does |
 | :--- | :--- | :--- |
 | **Language** | Python 3.11+ | Main programming language for scripts, calculations, and the UI. |
-| **Data Processing** | Pandas, NumPy, PyArrow | Fast data cleaning, rolling window calculations, and Parquet caching. |
-| **Database** | MySQL 8.0, PyMySQL | Stores daily stock prices, trading volumes, and index categories. |
-| **Database Layer** | SQLAlchemy 2.0 | Manages database connections, tables, and upsert operations. |
+| **Data Processing** | Pandas, NumPy, PyArrow | Fast data cleaning, vectorised rolling calculations, and Parquet caching. |
+| **Database** | MySQL 8.0, PyMySQL, SQLite | Stores daily stock prices, trading volumes, and index categories. |
+| **Database Layer** | SQLAlchemy 2.0, Alembic | Manages schema migrations, connection pooling, and dialect-agnostic upserts. |
 | **Web Dashboard** | Streamlit, Plotly | Interactive terminal with dark mode, custom filters, and candlestick charts. |
 | **Networking** | Requests | Downloads market reports with session cookies and retry handlers. |
-| **Testing** | Pytest | Automated test suite verifying data logic, indicators, and UI pages. |
+| **Testing & Quality** | Pytest, Ruff | Automated test suite verifying data logic, indicators, and UI pages. |
 
 ---
 
-## 🗄️ Database Design & Setup
+## 🗄️ Database Migrations with Alembic
 
-### Table Structure (`daily_prices`)
-
-The primary table stores daily OHLCV (Open, High, Low, Close, Volume) data for each stock:
-
-```sql
-CREATE TABLE daily_prices (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    date DATE NOT NULL,
-    open NUMERIC(10, 2),
-    high NUMERIC(10, 2),
-    low NUMERIC(10, 2),
-    close NUMERIC(10, 2),
-    volume BIGINT,
-    index_name VARCHAR(50),
-    CONSTRAINT uq_symbol_date UNIQUE (symbol, date),
-    INDEX ix_daily_prices_symbol (symbol),
-    INDEX ix_daily_prices_date (date),
-    INDEX ix_daily_prices_index_name (index_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-```
-
-### Adding `index_name` to Existing Databases
-
-If you have an existing database without the `index_name` column, run the migration script:
+The database schema is fully managed with **Alembic**.
 
 ```bash
-# Automated Python migration
-python scripts/migrate_add_index_name.py
-```
+# Apply all pending migrations to current HEAD
+alembic upgrade head
 
-Or apply raw SQL directly:
-```sql
-ALTER TABLE daily_prices ADD COLUMN index_name VARCHAR(50) NULL;
-CREATE INDEX ix_daily_prices_index_name ON daily_prices (index_name);
+# Inspect current revision status
+alembic current
 ```
 
 ---
 
 ## 📐 Quantitative Screeners
 
-The project includes two pre-built quantitative swing screeners:
+The project features a modular screener framework with pre-built screens:
 
-### Screener 1: "Swing + Volume"
+### Screener: "Swing + Volume"
 Finds stocks in a strong uptrend that are experiencing a fresh surge in trading volume near their 52-week highs.
 
 - **Stock Universe:** Must belong to NIFTY 100, NIFTY Midcap 150, or NIFTY Smallcap 250.
@@ -122,10 +104,10 @@ Finds stocks in a strong uptrend that are experiencing a fresh surge in trading 
 
 ---
 
-### Screener 2: "Swing With Momentum"
-Builds on Screener 1 by demanding steady, intermediate price gain while filtering out stocks that have already run up too fast (overheated).
+### Screener: "Swing With Momentum"
+Builds on Swing + Volume by demanding steady, intermediate price gain while filtering out stocks that have already run up too fast (overheated).
 
-- **Prerequisite:** Must meet all conditions of Screener 1.
+- **Prerequisite:** Must meet all conditions of Swing + Volume.
 - **Not Overextended:** 60-day return is 40% or less (avoids buying at the tail end of explosive spikes).
 - **Steady Long-Term Gain:** Positive multi-month gain between 180 and 252 trading days.
 - **Medium-Term Strength:** 120-day return is at least 30%.
@@ -148,7 +130,7 @@ source .venv/bin/activate
 
 # Install required packages
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 ### 2. Set Up Environment Variables
@@ -165,40 +147,52 @@ MYSQL_PASSWORD=your_password
 MYSQL_DB=nse_screener
 ```
 
-### 3. Initialize the Database
-Ensure your MySQL server is running, then run the database setup script:
+### 3. Initialize the Database Schema
+Ensure your MySQL server is running, then run Alembic migrations:
 ```bash
-.venv/bin/python scripts/migrate_add_index_name.py
+alembic upgrade head
 ```
 
-### 4. Download Market Data
-Run the data pipeline to fetch historical market data:
+### 4. Ingest Market Data via CLI
+
 ```bash
-# Fetch latest days incrementally (fastest)
-.venv/bin/python run_pipeline.py --incremental
+# Incremental update: fetch recent trading sessions (fastest)
+python run_pipeline.py --incremental
 
-# Download full historical data (e.g., past 3 years)
-.venv/bin/python run_pipeline.py
+# Backfill historical data in chunked batches (e.g. past 365 days)
+python run_pipeline.py --backfill --days-back 365
 
-# Download past 365 days
-.venv/bin/python run_pipeline.py --days-back 365
+# Full historical backfill (default 1100 days, ~3 years)
+python run_pipeline.py --backfill
+
+# Recompute corporate actions (splits/bonuses) and update database
+python run_pipeline.py --rebuild-adjusted
+
+# Download and ingest benchmark index prices standalone
+python run_pipeline.py --benchmarks
+
+# Rebuild indicators Parquet cache without re-downloading
+python run_pipeline.py --refresh-cache
 ```
 
 ### 5. Launch the Dashboard
 Start the web dashboard:
 ```bash
-.venv/bin/streamlit run ui/Dashboard.py
+streamlit run ui/Dashboard.py
 ```
 Open [http://localhost:8501](http://localhost:8501) in your web browser.
 
 > [!NOTE]
-> **Built-in Demonstration Mode:** If MySQL is not running or hasn't been set up yet, the dashboard automatically starts in **Demonstration Mode**. It generates sample NIFTY stocks so you can immediately explore the tables, charts, and strategies without any setup hassle.
-> You can also click **"🔄 Update Latest Market Data"** on the dashboard anytime to sync the newest days right from the browser.
+> **Data Availability:** Synthetic demo-mode data was removed in Phase 1; live MySQL or Parquet cache is required to run the application. If your database is empty, the dashboard displays a setup banner with the exact CLI commands to initialize and backfill data.
 
-### 6. Run the Test Suite
-Run the 53 unit and UI integration tests:
+### 6. Run the Test Suite & Linters
 ```bash
-.venv/bin/pytest tests/ -v
+# Run full test suite with coverage
+pytest
+
+# Run linter and formatter check
+ruff check .
+ruff format --check .
 ```
 
 ---
@@ -208,48 +202,49 @@ Run the 53 unit and UI integration tests:
 ```
 nse-screener/
 ├── config/
-│   └── settings.py               # Central logging configuration
+│   └── settings.py               # Central logging and path configuration
 ├── data/
-│   └── raw/bhavcopy_cache/       # Local Parquet cache for downloaded market files
-├── logs/
-│   └── screener.log              # Application logs
-├── scripts/
-│   ├── migration.sql             # SQL script to add index_name column
-│   ├── migrate_add_index_name.py # Python script for database migration
-│   └── update_github_meta.sh     # Script to update GitHub repository description
+│   ├── raw/bhavcopy_cache/       # Local Parquet cache for downloaded market files
+│   └── processed/                # Pre-computed indicator snapshots & sidecars
+├── docs/
+│   ├── bhavcopy_columns.md       # Raw Bhavcopy format specification & historical URL tests
+│   └── index_files.md            # Verified NSE benchmark index codes & URLs
+├── migrations/                   # Alembic database migration revisions
 ├── src/
 │   ├── computation/
-│   │   ├── indicators.py         # Moving averages, RSI, and return calculations
+│   │   ├── indicators/           # Technical indicators grouped by nature:
+│   │   │   ├── price.py          # Price indicators (MAs, BB, ATR, 52W High/Low)
+│   │   │   ├── volume.py         # Volume indicators (Volume SMA, Volume ratio)
+│   │   │   ├── crossovers.py     # Crossover indicators (Golden/Death cross, MACD)
+│   │   │   ├── momentum.py       # Momentum indicators (RSI, RS vs benchmark)
+│   │   │   └── calculator.py     # TechnicalCalculator orchestrator facade
 │   │   └── screener.py           # Re-export shim for screener rules
 │   ├── db/
-│   │   ├── data_service.py       # Database queries and demo data generation
-│   │   ├── models.py             # SQLAlchemy database tables
-│   │   └── session.py            # MySQL database connection pool
+│   │   ├── data_service.py       # Indicator cache loader, sidecar validation & DB queries
+│   │   ├── models.py             # SQLAlchemy models (DailyPrice, AdjFactor, etc.)
+│   │   ├── session.py            # MySQL engine, connection pooling & health checks
+│   │   └── upsert.py             # Dialect-agnostic upsert helper (MySQL & SQLite)
 │   ├── etl/
-│   │   └── pipeline.py           # Ingestion pipeline: downloads, formats, and stores data
+│   │   ├── adjust.py             # Corporate action split/bonus detector & adjuster
+│   │   └── pipeline.py           # Bhavcopy ETL pipeline & backwards chunked backfill
 │   ├── ingestion/
+│   │   ├── benchmark.py          # Benchmark index downloader & loader
 │   │   ├── downloader.py         # NSE Bhavcopy file downloader with retries
-│   │   └── index_constituents.py # NIFTY index stock lists (100, Midcap 150, Smallcap 250)
-│   └── screener.py               # Screener class wrapper
-├── tests/
-│   ├── test_etl.py               # Tests for data downloading and database loading
-│   ├── test_indicators.py        # Tests for indicator math and calculations
-│   ├── test_pipeline.py          # Tests for data models and mappings
-│   ├── test_screener.py          # Tests for screening logic
-│   └── test_ui_pages.py          # Tests for Streamlit web pages
+│   │   └── index_constituents.py # NIFTY constituent fetcher & snapshotter
+│   └── screener.py               # StockScreener implementation
+├── tests/                        # Comprehensive unit & integration tests
 ├── ui/
-│   ├── Dashboard.py              # Main screener dashboard page
-│   ├── components/
-│   │   ├── stock_inspector.py    # Candlestick chart and technical indicators view
-│   │   └── terminal_styles.py    # Dark terminal theme and sidebar navigation styling
+│   ├── app.py                   # Streamlit multipage app router
+│   ├── data.py                  # Streamlit cache wrapper with multi-factor tokens
+│   ├── Dashboard.py             # Main screener dashboard page
+│   ├── components/              # Reusable UI components (terminal header, stock inspector)
 │   └── pages/
-│       ├── 2_swing_volume.py     # Screener page: Swing + Volume
-│       └── 3_swing_momentum.py   # Screener page: Swing With Momentum
-├── PROJECT_GUIDE.md              # Detailed architecture and code guide
-├── pyproject.toml                # Project configuration, ruff & pytest-cov settings
-├── requirements.txt              # Project Python dependencies
-├── run_pipeline.py               # CLI tool to run the data pipeline
-└── README.md                     # Project documentation
+│       ├── 2_swing_volume.py    # Screener page: Swing + Volume
+│       └── 3_swing_momentum.py  # Screener page: Swing With Momentum
+├── pyproject.toml               # Project configuration, ruff & pytest-cov settings
+├── requirements.txt             # Runtime Python dependencies
+├── requirements-dev.txt         # Development & test dependencies
+└── run_pipeline.py              # CLI tool for data ingestion and ETL operations
 ```
 
 ---

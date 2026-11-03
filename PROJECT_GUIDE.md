@@ -1,6 +1,30 @@
 # NSE Screener — Complete Project Guide
 
-> A full-stack quantitative stock screener for NSE equities. Downloads daily price data from NSE, stores it in MySQL, computes technical indicators, and presents it through a Streamlit dashboard with two rule-based trading strategies.
+> A full-stack quantitative stock screener for NSE equities. Downloads daily price data from NSE, stores it in MySQL with split adjustments, computes technical indicators across price, volume, crossovers, and momentum, and presents it through a Streamlit dashboard with rule-based screening strategies.
+
+---
+
+## Roadmap & Phase Status
+
+- **Phase 0: Foundation & Ingestion (T01–T03)** — **DONE**
+  - Robust NSE Bhavcopy downloader with retries, session warmups, and dual URL patterns.
+  - Parquet caching under `data/raw/bhavcopy_cache/`.
+  - NIFTY index constituent scraper and membership tracking.
+- **Phase 1: Persistence & Indicators (T04–T09)** — **DONE**
+  - Database schema & Alembic migration lifecycle (`migrations/versions/`).
+  - Corporate action detector & adjustment engine (`src/etl/adjust.py`).
+  - Official NSE benchmark index ingestion (`src/ingestion/benchmark.py`).
+  - Pre-computed Parquet indicator caching with multi-factor freshness sidecar (`indicators.meta.json`).
+  - Removal of synthetic demo mode in favor of production real-world market feeds.
+- **Phase 2: Screener Platform (T10–T12)** — **IN PROGRESS**
+  - Hardening fixes (F1–F12).
+  - Modular indicator domain packaging by nature (`price`, `volume`, `crossovers`, `momentum`).
+  - Pluggable Screener Registry & Base Class with grouped screening conditions.
+  - Six new systematic screening strategies (Minervini, Breakout 52W, RSI Pullback, VCP Lite, RS Leaders, HMM).
+  - Screener Explorer UI page with near-miss diagnostics and export capabilities.
+
+> [!IMPORTANT]
+> **Data Availability:** Synthetic demo-mode data was removed in Phase 1; live MySQL or Parquet cache is required to run the application. Visiting the UI on an uninitialized database presents a setup callout with exact Alembic and CLI commands.
 
 ---
 
@@ -474,104 +498,62 @@ Returns one of:
 
 ### `src/computation/indicators.py` — `TechnicalCalculator`
 
-A stateless class of `@staticmethod` methods. Each takes a DataFrame and returns a pandas Series.
+## 8. Computation Layer — Indicators & Screener Framework
 
-| Method | Formula | Period |
-|---|---|---|
-| `calculate_sma(df, window)` | `close.rolling(window).mean()` | 50, 200 |
-| `calculate_ema(df, window)` | `close.ewm(span=window).mean()` | 12, 20, 26 |
-| `calculate_rsi(df)` | `100 - 100/(1+RS)` where RS = avg_gain/avg_loss | 14 |
-| `calculate_bollinger_bands(df)` | `mean ± 2*std` | 20 |
-| `calculate_macd(df)` | `EMA(12) - EMA(26)`, signal = `EMA(9)` | 12/26/9 |
-| `calculate_52_week_high(df)` | `high.rolling(252).max()` | 252 |
-| `calculate_52_week_low(df)` | `low.rolling(252).min()` | 252 |
-| `calculate_volatility(df)` | `pct_change().rolling(20).std()` | 20 |
-| `calculate_pct_change(df, periods)` | `close.pct_change(periods) * 100` | 1/21/63/126/252 |
+### `src/computation/indicators/` — Domain Modular Indicators
 
-**`apply_all_indicators(df)`** — Main entry point:
+Indicators are decomposed into dedicated submodules by their mathematical and analytical nature:
 
-```python
-result = TechnicalCalculator.apply_all_indicators(raw_df)
-```
+1. **Price Indicators (`src/computation/indicators/price.py`)**:
+   - `calculate_sma(df, window)` — Simple Moving Average (20, 50, 200).
+   - `calculate_ema(df, window)` — Exponential Moving Average (12, 20, 26).
+   - `calculate_wma(df, window)` — Linearly Weighted Moving Average.
+   - `calculate_bollinger_bands(df, window, num_std)` — Upper, middle, lower Bollinger Bands.
+   - `calculate_atr(df, window)` — Average True Range (volatility).
+   - `calculate_donchian_channels(df, window)` — Upper and lower price channels.
+   - `calculate_52_week_high / low` — 252-day rolling extreme levels.
+   - `calculate_pct_change` — Multi-horizon returns (1D, 1M, 3M, 6M, 12M).
 
-If `df` has multiple symbols, it **groups by symbol** and processes each independently — critical because rolling calculations must not bleed across different stocks:
+2. **Volume Indicators (`src/computation/indicators/volume.py`)**:
+   - `calculate_volume_sma(df, window)` — Moving average of traded volume.
+   - `calculate_volume_ratio(df, window)` — Relative volume expansion ratio (`volume / volume_sma`).
+   - `calculate_volume_dryup(df, window, threshold)` — Institutional contraction flag.
 
-```python
-sorted_df.groupby("symbol", group_keys=False).apply(_apply_with_symbol, include_groups=False)
-```
+3. **Crossover Indicators (`src/computation/indicators/crossovers.py`)**:
+   - `calculate_golden_cross(df, fast, slow)` — Fast MA crossing above Slow MA.
+   - `calculate_death_cross(df, fast, slow)` — Fast MA crossing below Slow MA.
+   - `calculate_macd_crossover(df)` — MACD line crossing signal line.
 
-**All columns added to the DataFrame:**
-```
-sma_50, sma_200
-ema_12, ema_20, ema_26
-volume_sma_20
-rsi_14
-high_52w, low_52w
-high_252d_prev          ← 252-day rolling high, shifted 1 day back
-bb_upper, bb_middle, bb_lower
-macd_line, macd_signal, macd_histogram
-daily_returns, volatility_20
-pct_change_daily, pct_change_1m, pct_change_3m, pct_change_6m, pct_change_12m
-close_60d, close_120d, close_180d, close_252d
-return_60d, return_120d
-```
+4. **Momentum & Relative Strength (`src/computation/indicators/momentum.py`)**:
+   - `calculate_rsi(df, window)` — Relative Strength Index (Wilder's RSI 14).
+   - `calculate_macd(df)` — MACD line, signal line, and histogram.
+   - `calculate_relative_strength(df, benchmark_df, lookback)` — Stock return relative to benchmark return: `(stock_perf / bench_perf) - 1`.
+   - `calculate_cross_sectional_ranks(df, column)` — Percentile rank within the market universe.
+
+5. **Calculator Facade (`src/computation/indicators/calculator.py`)**:
+   - `TechnicalCalculator.apply_all_indicators(df, benchmark_df)`:
+     Processes stock time-series cleanly grouped by symbol without inter-symbol bleed or future data lookahead. Emits schema version 2 with all columns pre-computed.
 
 ---
 
-### `src/screener.py` — `StockScreener`
+### Quantitative Screeners (`src/screener.py` & `src/screeners/`)
 
-Takes a **snapshot DataFrame** (one row per symbol = latest day) and applies boolean masks.
+The screener engine evaluates a snapshot DataFrame (latest day per symbol) using vectorized boolean conditions:
 
-```python
-screener = StockScreener(snapshot_df)
-results = screener.strategy_swing_volume()
-```
+#### Screener 1: Swing + Volume
+Finds institutional volume expansion in strong multi-timeframe uptrends:
+- **Universe:** Tracked NIFTY 100, Midcap 150, or Smallcap 250 equities.
+- **Trend Alignment:** EMA(20) > SMA(50) > SMA(200).
+- **Price Levels:** Close > SMA(50) and Close > SMA(200).
+- **Proximity to High:** Close >= 0.85 × (yesterday's 252D rolling high).
+- **Volume Expansion:** Volume > 1.5 × Volume_SMA(20), with Volume_SMA(20) > 250,000.
 
-#### Strategy 1: Swing + Volume
-
-Finds stocks with institutional volume breakout + multi-timeframe uptrend.
-
-```
-Rule 1 — Universe:
-  index_name must be in {"NIFTY 100", "NIFTY Midcap 150", "NIFTY Smallcap 250"}
-
-Rule 2 — Trend alignment (short MA above long MA):
-  EMA(20) > SMA(50) > SMA(200)
-
-Rule 3 — Price above MAs:
-  Close > SMA(50)  AND  Close > SMA(200)
-
-Rule 4 — Near 52-week high (within 15%):
-  Close >= 0.85 × (yesterday's 252-day rolling high)
-
-Rule 5 — Volume breakout (institutional buying):
-  Volume > 1.5 × 20-day average volume
-  20-day average volume > 250,000  ← liquidity floor
-```
-
-#### Strategy 2: Swing With Momentum
-
-Passes ALL of Strategy 1's rules PLUS momentum confirmation:
-
-```
-Rule 6 — Not overextended short-term:
-  60-day return <= 40%
-
-Rule 7 — Strong medium-term momentum:
-  120-day return >= 30%
-
-Rule 8 — Structural growth check:
-  ((Close - Close_252d) / Close_180d) × 100  <= 300
-  ((Close - Close_180d) / Close_252d) × 100  between 50 and 300
-```
-
-Rules 8's ratios detect stocks with **sustained 6-12 month growth** that isn't parabolic (which would filter out flash crashes and meme stock spikes).
-
-**Method aliases (backward compatible):**
-```python
-strategy_swing_volume() == liquid_1_5x_volume() == swing_volume()
-strategy_swing_momentum() == liquid_1_5x_volume_momentum() == swing_momentum()
-```
+#### Screener 2: Swing With Momentum
+Builds on Swing + Volume by requiring verified medium-term accumulation while rejecting overextended climax moves:
+- **Prerequisite:** Passes 100% of Swing + Volume criteria.
+- **Anti-Climax Filter:** 60-day return <= 40% (avoids buying exhausted parabolic tops).
+- **Intermediate Strength:** 120-day return >= 30%.
+- **Base Spread Bounds:** Multi-horizon base progression ratio checks.
 
 ---
 
@@ -579,21 +561,37 @@ strategy_swing_momentum() == liquid_1_5x_volume_momentum() == swing_momentum()
 
 ### `src/db/data_service.py`
 
-Bridge between MySQL (or demo data) and the UI. The UI never queries MySQL directly.
+Bridge between MySQL / Parquet cache and the UI layer:
+- **`load_raw_market_data()`:** Loads raw OHLCV prices from MySQL (or Parquet fallback).
+- **`load_indicator_snapshot(use_adjusted=True, force_refresh=False)`:**
+  Atomically maintains `data/processed/indicators.parquet` alongside `indicators.meta.json`. Validates cache freshness against DB maximum date, row counts, and corporate action counts.
+- **`get_market_data()`:** Returns a dictionary containing the latest cross-sectional snapshot, full indicators frame, live status, and telemetry messages.
 
-**`load_raw_market_data()`:**
-```python
-raw_df, is_live, status_msg = load_raw_market_data()
+---
+
+## 10. UI Layer & Caching
+
+### `ui/data.py` — Decoupled UI Cache Manager
+Streamlit pages import from `ui.data`:
+- `@st.cache_data(ttl=300)` wrapper takes a cache-invalidation token: `(parquet_mtime, meta_sha256)`.
+- If background ETL runs and updates `indicators.parquet` or `indicators.meta.json`, Streamlit automatically invalidates its cache on the next run.
+- **`render_uninitialized_prompt()`:** If the database is empty or offline, displays an informative callout with exact Alembic and CLI commands (`alembic upgrade head`, `python run_pipeline.py --backfill --days-back 365`) and an interactive button guarded by session state.
+
+### `ui/Dashboard.py` & Screener Pages
+- **`Dashboard.py`**: Full market snapshot, interactive column selector, index multiselect, and search.
+- **`pages/2_swing_volume.py`**: Swing + Volume qualified candidates.
+- **`pages/3_swing_momentum.py`**: Swing With Momentum qualified candidates.
+- **`components/stock_inspector.py`**: 3-panel interactive Plotly candlestick, volume, and RSI chart.
 ```
 - Calls `check_connection()`
-- If **online**: `SELECT * FROM daily_prices ORDER BY symbol, date` → returns full history
-- If **offline or empty**: returns `generate_demo_dataset()` — 17 synthetic stocks (RELIANCE, TCS, TRENT, DIXON, etc.) with realistic random OHLCV data
+- If **online**: reads stored price history and indicator cache
+- If **uninitialized or offline**: returns empty snapshot with clear status message prompting backfill
 
 **`compute_market_indicators(raw_df)`:**
 ```python
 with_indicators = compute_market_indicators(raw_df)
 ```
-Groups by symbol, calls `TechnicalCalculator.apply_all_indicators()` on each group, concatenates results. Returns full time-series with all 25+ indicator columns.
+Groups by symbol, calls `TechnicalCalculator.apply_all_indicators()` on each group, and concatenates results. Returns full time-series with all 35+ indicator columns across price, volume, crossover, and momentum domains.
 
 **`get_latest_market_snapshot(with_indicators)`:**
 ```python
@@ -620,29 +618,12 @@ Sets up `sys.path` and acts as the Streamlit multi-page router. Streamlit auto-d
 ```python
 st.session_state.etl_status  # {"status": "success"|"offline"|..., "message": ...}
 st.session_state.is_updating_etl  # bool — disables the button while ETL runs
-st.session_state.market_data_cache  # {"raw": df, "indicators": df, "snapshot": df, ...}
 ```
 
-The cache is critical: without it, every widget interaction triggers a full MySQL query + indicator computation (~30 seconds). With it, the data is loaded once per session.
-
-**`get_market_data()`** — loads and caches:
-```python
-if cache is None:
-    raw_df  → compute_market_indicators() → get_latest_market_snapshot()
-    cache = {raw, indicators, snapshot, is_live, status_msg}
-return cache
-```
-
-**`run_incremental_update()`** — triggered by "🔄 Update Latest Market Data" button:
-```python
-etl = BhavcopyETL()
-result = etl.run_incremental()  # max 5-day lookback
-st.session_state.etl_status = result
-st.session_state.market_data_cache = None  # bust cache → fresh reload on next run
-```
+**`get_market_data()`** — imported from `ui.data` with `@st.cache_data(ttl=300)` and cache token invalidation.
 
 **Dashboard displays:**
-- Header with LIVE/DEMO mode indicator
+- Header with LIVE MYSQL / DATABASE OFFLINE status indicator
 - 4 KPI tiles: equity count, mean daily change, advance/decline, median RSI
 - Filterable data table (by Index, by symbol search, by columns to display)
 - CSV export button
@@ -686,35 +667,27 @@ Lookback options: 60, 120, 180, 252, 500 sessions.
                       → create_engine("mysql+pymysql://...") ← lazy, no connection yet
                       → SessionLocal = sessionmaker(bind=engine)
 
-3. Dashboard: get_market_data() called
-   → load_raw_market_data()
-     → check_connection() → SELECT 1 → SUCCESS (MySQL is up)
-     → SELECT * FROM daily_prices → EMPTY TABLE
-     → generate_demo_dataset() → 17 synthetic stocks, 300 days each
-   → compute_market_indicators(demo_df) → 25+ indicator columns added
-   → get_latest_market_snapshot() → 1 row per stock
-   UI renders: "DEMO MODE"
+3. Dashboard: get_market_data() called via ui/data.py
+   → get_cache_invalidation_token() checks indicators.parquet and indicators.meta.json
+   → load_indicator_snapshot()
+     → check_connection() → SUCCESS (MySQL is up)
+     → If daily_prices is empty:
+       UI displays friendly setup banner with exact terminal commands:
+       `alembic upgrade head`
+       `python run_pipeline.py --backfill --days-back 365`
 
-4. User clicks "🔄 Update Latest Market Data":
+4. User runs backfill or clicks "🔄 Update Latest Market Data":
    → BhavcopyETL() created:
-       • init_db() → CREATE TABLE IF NOT EXISTS daily_prices ← table created here
-       • NSEBhavcopyDownloader() → creates data/raw/bhavcopy_cache/ directory
-   → etl.run_incremental(lookback_days=5):
-       • self.initial_days_back = 5
-       • resolve_date_range():
-           MySQL: SELECT MAX(date) → None (empty)
-           Parquet cache: no files → None
-           last_stored = None → FIRST RUN mode
-           But initial_days_back=5 → only last 5 days
-       • collect_new_rows(today-5, today):
-           ~3 weekdays: download_bhavcopy() → HTTP GET to NSE
-           → parse CSV → save .parquet → filter to NIFTY 500
-       • load_to_db():
-           mysql_insert(DailyPrice).on_duplicate_key_update(...)
-           → upserts ~497 symbols × 3 days ≈ 1,500 rows
-       → returns {"status": "success", "symbols_updated": 497}
-
-5. Cache busted → page reloads with real data
+       • init_db() ensures database connectivity
+       • NSEBhavcopyDownloader() warms up NSE session
+   → etl.run_backfill(days_back=365, chunk_days=100):
+       • Computes candidate weekdays in window
+       • Subtracts stored dates from daily_prices
+       • Subtracts confirmed non-trading days from non_trading_days.json
+       • Downloads missing days in 100-day bounded chunks
+       • Vectorizes records and upserts chunk immediately
+       • Executes rebuild_adjusted(), load_benchmarks(), and refresh_indicator_cache() once
+   → Cache token updates → Dashboard reloads with fresh indicators
    UI renders: "LIVE MYSQL"
 ```
 
@@ -801,48 +774,56 @@ mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS nse_screener CHARACTER SET ut
 .venv/bin/streamlit run ui/Dashboard.py
 ```
 
-### Run ETL from CLI
+### Run Migrations & Ingestion from CLI
 ```bash
-# Full 3-year backfill (first time, takes ~30 minutes)
-.venv/bin/python run_pipeline.py
+# Run database schema migrations
+alembic upgrade head
+
+# Backwards backfill historical data in chunks (e.g. 1 year)
+.venv/bin/python run_pipeline.py --backfill --days-back 365
+
+# Full historical backfill (default 1100 days, ~3 years)
+.venv/bin/python run_pipeline.py --backfill
 
 # Daily incremental update (fast, only new days)
 .venv/bin/python run_pipeline.py --incremental
 
-# Custom lookback
-.venv/bin/python run_pipeline.py --incremental --lookback 10
+# Standalone corporate actions recomputation
+.venv/bin/python run_pipeline.py --rebuild-adjusted
+
+# Standalone benchmark index ingestion
+.venv/bin/python run_pipeline.py --benchmarks
+
+# Rebuild indicators snapshot cache
+.venv/bin/python run_pipeline.py --refresh-cache
 ```
 
-### Run Tests
+### Run Tests & Verification
 ```bash
+# Full test suite with coverage
 .venv/bin/pytest tests/ -v
-# 52 tests — all should pass
+
+# Linter and code style formatting checks
+.venv/bin/ruff check .
+.venv/bin/ruff format --check .
 ```
-
-> **Always use `.venv/bin/streamlit` and `.venv/bin/python`.**
-> System Python does not have `pymysql`, causing `SessionLocal = None` and the
-> "Database session factory is uninitialized" error.
-
-> **After every `git pull`, stop Ctrl+C and restart Streamlit.**
-> Python caches modules in memory. A running Streamlit process won't pick up
-> code changes until it's fully restarted.
 
 ---
 
-## 14. Offline Mode — What Happens Without MySQL
+## 14. Offline & Missing Data Handling
 
-The app never crashes when MySQL is offline. Every layer has a fallback:
+The app never crashes when MySQL is offline or data is uninitialized:
 
-| Layer | Online Behavior | Offline Behavior |
+| Layer | Online Behavior | Offline / Empty Behavior |
 |---|---|---|
-| `session.py` import | `engine` + `SessionLocal` created | `engine = None`, `SessionLocal = None` if pymysql missing |
-| `init_db()` | Creates tables | Logs warning, returns silently |
+| `session.py` import | `engine` + `SessionLocal` created | `engine = None`, `SessionLocal = None` if credentials or driver missing |
+| `init_db()` | Ensures DB tables exist | Logs warning, returns silently |
 | `check_connection()` | Returns `True` | Returns `False` |
 | `resolve_date_range()` | Queries MySQL for max date | Falls back to Parquet cache max date |
-| `load_to_db()` | Upserts all rows | Returns `([], [])`, Parquet data is preserved |
-| `run_incremental()` | Returns `"success"` or `"up_to_date"` | Returns `"offline"` with info message |
-| `load_raw_market_data()` | Reads from MySQL | Returns synthetic demo dataset (17 stocks) |
-| Dashboard UI | Shows "LIVE MYSQL" | Shows "DEMO MODE" — never shows error page |
+| `load_to_db()` | Upserts all rows | Returns `([], [])`, Parquet raw data is preserved |
+| `run_incremental()` | Returns `"success"` or `"up_to_date"` | Returns `"offline"` with informational message |
+| `load_indicator_snapshot()` | Reads from DB + updates Parquet cache | Falls back to cached Parquet snapshot; returns empty frame if no cache |
+| Dashboard UI | Shows "LIVE MYSQL" | Displays setup banner with exact CLI commands (`alembic upgrade head`, `python run_pipeline.py --backfill`) |
 
 **Why the Parquet cache matters:**
 Even if MySQL is completely unavailable, every downloaded trading day is stored as a `.parquet` file. When MySQL comes back online, `resolve_date_range()` detects the latest cached date and the ETL resumes from exactly where it left off — no re-downloads, no data loss.
