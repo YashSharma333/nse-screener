@@ -96,22 +96,40 @@ nse-screener/
 │   │   └── data_service.py  # load_raw_market_data(), compute_market_indicators()
 │   │
 │   ├── etl/
-│   │   └── pipeline.py      # BhavcopyETL: resolve_date_range, collect_new_rows, load_to_db
+│   │   ├── adjust.py        # Corporate action split/bonus detector & adjuster
+│   │   └── pipeline.py      # BhavcopyETL: chunked backfill, incremental, DB upserts
 │   │
 │   ├── computation/
-│   │   ├── indicators.py    # TechnicalCalculator — all indicator formulas
-│   │   └── screener.py      # Re-export shim → src.screener.StockScreener
+│   │   └── indicators/      # Domain-specific indicator engines:
+│   │       ├── price.py     # SMA, EMA, WMA, Bollinger Bands, ATR, 52W High/Low
+│   │       ├── volume.py    # Volume SMA, volume ratio, volume dryup
+│   │       ├── crossovers.py# Golden/Death Cross, MACD crossovers
+│   │       ├── momentum.py  # RSI, MACD, Relative Strength vs benchmark, ranks
+│   │       └── calculator.py# TechnicalCalculator facade
 │   │
-│   └── screener.py          # StockScreener — strategy_swing_volume, strategy_swing_momentum
+│   └── screeners/           # Extensible Screener Platform:
+│       ├── base.py          # Screener base class, condition grouping & explainability
+│       ├── registry.py      # @register_screener decorator & get_screener() lookup
+│       ├── conditions/      # Reusable condition primitives grouped by nature:
+│       │   ├── price.py     # Price conditions (MAs, 52W proximity, ATR)
+│       │   ├── volume.py    # Volume conditions (surge, liquidity, dryup)
+│       │   ├── crossover.py # Crossover conditions (Golden Cross, MACD)
+│       │   └── momentum.py  # Momentum conditions (RSI, RS, ranks, return caps)
+│       ├── swing.py         # Swing + Volume & Swing With Momentum screeners
+│       ├── classic.py       # 11 classic technical filter screeners
+│       └── strategies.py    # 6 systematic strategies (Minervini, VCP Lite, etc.)
 │
 ├── ui/
 │   ├── app.py               # Streamlit router (entry point)
+│   ├── data.py              # Decoupled UI data service with multi-factor caching
 │   ├── Dashboard.py         # Page 1: full market snapshot + ETL trigger button
 │   ├── pages/
 │   │   ├── 2_swing_volume.py    # Page 2: Swing + Volume strategy results
-│   │   └── 3_swing_momentum.py  # Page 3: Swing With Momentum strategy results
+│   │   ├── 3_swing_momentum.py  # Page 3: Swing With Momentum strategy results
+│   │   └── 4_screener_explorer.py # Page 4: Interactive Screener Explorer & Diagnostics
 │   └── components/
 │       ├── terminal_styles.py   # CSS theming, dark terminal look
+│       ├── screener_view.py     # Reusable screener page renderer with near-miss tabs
 │       └── stock_inspector.py   # Candlestick + volume + RSI chart (Plotly)
 │
 ├── tests/
@@ -536,24 +554,32 @@ Indicators are decomposed into dedicated submodules by their mathematical and an
 
 ---
 
-### Quantitative Screeners (`src/screener.py` & `src/screeners/`)
+### Quantitative Screener Platform (`src/screeners/`)
 
-The screener engine evaluates a snapshot DataFrame (latest day per symbol) using vectorized boolean conditions:
+The screener engine provides an extensible, pluggable screener architecture where screening conditions are categorized strictly by nature:
+- **`price_conditions(df)`**: Evaluates moving average alignment, 52-week proximity, price bounds, and volatility contraction.
+- **`volume_conditions(df)`**: Evaluates volume surges, liquidity floors, and dry-up ratios.
+- **`crossover_conditions(df)`**: Evaluates Golden/Death crosses, MACD signal crosses, and recent crossover event windows.
+- **`momentum_conditions(df)`**: Evaluates RSI support zones, benchmark Relative Strength, cross-sectional return percentile ranks, and return velocity bounds.
 
-#### Screener 1: Swing + Volume
-Finds institutional volume expansion in strong multi-timeframe uptrends:
-- **Universe:** Tracked NIFTY 100, Midcap 150, or Smallcap 250 equities.
-- **Trend Alignment:** EMA(20) > SMA(50) > SMA(200).
-- **Price Levels:** Close > SMA(50) and Close > SMA(200).
-- **Proximity to High:** Close >= 0.85 × (yesterday's 252D rolling high).
-- **Volume Expansion:** Volume > 1.5 × Volume_SMA(20), with Volume_SMA(20) > 250,000.
+#### Explainability & Near-Miss Diagnostics
+In addition to `.run(df)` returning qualifying equities, every screener implements `.explain(df)`, which augments the snapshot with:
+- Individual boolean columns per condition (`cond_{name}`)
+- Category summary booleans (`pass_price`, `pass_volume`, `pass_crossover`, `pass_momentum`)
+- `conditions_passed` and `conditions_total` counts
+- `near_miss`: Flagged `True` when **exactly 1 condition failed**, identifying bottleneck conditions
+- `near_miss_on`: The specific condition that prevented qualification
 
-#### Screener 2: Swing With Momentum
-Builds on Swing + Volume by requiring verified medium-term accumulation while rejecting overextended climax moves:
-- **Prerequisite:** Passes 100% of Swing + Volume criteria.
-- **Anti-Climax Filter:** 60-day return <= 40% (avoids buying exhausted parabolic tops).
-- **Intermediate Strength:** 120-day return >= 30%.
-- **Base Spread Bounds:** Multi-horizon base progression ratio checks.
+#### Registered Systematic Strategies:
+1. **Minervini Trend Template (`minervini_trend_template`)**: Mark Minervini's 8-point Stage 2 trend criteria.
+2. **52W High Breakout + Volume (`breakout_52w_volume`)**: Price within 2% or breaking 52W High with >=2.0x volume expansion.
+3. **RSI Pullback in Uptrend (`rsi_pullback_uptrend`)**: Low-volume orderly pullback with RSI in 40-55 bull support zone.
+4. **VCP Lite (`vcp_lite`)**: Volatility contraction pattern with drying volume in uptrend.
+5. **Relative Strength Leaders (`rs_leaders`)**: Outperforming equities with RS 63D > 10% vs NIFTY 500 or top 20th percentile 252D rank.
+6. **Composite Trend Regime (`composite_trend`)**: Multi-indicator trend regime confluence (MAs, MACD, RSI, Volume).
+7. **Swing + Volume (`swing_volume`)**: Capstone Screener 1 (EMA 20 > SMA 50 > SMA 200, within 15% 52W high, 1.5x volume surge).
+8. **Swing With Momentum (`swing_momentum`)**: Capstone Screener 2 (Swing + Volume with 120D return >= 30% and 60D return <= 40%).
+9. **Classic Filters (`classic`)**: Above 50/200 SMA, Golden/Death Cross, Near 52W High/Low, RSI Oversold/Overbought, MACD cross, Bollinger Squeeze.
 
 ---
 
@@ -635,8 +661,8 @@ Both share the same session cache as Dashboard (so switching pages doesn't reloa
 ```python
 data = get_market_data()  # reads session cache
 snapshot = data["snapshot"]
-screener = StockScreener(snapshot)
-qualifying = screener.strategy_swing_volume()  # apply filter rules
+screener = get_screener("swing_volume")
+qualifying = screener.run(snapshot)  # apply filter rules
 ```
 Display: KPI tiles, qualifying stocks table, CSV export, StockInspector.
 
@@ -740,13 +766,13 @@ ui/Dashboard.py
     ├── plotly.graph_objects          → go.Candlestick, go.Bar, go.Scatter
     └── plotly.subplots               → make_subplots (3-row chart)
 
-ui/pages/2_swing_volume.py
+ui/pages/2_swing_volume.py, 3_swing_momentum.py, 4_screener_explorer.py
 │
-├── src.db.data_service               → same chain as above
-├── src.screener                      → StockScreener
-│   ├── numpy                         → np.nan for safe division
-│   └── pandas
-└── ui.components.*                   → same as Dashboard
+├── ui.data                           → get_market_data(), render_uninitialized_prompt()
+├── src.screeners                     → get_screener(), list_screeners()
+└── ui.components.screener_view       → render_screener_page()
+    ├── src.screeners.registry
+    └── ui.components.stock_inspector → render_stock_inspector()
 ```
 
 ---

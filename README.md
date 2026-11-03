@@ -89,28 +89,57 @@ alembic current
 
 ---
 
-## 📐 Quantitative Screeners
+## 📐 Quantitative Screener Platform
 
-The project features a modular screener framework with pre-built screens:
+The project features an extensible, pluggable screener platform (`src/screeners/`) where screening rules are organized strictly by their nature (**Price**, **Volume**, **Crossover**, **Momentum**). Every screener supports execution (`run()`) and deep diagnostic introspection (`explain()`), including **near-miss detection** (identifying equities that passed all criteria except a single bottleneck condition).
 
-### Screener: "Swing + Volume"
-Finds stocks in a strong uptrend that are experiencing a fresh surge in trading volume near their 52-week highs.
+### 1. Registered Systematic Screeners
 
-- **Stock Universe:** Must belong to NIFTY 100, NIFTY Midcap 150, or NIFTY Smallcap 250.
-- **Uptrend Alignment:** 20 EMA > 50 SMA > 200 SMA.
-- **Key Price Levels:** Current price is above both the 50 SMA and 200 SMA.
-- **Near 52-Week High:** Price is within 15% of its previous 52-week high.
-- **Volume Expansion:** Today's volume is at least 1.5 times the 20-day average volume, and the 20-day average volume is at least 250,000 shares.
+| Key | Name | Category | Primary Setup Logic |
+| :--- | :--- | :--- | :--- |
+| `minervini_trend_template` | **Minervini Trend Template** | Trend | Mark Minervini's 8-point Stage 2 trend template (Close > 50 > 150 > 200 SMA, upward-sloping 200 SMA, +30% from 52W Low, within 25% of 52W High, RS leader). |
+| `breakout_52w_volume` | **52W High Breakout + Vol** | Breakout | Price within 2% or breaking 52-week High with heavy institutional volume surge (>= 2.0x 20D SMA) and minimum liquidity. |
+| `rsi_pullback_uptrend` | **RSI Pullback in Uptrend** | Pullback | Orderly, low-volume pullback (Vol <= 1.2x SMA) to bull market support zone (RSI 40-55) in an established uptrend (Close > 50 SMA > 200 SMA). |
+| `vcp_lite` | **VCP Lite (Volatility Contraction)** | Breakout | Volatility compression (ATR% <= 75% of 60D max ATR% or narrow Bollinger width) accompanied by volume dry-up (Vol <= 0.7x SMA) in an uptrend. |
+| `rs_leaders` | **Relative Strength Leaders** | Quantitative | Outperforming equities with RS 63D > 10% vs NIFTY 500 or top 20th percentile 252D return rank, trading above moving averages. |
+| `composite_trend` | **Composite Trend Regime** | Trend | Multi-indicator regime confluence: Close > 20 EMA & 50 SMA, recent Golden Cross or MA support, bullish MACD, RSI >= 50, and healthy volume. |
+| `swing_volume` | **Swing + Volume** | Swing | Uptrend alignment (EMA 20 > SMA 50 > SMA 200), within 15% of 52-week high, volume surge (> 1.5x 20D SMA), 20D SMA volume > 250k. |
+| `swing_momentum` | **Swing With Momentum** | Swing | Meets all Swing + Volume criteria with multi-quarter velocity (120D return >= 30%) and an anti-climax exhaustion guard (60D return <= 40%). |
+| `above_50_sma` / `above_200_sma` | **Above 50 / 200 SMA** | Classic | Classical moving average threshold filters. |
+| `golden_cross` / `death_cross` | **Golden / Death Cross** | Classic | State transition crossovers between 50 SMA and 200 SMA. |
+| `near_52w_high` / `near_52w_low` | **Near 52W High / Low** | Classic | Proximity filters to 52-week extremes. |
+| `rsi_oversold` / `rsi_overbought` | **RSI Oversold / Overbought**| Classic | Momentum oscillator extremes (RSI < 30 or RSI > 70). |
+| `bullish_macd_crossover` | **Bullish MACD Cross** | Classic | MACD line crossing above 9-day signal line. |
+| `high_volatility` / `bollinger_squeeze` | **Volatility & Squeeze** | Classic | Historical volatility thresholds and Bollinger Band compression. |
 
 ---
 
-### Screener: "Swing With Momentum"
-Builds on Swing + Volume by demanding steady, intermediate price gain while filtering out stocks that have already run up too fast (overheated).
+### 2. Grouped Conditions Architecture
 
-- **Prerequisite:** Must meet all conditions of Swing + Volume.
-- **Not Overextended:** 60-day return is 40% or less (avoids buying at the tail end of explosive spikes).
-- **Steady Long-Term Gain:** Positive multi-month gain between 180 and 252 trading days.
-- **Medium-Term Strength:** 120-day return is at least 30%.
+Screening conditions are decoupled from screeners and modularized in `src/screeners/conditions/` by their nature:
+- **`price.py`**: Moving average alignment, price boundaries, 52-week proximity, volatility, and ATR contraction.
+- **`volume.py`**: Volume surges, liquidity floors, and volume dry-up ratios.
+- **`crossover.py`**: Golden Cross, Death Cross, MACD crossovers, and recent crossing events (10-session lookback).
+- **`momentum.py`**: RSI support/extremes, benchmark relative strength, cross-sectional percentile rankings, and return velocity caps/floors.
+
+### 3. Programmatic Usage Example
+
+```python
+from src.screeners import get_screener
+
+# Instantiate any registered screener
+screener = get_screener("minervini_trend_template")
+
+# Run screener to get passing stocks
+passing_stocks = screener.run(snapshot_df)
+
+# Deep diagnostic explainability with near-miss analysis
+explained_df = screener.explain(snapshot_df)
+
+# Find near-miss stocks that failed by only 1 condition
+near_misses = explained_df[explained_df["near_miss"]]
+print(near_misses[["symbol", "near_miss_on"]])
+```
 
 ---
 
@@ -212,13 +241,12 @@ nse-screener/
 ├── migrations/                   # Alembic database migration revisions
 ├── src/
 │   ├── computation/
-│   │   ├── indicators/           # Technical indicators grouped by nature:
-│   │   │   ├── price.py          # Price indicators (MAs, BB, ATR, 52W High/Low)
-│   │   │   ├── volume.py         # Volume indicators (Volume SMA, Volume ratio)
-│   │   │   ├── crossovers.py     # Crossover indicators (Golden/Death cross, MACD)
-│   │   │   ├── momentum.py       # Momentum indicators (RSI, RS vs benchmark)
-│   │   │   └── calculator.py     # TechnicalCalculator orchestrator facade
-│   │   └── screener.py           # Re-export shim for screener rules
+│   │   └── indicators/           # Technical indicators grouped by nature:
+│   │       ├── price.py          # Price indicators (MAs, BB, ATR, 52W High/Low)
+│   │       ├── volume.py         # Volume indicators (Volume SMA, Volume ratio)
+│   │       ├── crossovers.py     # Crossover indicators (Golden/Death cross, MACD)
+│   │       ├── momentum.py       # Momentum indicators (RSI, RS vs benchmark)
+│   │       └── calculator.py     # TechnicalCalculator orchestrator facade
 │   ├── db/
 │   │   ├── data_service.py       # Indicator cache loader, sidecar validation & DB queries
 │   │   ├── models.py             # SQLAlchemy models (DailyPrice, AdjFactor, etc.)
@@ -231,16 +259,27 @@ nse-screener/
 │   │   ├── benchmark.py          # Benchmark index downloader & loader
 │   │   ├── downloader.py         # NSE Bhavcopy file downloader with retries
 │   │   └── index_constituents.py # NIFTY constituent fetcher & snapshotter
-│   └── screener.py               # StockScreener implementation
+│   └── screeners/                # Extensible Screener Platform
+│       ├── base.py               # Screener abstract base class & explainability
+│       ├── registry.py           # Pluggable screener registry & discovery
+│       ├── conditions/           # Screening conditions grouped by nature:
+│       │   ├── price.py          # Price-based screening conditions
+│       │   ├── volume.py         # Volume & liquidity screening conditions
+│       │   ├── crossover.py      # Line crossing & transition conditions
+│       │   └── momentum.py       # RSI, RS & return velocity conditions
+│       ├── swing.py              # Capstone Swing + Volume & Swing With Momentum
+│       ├── classic.py            # 11 classic technical filter screens
+│       └── strategies.py         # 6 systematic strategies (Minervini, VCP, etc.)
 ├── tests/                        # Comprehensive unit & integration tests
 ├── ui/
 │   ├── app.py                   # Streamlit multipage app router
 │   ├── data.py                  # Streamlit cache wrapper with multi-factor tokens
 │   ├── Dashboard.py             # Main screener dashboard page
-│   ├── components/              # Reusable UI components (terminal header, stock inspector)
+│   ├── components/              # Reusable UI components (terminal header, screener view)
 │   └── pages/
 │       ├── 2_swing_volume.py    # Screener page: Swing + Volume
-│       └── 3_swing_momentum.py  # Screener page: Swing With Momentum
+│       ├── 3_swing_momentum.py  # Screener page: Swing With Momentum
+│       └── 4_screener_explorer.py # Interactive Screener Explorer & Diagnostics
 ├── pyproject.toml               # Project configuration, ruff & pytest-cov settings
 ├── requirements.txt             # Runtime Python dependencies
 ├── requirements-dev.txt         # Development & test dependencies

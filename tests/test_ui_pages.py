@@ -31,6 +31,13 @@ class TestStreamlitPages(unittest.TestCase):
         at.run()
         self.assertFalse(at.exception, f"Swing With Momentum page raised exception: {at.exception}")
 
+    def test_screener_explorer_page(self):
+        at = AppTest.from_file(
+            str(PROJECT_ROOT / "ui" / "pages" / "4_screener_explorer.py"), default_timeout=30
+        )
+        at.run()
+        self.assertFalse(at.exception, f"Screener Explorer page raised exception: {at.exception}")
+
     def test_stock_inspector_renders_candlestick(self):
         import pandas as pd
 
