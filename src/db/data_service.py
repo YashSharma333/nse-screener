@@ -21,6 +21,7 @@ from sqlalchemy import text
 from config.settings import setup_logging
 from src.computation.indicators import TechnicalCalculator
 from src.db.session import check_connection, engine
+from src.ingestion.benchmark import canonical_index_code
 from src.ingestion.index_constituents import get_index_constituents
 
 setup_logging()
@@ -116,7 +117,7 @@ def get_benchmark_returns(
     if not check_connection():
         return pd.DataFrame()
 
-    code = index_code.strip().upper().replace(" ", "_")
+    code = canonical_index_code(index_code)
     clauses = ["index_code = :index_code"]
     params: dict[str, Any] = {"index_code": code}
 
