@@ -173,3 +173,79 @@ def test_ensure_data_initialized_non_blocking():
         status = ensure_data_initialized()
         assert status["online"] is False
         assert status["has_db_data"] is False
+
+
+def test_data_service_db_path_with_sqlite(tmp_path: Path):
+    """Test get_db_cache_metadata, load_raw_market_data, and live snapshot on SQLite."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from src.db.data_service import (
+        clear_market_data_cache,
+        get_benchmark_returns,
+        get_db_cache_metadata,
+        get_market_data,
+    )
+    from src.db.models import Base, BenchmarkPrice, DailyPrice
+
+    db_file = tmp_path / "test_ds.db"
+    test_engine = create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(test_engine)
+    session_factory = sessionmaker(bind=test_engine)
+
+    # Seed daily_prices and benchmark_prices
+    with session_factory() as session:
+        for i in range(65):
+            d = date(2024, 1, 1) + pd.Timedelta(days=i)
+            session.add(
+                DailyPrice(
+                    symbol="TCS",
+                    date=d,
+                    open=3500.0 + i,
+                    high=3550.0 + i,
+                    low=3480.0 + i,
+                    close=3520.0 + i,
+                    prev_close=3510.0 + i,
+                    volume=100_000 + i * 10,
+                    adj_close=3520.0 + i,
+                    adj_open=3500.0 + i,
+                    adj_high=3550.0 + i,
+                    adj_low=3480.0 + i,
+                )
+            )
+            session.add(
+                BenchmarkPrice(
+                    index_code="NIFTY 500",
+                    date=d,
+                    close=20050.0 + i,
+                    source="NSE_ARCHIVE",
+                )
+            )
+        session.commit()
+
+    with (
+        patch("src.db.data_service.engine", test_engine),
+        patch("src.db.data_service.check_connection", return_value=True),
+    ):
+        meta = get_db_cache_metadata()
+        assert meta["db_max_date"] is not None
+        assert meta["benchmark_max_date"] is not None
+
+        raw_df, is_live, _msg = load_raw_market_data(use_adjusted=True)
+        assert not raw_df.empty
+        assert is_live is True
+        assert len(raw_df) == 65
+
+        # Also test with use_adjusted=False
+        raw_unadj, _, _ = load_raw_market_data(use_adjusted=False)
+        assert not raw_unadj.empty
+
+        # Test real get_benchmark_returns query against SQLite
+        b_df = get_benchmark_returns("NIFTY 500", start=date(2024, 1, 2), end=date(2024, 1, 10))
+        assert not b_df.empty
+        assert len(b_df) == 9
+
+        # Test get_market_data provider
+        mdata = get_market_data(use_adjusted=True)
+        assert "snapshot" in mdata
+        clear_market_data_cache()
