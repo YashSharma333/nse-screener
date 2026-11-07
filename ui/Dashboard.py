@@ -28,7 +28,7 @@ import streamlit as st
 from src.etl.pipeline import BhavcopyETL
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
-from ui.data import get_market_data, render_uninitialized_prompt
+from ui.data import get_snapshot, render_uninitialized_prompt
 
 
 def setup_page_config() -> None:
@@ -97,7 +97,7 @@ def main() -> None:
         apply_terminal_theme()
         initialize_session_state()
 
-        data = get_market_data()
+        data = get_snapshot()
         snapshot = data["snapshot"]
         is_live = data["is_live"]
 
@@ -254,13 +254,12 @@ def main() -> None:
         st.markdown("---")
 
         # Interactive Technical Stock Inspector Drilldown
-        indicators_df = data.get("indicators", pd.DataFrame())
         default_sym = (
             display_view["Symbol"].iloc[0]
             if not display_view.empty and "Symbol" in display_view.columns
             else None
         )
-        render_stock_inspector(indicators_df, default_symbol=default_sym, key_prefix="dash")
+        render_stock_inspector(snapshot, default_symbol=default_sym, key_prefix="dash")
 
     except Exception as exc:
         logger.error("Dashboard page crash: %s", exc, exc_info=True)

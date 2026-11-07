@@ -51,8 +51,16 @@ def render_stock_inspector(
             key=f"{key_prefix}_lookback",
         )
 
-    # Filter data for chosen symbol
-    stock_df = df_with_indicators[df_with_indicators["symbol"] == selected_symbol].copy()
+    # Fetch data for chosen symbol on-demand via PyArrow projection (G9)
+    try:
+        from ui.data import get_symbol_history
+
+        stock_df = get_symbol_history(selected_symbol)
+    except Exception:
+        stock_df = pd.DataFrame()
+
+    if stock_df.empty:
+        stock_df = df_with_indicators[df_with_indicators["symbol"] == selected_symbol].copy()
     if stock_df.empty:
         st.warning(f"No historical records found for {selected_symbol}.")
         return
