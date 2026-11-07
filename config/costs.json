@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "description": "NSE India Cash Equity Trading Cost Schedule & Statutory Rates",
+    "updated_at": "2026-03-01",
+    "notes": "Verified against official circulars and statutes"
+  },
+  "rates": {
+    "exchange_turnover_rate": 0.0000307,
+    "exchange_circular": "NSE/FA/73061 (issued 27 Feb 2026, effective 1 Mar 2026: transaction 306.99 + IPFT 0.01 = 307/cr)",
+    "exchange_circular_url": "https://nsearchives.nseindia.com/content/circulars/FA73061.pdf",
+    "sebi_turnover_rate": 0.000001,
+    "sebi_regulation": "SEBI (Stock Brokers and Sub-Brokers) Regulations (₹10 per crore)",
+    "stt_buy_rate": 0.001,
+    "stt_sell_rate": 0.001,
+    "stt_statute": "Finance Act 2004 as amended by Finance (No. 2) Act 2024 (0.1% on delivery buy and sell)",
+    "stamp_duty_rate": 0.00015,
+    "stamp_duty_statute": "Indian Stamp Act, 1899 amended by Finance Act 2019 (0.015% on buy only)",
+    "gst_rate": 0.18,
+    "gst_statute": "Central Goods and Services Tax Act 2017 (18% on Brokerage + Exchange + SEBI)",
+    "stcg_tax_rate": 0.20,
+    "stcg_statute": "Section 111A of Income-tax Act (20% on short-term capital gains held <= 12 months)",
+    "dp_charge_per_scrip_day": 0.0,
+    "dp_rule": "Charged once per scrip per sell day; broker-specific",
+    "default_brokerage_per_order": 0.0,
+    "default_slippage_bps": 5.0
+  }
+}
