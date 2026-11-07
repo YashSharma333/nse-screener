@@ -20,7 +20,7 @@
   - Hardening fixes (F1–F12).
   - Modular indicator domain packaging by nature (`price`, `volume`, `crossovers`, `momentum`).
   - Pluggable Screener Registry & Base Class with grouped screening conditions.
-  - Six new systematic screening strategies (Minervini, Breakout 52W, RSI Pullback, VCP Lite, RS Leaders, HMM).
+  - Systematic screeners (Minervini, Breakout 52W, RSI Pullback, VCP Lite, RS Leaders, RSI Momentum, etc.).
   - Screener Explorer UI page with near-miss diagnostics and export capabilities.
 
 > [!IMPORTANT]
@@ -115,9 +115,16 @@ nse-screener/
 │       │   ├── volume.py    # Volume conditions (surge, liquidity, dryup)
 │       │   ├── crossover.py # Crossover conditions (Golden Cross, MACD)
 │       │   └── momentum.py  # Momentum conditions (RSI, RS, ranks, return caps)
-│       ├── swing.py         # Swing + Volume & Swing With Momentum screeners
-│       ├── classic.py       # 11 classic technical filter screeners
-│       └── strategies.py    # 6 systematic strategies (Minervini, VCP Lite, etc.)
+│       ├── minervini.py     # Minervini Stage 2 Trend Template screener
+│       ├── breakout_52w.py  # 52W High Breakout + Volume screener
+│       ├── rsi_pullback.py  # RSI Pullback in Uptrend screener
+│       ├── vcp_lite.py      # Volatility Contraction Pattern screener
+│       ├── rs_leaders.py    # Relative Strength Leaders screener
+│       ├── composite_trend.py # Composite Trend Regime screener
+│       ├── rsi_momentum.py  # RSI Momentum (RSI 9 > WMA 21) screener
+│       ├── swing_volume.py  # Swing + Volume screener
+│       ├── swing_momentum.py # Swing With Momentum screener
+│       └── classic.py       # 11 classic technical filter screeners
 │
 ├── ui/
 │   ├── app.py               # Streamlit router (entry point)
@@ -570,16 +577,30 @@ In addition to `.run(df)` returning qualifying equities, every screener implemen
 - `near_miss`: Flagged `True` when **exactly 1 condition failed**, identifying bottleneck conditions
 - `near_miss_on`: The specific condition that prevented qualification
 
-#### Registered Systematic Strategies:
-1. **Minervini Trend Template (`minervini_trend_template`)**: Mark Minervini's 8-point Stage 2 trend criteria.
-2. **52W High Breakout + Volume (`breakout_52w_volume`)**: Price within 2% or breaking 52W High with >=2.0x volume expansion.
-3. **RSI Pullback in Uptrend (`rsi_pullback_uptrend`)**: Low-volume orderly pullback with RSI in 40-55 bull support zone.
-4. **VCP Lite (`vcp_lite`)**: Volatility contraction pattern with drying volume in uptrend.
-5. **Relative Strength Leaders (`rs_leaders`)**: Outperforming equities with RS 63D > 10% vs NIFTY 500 or top 20th percentile 252D rank.
-6. **Composite Trend Regime (`composite_trend`)**: Multi-indicator trend regime confluence (MAs, MACD, RSI, Volume).
-7. **Swing + Volume (`swing_volume`)**: Capstone Screener 1 (EMA 20 > SMA 50 > SMA 200, within 15% 52W high, 1.5x volume surge).
-8. **Swing With Momentum (`swing_momentum`)**: Capstone Screener 2 (Swing + Volume with 120D return >= 30% and 60D return <= 40%).
-9. **Classic Filters (`classic`)**: Above 50/200 SMA, Golden/Death Cross, Near 52W High/Low, RSI Oversold/Overbought, MACD cross, Bollinger Squeeze.
+#### Registered Systematic Screeners
+
+| Key | Status | Category | Plain-Language Rules Summary |
+|---|---|---|---|
+| `minervini_trend_template` | `core` | `trend` | Mark Minervini 8-point Stage 2 trend: Close > 150/200 SMA, 150 SMA > 200 SMA, 200 SMA rising 20d, 50 SMA > 150/200 SMA, Close > 50 SMA, Close >= 1.3x 52W Low, within 25% of 52W High. |
+| `breakout_52w_volume` | `core` | `breakout` | High-momentum 52-week breakout: Close within 2% or breaking 252d High with >=2.0x 20d SMA volume surge and liquidity >= 100k shares. |
+| `rsi_pullback_uptrend` | `core` | `pullback` | Low-volume orderly pullback in confirmed uptrend: Close > 50 SMA > 200 SMA, RSI(14) resting in 40–55 bull support zone, volume dryup <= 0.8x 20d SMA. |
+| `vcp_lite` | `core` | `pattern` | Volatility Contraction Pattern: Close > 50 SMA > 200 SMA, within 10% of 52W High, ATR(14)% < 3.5% (tightness), drying volume <= 0.7x 20d SMA. |
+| `rs_leaders` | `core` | `momentum` | True market outperformance: Close > 50 SMA > 200 SMA, Relative Strength vs NIFTY 500 (63d) > 10% or 252d percentile rank >= 80, liquidity >= 100k shares. |
+| `composite_trend` | `core` | `trend` | Multi-indicator trend regime confluence: Close > 20 EMA > 50 SMA > 200 SMA, RSI(14) > 55, MACD > Signal, volume >= 20d SMA. |
+| `rsi_momentum` | `core` | `momentum` | Fast momentum shift: Close > 50 SMA, RSI(9) > WMA(21) of RSI(9) by >= 2.0 pts, liquidity >= 100k shares. *(Formerly referred to as HMM).* |
+| `swing_volume` | `core` | `swing` | Flagship swing volume surge: 20 EMA > 50 SMA > 200 SMA, Close > 50 & 200 SMA, within 15% of 252d High, volume >= 1.5x 20d SMA, volume SMA >= 250k. |
+| `swing_momentum` | `core` | `swing` | Flagship swing momentum: All Swing Volume criteria plus 120d return >= 30% and 60d return <= 40% (anti-chase filter). |
+| `above_50_sma` | `experimental` | `classic` | Trend filter: Close strictly above 50-day Simple Moving Average. |
+| `above_200_sma` | `experimental` | `classic` | Long-term regime: Close strictly above 200-day Simple Moving Average. |
+| `golden_cross` | `experimental` | `classic` | Bullish regime shift: 50 SMA > 200 SMA with Golden Cross within last 10 sessions. |
+| `death_cross` | `experimental` | `classic` | Bearish regime shift: 50 SMA < 200 SMA with Death Cross within last 10 sessions. |
+| `near_52w_high` | `experimental` | `classic` | Proximity check: Close within 5% of 252-day rolling High. |
+| `near_52w_low` | `experimental` | `classic` | Deep discount / rebound check: Close within 5% of 252-day rolling Low. |
+| `rsi_oversold` | `experimental` | `classic` | Mean-reversion candidate: 14-day RSI strictly below 30. |
+| `rsi_overbought` | `experimental` | `classic` | Momentum extreme: 14-day RSI strictly above 70. |
+| `bullish_macd_crossover` | `experimental` | `classic` | MACD momentum trigger: MACD line crossed above Signal line within last 5 sessions. |
+| `high_volatility` | `experimental` | `classic` | Volatility expansion: 20-day annualized close-to-close volatility >= 40%. |
+| `bollinger_squeeze` | `experimental` | `classic` | Volatility squeeze: Bollinger Bandwidth (Upper - Lower)/SMA strictly < 5.0%. |
 
 ---
 
