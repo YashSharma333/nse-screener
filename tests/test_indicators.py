@@ -277,7 +277,8 @@ EXPECTED_COLUMNS = [
     "rs_63d",
     "rs_126d",
     "rs_252d",
-    "HMM",
+    "rsi_9_wma_21",
+    "rsi_momentum",
 ]
 
 
@@ -318,7 +319,7 @@ class TestApplyAllIndicators:
         assert not missing, f"Missing columns in multi-stock mode: {missing}"
 
     def test_new_indicators_and_crossover_accuracy(self):
-        """Test ATR, Donchian channels, volume ratio, crossovers, and HMM."""
+        """Test ATR, Donchian channels, volume ratio, crossovers, and RSI Momentum."""
         calc = _make_calc()
         n = 60
         dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
@@ -340,8 +341,9 @@ class TestApplyAllIndicators:
         assert "donchian_high_20" in res.columns
         assert "volume_ratio" in res.columns
         assert "golden_cross" in res.columns
-        assert "HMM" in res.columns
-        assert isinstance(res["HMM"].iloc[-1], (bool, np.bool_))
+        assert "rsi_9_wma_21" in res.columns
+        assert "rsi_momentum" in res.columns
+        assert isinstance(res["rsi_momentum"].iloc[-1], (bool, np.bool_))
 
     def test_crossover_cross_stock_isolation(self):
         """Two different symbols in a snapshot must not cross-pollinate shift(1)."""

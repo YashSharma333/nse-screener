@@ -18,7 +18,7 @@ from src.computation.indicators import crossovers, momentum, price, volume
 logger = logging.getLogger("src.computation.indicators")
 
 # Bumped schema version whenever columns or formulas change
-INDICATORS_SCHEMA_VERSION = 2
+INDICATORS_SCHEMA_VERSION = 3
 
 
 class TechnicalCalculator:
@@ -171,8 +171,8 @@ class TechnicalCalculator:
         return momentum.calculate_cross_sectional_ranks(df, date_col=date_col)
 
     @classmethod
-    def calculate_hmm_indicator(cls, df: pd.DataFrame) -> pd.Series:
-        return momentum.calculate_hmm_indicator(df)
+    def calculate_rsi_momentum(cls, df: pd.DataFrame) -> pd.Series:
+        return momentum.calculate_rsi_momentum(df)
 
     # ------------------------------------------------------------------
     # Core orchestration method
@@ -258,6 +258,8 @@ class TechnicalCalculator:
 
         # 3. Momentum & Oscillator indicators
         res["rsi_9"] = momentum.calculate_rsi(res, window=9)
+        rsi_9_df = pd.DataFrame({"rsi_9": res["rsi_9"]}, index=res.index)
+        res["rsi_9_wma_21"] = price.calculate_wma(rsi_9_df, window=21, column="rsi_9")
         res["rsi_14"] = momentum.calculate_rsi(res, window=14)
 
         macd_line, macd_sig, macd_hist = momentum.calculate_macd(res, fast=12, slow=26, signal=9)
@@ -272,8 +274,8 @@ class TechnicalCalculator:
         for k, v in rs_dict.items():
             res[k] = v
 
-        # Composite breakout rule (HMM)
-        res["HMM"] = momentum.calculate_hmm_indicator(res)
+        # Composite breakout rule (RSI Momentum)
+        res["rsi_momentum"] = momentum.calculate_rsi_momentum(res)
 
         # 4. Crossovers
         g_cross, d_cross = crossovers.calculate_golden_death_cross(res)
