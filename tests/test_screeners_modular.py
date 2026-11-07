@@ -1,6 +1,5 @@
-"""
-Unit Tests for Systematic Strategies (T12)
-==========================================
+"""Unit Tests for Modular Systematic Screeners
+=============================================
 Verifies condition execution, explainability, and near-miss identification across:
 1. MinerviniTrendTemplateScreener
 2. Breakout52wVolumeScreener
@@ -14,14 +13,12 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.screeners.strategies import (
-    Breakout52wVolumeScreener,
-    CompositeTrendScreener,
-    MinerviniTrendTemplateScreener,
-    RsiPullbackUptrendScreener,
-    RsLeadersScreener,
-    VcpLiteScreener,
-)
+from src.screeners.breakout_52w import Breakout52wVolumeScreener
+from src.screeners.composite_trend import CompositeTrendScreener
+from src.screeners.minervini import MinerviniTrendTemplateScreener
+from src.screeners.rs_leaders import RsLeadersScreener
+from src.screeners.rsi_pullback import RsiPullbackUptrendScreener
+from src.screeners.vcp_lite import VcpLiteScreener
 
 
 # ---------------------------------------------------------------------------
