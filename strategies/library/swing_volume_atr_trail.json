@@ -1,0 +1,46 @@
+{
+  "name": "Swing Volume ATR Trailing",
+  "version": "1.0",
+  "description": "Trend alignment with volume surge entry, 2.0x ATR initial stop, and dynamic 2.0x ATR trailing ratchet with breakeven at 1.5R.",
+  "author": "trader",
+  "status": "candidate",
+  "universe": "NIFTY 500",
+  "entry": {
+    "screener_key": "swing_volume",
+    "inline_rules": [
+      "rsi_14 < 70"
+    ],
+    "timing": "next_open"
+  },
+  "exit": {
+    "stop_loss_type": "atr",
+    "stop_loss_value": 2.0,
+    "target_type": "none",
+    "target_value": null,
+    "trailing_stop_type": "atr",
+    "trailing_stop_value": 2.0,
+    "breakeven": true,
+    "move_to_breakeven_at_r": 1.5,
+    "max_holding_days": 20,
+    "exit_rules": []
+  },
+  "sizing": {
+    "method": "risk_percent",
+    "risk_percent": 1.0,
+    "fixed_amount": 50000.0,
+    "max_positions": 5,
+    "max_portfolio_heat_percent": 5.0
+  },
+  "costs": {
+    "slippage_bps": 5.0,
+    "dp_charge_per_scrip_day": 0.0,
+    "exchange_turnover_rate": 0.0000307,
+    "sebi_turnover_rate": 0.000001,
+    "stt_buy_rate": 0.001,
+    "stt_sell_rate": 0.001,
+    "stamp_duty_rate": 0.00015,
+    "gst_rate": 0.18,
+    "brokerage_per_order": 0.0,
+    "stcg_tax_rate": 0.20
+  }
+}
