@@ -254,10 +254,10 @@ def test_sqlite_rebuild_adjusted_and_stale_removal():
         ).one()
         assert float(tcs_d1.adj_close) == 3500.0
 
-        # Idempotency: second rebuild produces identical state
+        # Idempotency: second rebuild modifies 0 rows (G7 changed/NULL filter)
         updated_2 = rebuild_adjusted(session=session)
         session.commit()
-        assert updated_2 == 5
+        assert updated_2 == 0
 
 
 def test_sqlite_adjust_new_rows_incremental():

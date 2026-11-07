@@ -169,7 +169,7 @@ class NSEIndexSource(BenchmarkSource):
             df.columns = df.columns.str.strip()
 
             results: dict[str, float] = {}
-            for _, row in df.iterrows():
+            for row in df.to_dict("records"):
                 idx_name = str(row.get("Index Name", "")).strip().lower()
                 matched_code = INDEX_NAME_NORMALIZATION.get(idx_name)
                 if matched_code:
