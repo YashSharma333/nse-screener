@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -233,7 +234,17 @@ def save_indicator_parquet_cache(
 
     try:
         tmp_file = Path(tmp_path)
-        df.to_parquet(tmp_file, index=False, engine="pyarrow")
+        sorted_df = (
+            df.sort_values(by=["symbol", "date"]).reset_index(drop=True)
+            if {"symbol", "date"}.issubset(df.columns)
+            else df
+        )
+        sorted_df.to_parquet(
+            tmp_file,
+            index=False,
+            engine="pyarrow",
+            row_group_size=50000,
+        )
         tmp_file.replace(cache_path)
 
         # Build and write metadata sidecar
@@ -289,12 +300,14 @@ def load_indicator_snapshot(
     use_adjusted: bool = True,
     force_refresh: bool = False,
     cache_path: Path = INDICATORS_CACHE_PATH,
+    snapshot_only: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool, str]:
     """Unified data loader returning the latest market snapshot and full history.
 
     Verifies freshness against indicators.meta.json and current database metrics
     (db_max_date, adj_factors_count, adj_factors_max_detected_at, benchmark_max_date,
     indicators_schema_version). Recomputes and updates cache if any metric differs.
+    When snapshot_only=True, loads ONLY the latest date rows via PyArrow dataset filter.
     """
     meta_path = cache_path.with_suffix(".meta.json")
 
@@ -306,35 +319,55 @@ def load_indicator_snapshot(
 
             schema_ver = meta.get("indicators_schema_version")
             if schema_ver == INDICATORS_SCHEMA_VERSION:
-                cached_df = pd.read_parquet(cache_path)
-                if not cached_df.empty and "date" in cached_df.columns:
-                    cached_df["date"] = pd.to_datetime(cached_df["date"]).dt.date
-                    max_cache_date = cached_df["date"].max()
+                is_fresh = False
+                is_live = False
+                if check_connection():
+                    is_live = True
+                    db_meta = get_db_cache_metadata()
+                    is_fresh = (
+                        db_meta.get("db_max_date") == meta.get("db_max_date")
+                        and db_meta.get("adj_factors_count") == meta.get("adj_factors_count")
+                        and db_meta.get("adj_factors_max_detected_at")
+                        == meta.get("adj_factors_max_detected_at")
+                        and db_meta.get("benchmark_max_date") == meta.get("benchmark_max_date")
+                    )
+                else:
+                    # Offline: return cache as best-effort
+                    is_fresh = True
+                    is_live = False
 
-                    if check_connection():
-                        db_meta = get_db_cache_metadata()
-                        # Verify multi-metric alignment
-                        is_fresh = (
-                            db_meta.get("db_max_date") == meta.get("db_max_date")
-                            and db_meta.get("adj_factors_count") == meta.get("adj_factors_count")
-                            and db_meta.get("adj_factors_max_detected_at")
-                            == meta.get("adj_factors_max_detected_at")
-                            and db_meta.get("benchmark_max_date") == meta.get("benchmark_max_date")
-                            and meta.get("row_count") == len(cached_df)
-                        )
+                if is_fresh:
+                    max_cache_date = meta.get("db_max_date")
 
-                        if is_fresh:
-                            snapshot = get_latest_market_snapshot(cached_df)
-                            msg = f"Parquet Cache: {len(snapshot)} symbols (as of {max_cache_date})"
-                            return snapshot, cached_df, True, msg
-                    else:
-                        # Offline: return cache as best-effort
-                        snapshot = get_latest_market_snapshot(cached_df)
+                    if snapshot_only:
+                        import pyarrow.dataset as ds
+                        import pyarrow.parquet as pq
+
+                        if not max_cache_date:
+                            dates_tbl = pq.read_table(cache_path, columns=["date"])
+                            max_cache_date = dates_tbl["date"].to_pandas().max()
+
+                        dataset = ds.dataset(cache_path, format="parquet")
+                        table = dataset.to_table(filter=ds.field("date") == str(max_cache_date))
+                        snapshot = table.to_pandas()
+                        if not snapshot.empty and "date" in snapshot.columns:
+                            snapshot["date"] = pd.to_datetime(snapshot["date"]).dt.date
+                        tag = " (Offline)" if not is_live else ""
                         msg = (
-                            f"Parquet Cache (Offline): {len(snapshot)} symbols "
-                            f"(as of {max_cache_date})"
+                            f"Parquet Cache{tag}: {len(snapshot)} symbols (as of {max_cache_date})"
                         )
-                        return snapshot, cached_df, False, msg
+                        return snapshot, pd.DataFrame(), is_live, msg
+
+                    cached_df = pd.read_parquet(cache_path)
+                    if not cached_df.empty and "date" in cached_df.columns:
+                        cached_df["date"] = pd.to_datetime(cached_df["date"]).dt.date
+                        max_cache_date = cached_df["date"].max()
+                        snapshot = get_latest_market_snapshot(cached_df)
+                        tag = " (Offline)" if not is_live else ""
+                        msg = (
+                            f"Parquet Cache{tag}: {len(snapshot)} symbols (as of {max_cache_date})"
+                        )
+                        return snapshot, cached_df, is_live, msg
         except Exception as exc:
             logger.warning("Error reading Parquet cache or metadata (%s), recomputing...", exc)
 
@@ -401,14 +434,58 @@ def get_market_data(use_adjusted: bool = True) -> dict[str, Any]:
     }
 
 
-def clear_market_data_cache() -> None:
-    """Clear market data cache on ETL updates."""
-    try:
-        import streamlit as st
+def load_indicator_history(
+    columns: Sequence[str] | None = None,
+    symbols: Sequence[str] | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    cache_path: Path = INDICATORS_CACHE_PATH,
+) -> pd.DataFrame:
+    """Load indicator history with PyArrow column projection and predicate pushdown filters.
 
-        st.cache_data.clear()
-    except Exception:
-        pass
+    Ensures the backend queries only the requested columns and symbols/dates without
+    loading the entire multi-year historical dataset into memory.
+    """
+    if not cache_path.exists():
+        _snapshot, full, _live, _msg = load_indicator_snapshot(cache_path=cache_path)
+        if full.empty:
+            return pd.DataFrame()
+
+    import pyarrow.dataset as ds
+
+    dataset = ds.dataset(cache_path, format="parquet")
+
+    filter_expr = None
+    if symbols:
+        sym_filter = ds.field("symbol").isin(list(symbols))
+        filter_expr = sym_filter if filter_expr is None else (filter_expr & sym_filter)
+    if start:
+        start_str = start.isoformat() if isinstance(start, date) else str(start)
+        start_filter = ds.field("date") >= start_str
+        filter_expr = start_filter if filter_expr is None else (filter_expr & start_filter)
+    if end:
+        end_str = end.isoformat() if isinstance(end, date) else str(end)
+        end_filter = ds.field("date") <= end_str
+        filter_expr = end_filter if filter_expr is None else (filter_expr & end_filter)
+
+    proj_columns = None
+    if columns is not None:
+        proj_columns = list(columns)
+        if "symbol" not in proj_columns:
+            proj_columns.insert(0, "symbol")
+        if "date" not in proj_columns:
+            proj_columns.insert(1, "date")
+
+    table = dataset.to_table(columns=proj_columns, filter=filter_expr)
+    df = table.to_pandas()
+    if not df.empty and "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df
+
+
+def clear_market_data_cache() -> None:
+    """Reset market data cache metadata state (UI cache clearing resides in ui/data.py)."""
+    logger.debug("Market data cache clear requested.")
 
 
 __all__ = [
@@ -422,6 +499,7 @@ __all__ = [
     "get_index_constituents",
     "get_latest_market_snapshot",
     "get_market_data",
+    "load_indicator_history",
     "load_indicator_snapshot",
     "load_raw_market_data",
     "refresh_indicator_cache",

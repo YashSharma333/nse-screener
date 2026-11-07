@@ -1,5 +1,4 @@
-"""
-Pluggable Screener Registry
+"""Pluggable Screener Registry
 ===========================
 Provides registration, lookup, and discovery for systematic screeners.
 """
@@ -8,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from src.screeners.base import Screener
 
@@ -30,11 +29,10 @@ def register_screener(key: str | None = None) -> Callable[[T], T]:
                 "or specify a key in @register_screener."
             )
         if screener_key in _REGISTRY:
-            logger.warning(
-                "Overwriting registered screener key '%s' (%s with %s)",
-                screener_key,
-                _REGISTRY[screener_key].__name__,
-                cls.__name__,
+            reg_name = _REGISTRY[screener_key].__name__
+            raise ValueError(
+                f"Screener key '{screener_key}' already registered by {reg_name}. "
+                f"Cannot overwrite with {cls.__name__}."
             )
         _REGISTRY[screener_key] = cls
         return cls
@@ -51,17 +49,25 @@ def get_screener(key: str, **params: Any) -> Screener:
     return screener_cls(**params)
 
 
-def list_screeners(category: str | None = None) -> list[type[Screener]]:
-    """List registered screener classes, optionally filtered by category."""
-    all_screeners = list(_REGISTRY.values())
+def list_screeners(
+    category: str | None = None,
+    status: Literal["core", "experimental"] | None = None,
+) -> list[type[Screener]]:
+    """List registered screener classes, optionally filtered by category and/or status."""
+    screeners = list(_REGISTRY.values())
     if category is not None:
-        return [s for s in all_screeners if s.category.lower() == category.lower()]
-    return sorted(all_screeners, key=lambda s: (s.category, s.name))
+        screeners = [s for s in screeners if s.category.lower() == category.lower()]
+    if status is not None:
+        screeners = [s for s in screeners if getattr(s, "status", "experimental") == status]
+    return sorted(screeners, key=lambda s: (s.category, s.name))
 
 
-def get_screener_keys(category: str | None = None) -> list[str]:
-    """List all registered screener keys, optionally filtered by category."""
-    screeners = list_screeners(category=category)
+def get_screener_keys(
+    category: str | None = None,
+    status: Literal["core", "experimental"] | None = None,
+) -> list[str]:
+    """List all registered screener keys, optionally filtered by category and/or status."""
+    screeners = list_screeners(category=category, status=status)
     return [s.key for s in screeners]
 
 

@@ -1,47 +1,87 @@
-"""
-Price-Based Screening Conditions
-================================
-Reusable condition functions strictly evaluating price, moving averages,
-Bollinger bands, true range, and 52-week price extremes.
+"""Price-Based Screening Conditions
+=================================
+Reusable condition functions evaluating price levels, moving average relationships,
+52-week extremes, volatility bounds, and Bollinger Band compressions.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-import numpy as np
 import pandas as pd
+
+from src.screeners.base import MissingIndicatorError
 
 
 def cond_above_sma(df: pd.DataFrame, sma_col: str = "sma_50") -> pd.Series:
     """Condition: Close price is strictly above the specified SMA."""
-    if df.empty or "close" not in df.columns or sma_col not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    missing = [c for c in ("close", sma_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
     return (df["close"] > df[sma_col]).fillna(False)
+
+
+def cond_sma_above_sma(
+    df: pd.DataFrame, fast_sma: str = "sma_50", slow_sma: str = "sma_200"
+) -> pd.Series:
+    """Condition: Fast SMA is strictly above Slow SMA (e.g. 50 SMA > 200 SMA)."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    missing = [c for c in (fast_sma, slow_sma) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
+    return (df[fast_sma] > df[slow_sma]).fillna(False)
+
+
+def cond_ema_above_sma(
+    df: pd.DataFrame, ema_col: str = "ema_20", sma_col: str = "sma_50"
+) -> pd.Series:
+    """Condition: EMA is strictly above SMA (e.g. 20 EMA > 50 SMA)."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    missing = [c for c in (ema_col, sma_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
+    return (df[ema_col] > df[sma_col]).fillna(False)
 
 
 def cond_ma_alignment(
     df: pd.DataFrame,
-    short_col: str = "ema_20",
-    mid_col: str = "sma_50",
-    long_col: str = "sma_200",
+    fast_ma: str = "ema_20",
+    mid_ma: str = "sma_50",
+    slow_ma: str = "sma_200",
 ) -> pd.Series:
-    """Condition: Short MA > Mid MA > Long MA (e.g., EMA 20 > SMA 50 > SMA 200)."""
-    if df.empty or not {short_col, mid_col, long_col}.issubset(df.columns):
+    """Condition: Moving averages strictly stacked in bullish order (fast > mid > slow)."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    return ((df[short_col] > df[mid_col]) & (df[mid_col] > df[long_col])).fillna(False)
+
+    missing = [c for c in (fast_ma, mid_ma, slow_ma) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
+    return ((df[fast_ma] > df[mid_ma]) & (df[mid_ma] > df[slow_ma])).fillna(False)
 
 
-def cond_price_above_mas(df: pd.DataFrame, mas: Sequence[str] = ("sma_50", "sma_200")) -> pd.Series:
-    """Condition: Close price is above all specified moving averages."""
-    if df.empty or "close" not in df.columns:
+def cond_price_above_mas(df: pd.DataFrame, mas: Sequence[str]) -> pd.Series:
+    """Condition: Close price is strictly above all specified moving averages."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    missing = [c for c in ("close", *mas) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
     mask = pd.Series(True, index=df.index)
     for ma in mas:
-        if ma in df.columns:
-            mask &= df["close"] > df[ma]
-        else:
-            return pd.Series(False, index=df.index, dtype=bool)
+        mask &= df["close"] > df[ma]
     return mask.fillna(False)
 
 
@@ -54,18 +94,14 @@ def cond_within_pct_of_52w_high(
 
     Close >= (1 - max_pct_below / 100) * Ref_High
     """
-    if df.empty or "close" not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    if high_col in df.columns:
-        ref_high = df[high_col]
-    elif "high_52w" in df.columns:
-        ref_high = df["high_52w"].shift(1)
-    elif "high" in df.columns:
-        ref_high = df["high"].rolling(252, min_periods=20).max().shift(1)
-    else:
-        return pd.Series(False, index=df.index, dtype=bool)
+    missing = [c for c in ("close", high_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
 
+    ref_high = df[high_col]
     threshold_factor = 1.0 - (max_pct_below / 100.0)
     return (df["close"] >= threshold_factor * ref_high).fillna(False)
 
@@ -79,8 +115,12 @@ def cond_above_52w_low_pct(
 
     Close >= (1 + min_pct_above / 100) * Low_52w
     """
-    if df.empty or "close" not in df.columns or low_col not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    missing = [c for c in ("close", low_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
 
     threshold_factor = 1.0 + (min_pct_above / 100.0)
     return (df["close"] >= threshold_factor * df[low_col]).fillna(False)
@@ -92,48 +132,65 @@ def cond_sma_trending_up(
     periods: int = 21,
 ) -> pd.Series:
     """Condition: Specified SMA is trending up over the last N periods."""
-    if df.empty or sma_col not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    if f"{sma_col}_slope_{periods}d" in df.columns:
-        return (df[f"{sma_col}_slope_{periods}d"] >= 0.0).fillna(False)
+    slope_col = f"{sma_col}_slope_{periods}d"
+    if slope_col not in df.columns:
+        raise MissingIndicatorError([slope_col])
 
-    sma_shift = df[sma_col].shift(periods)
-    return (df[sma_col] >= sma_shift).fillna(False)
+    return (df[slope_col] >= 0.0).fillna(False)
 
 
 def cond_near_52w_low(df: pd.DataFrame, threshold_pct: float = 5.0) -> pd.Series:
     """Condition: Close price is within threshold_pct% of 52-week Low."""
-    if df.empty or "close" not in df.columns or "low_52w" not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    pct_from_low = ((df["close"] - df["low_52w"]) / df["low_52w"].replace(0, np.nan)) * 100.0
+    missing = [c for c in ("close", "low_52w") if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
+    low_series = df["low_52w"].replace(0, float("nan"))
+    pct_from_low = ((df["close"] - df["low_52w"]) / low_series) * 100.0
     return (pct_from_low <= threshold_pct).fillna(False)
 
 
 def cond_bollinger_squeeze(df: pd.DataFrame, threshold: float = 0.1) -> pd.Series:
     """Condition: Price position within Bollinger Bands is near lower band (< threshold)."""
-    if df.empty or not {"close", "bb_upper", "bb_lower"}.issubset(df.columns):
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    band_width = df["bb_upper"] - df["bb_lower"]
-    position = (df["close"] - df["bb_lower"]) / band_width.replace(0, np.nan)
-    return (position < threshold).fillna(False)
+    missing = [c for c in ("close", "bb_upper", "bb_lower") if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
+
+    band_width = (df["bb_upper"] - df["bb_lower"]).replace(0, float("nan"))
+    position = (df["close"] - df["bb_lower"]) / band_width
+    return (position <= threshold).fillna(False)
 
 
 def cond_high_volatility(df: pd.DataFrame, threshold: float = 0.03) -> pd.Series:
-    """Condition: 20-day daily return volatility is greater than threshold."""
-    if df.empty or "volatility_20" not in df.columns:
+    """Condition: 20-day return volatility exceeds threshold."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    return (df["volatility_20"] > threshold).fillna(False)
+
+    if "volatility_20" not in df.columns:
+        raise MissingIndicatorError(["volatility_20"])
+
+    return (df["volatility_20"] >= threshold).fillna(False)
 
 
 def cond_atr_contracting(df: pd.DataFrame, threshold_factor: float = 0.75) -> pd.Series:
     """Condition: Current ATR% has contracted compared to its 60-day maximum."""
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    if "atr_pct" in df.columns and "atr_pct_max_60d" in df.columns:
-        return (df["atr_pct"] <= df["atr_pct_max_60d"] * threshold_factor).fillna(False)
-    if "bb_width" in df.columns:
-        return (df["bb_width"] <= 0.12).fillna(False)
-    return pd.Series(False, index=df.index, dtype=bool)
+
+    missing = [c for c in ("atr_pct", "atr_pct_max_60d") if c not in df.columns]
+    if missing:
+        # Fallback to bb_width if available
+        if "bb_width" in df.columns:
+            return (df["bb_width"] <= 0.12).fillna(False)
+        raise MissingIndicatorError(missing)
+
+    return (df["atr_pct"] <= df["atr_pct_max_60d"] * threshold_factor).fillna(False)

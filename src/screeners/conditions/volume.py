@@ -1,5 +1,4 @@
-"""
-Volume-Based Screening Conditions
+"""Volume-Based Screening Conditions
 =================================
 Reusable condition functions evaluating traded share volume, volume moving
 averages, volume expansion/surges, volume dryup, and minimum liquidity.
@@ -9,6 +8,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.screeners.base import MissingIndicatorError
+
 
 def cond_volume_surge(
     df: pd.DataFrame,
@@ -16,15 +17,14 @@ def cond_volume_surge(
     vol_sma_col: str = "volume_sma_20",
 ) -> pd.Series:
     """Condition: Traded volume exceeds multiplier * volume moving average."""
-    if df.empty or "volume" not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    if vol_sma_col in df.columns:
-        vol_sma = df[vol_sma_col]
-    else:
-        vol_sma = df["volume"].rolling(20, min_periods=5).mean()
+    missing = [c for c in ("volume", vol_sma_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
 
-    return (df["volume"] > multiplier * vol_sma).fillna(False)
+    return (df["volume"] > multiplier * df[vol_sma_col]).fillna(False)
 
 
 def cond_min_volume(
@@ -36,14 +36,10 @@ def cond_min_volume(
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    if vol_sma_col in df.columns:
-        vol_sma = df[vol_sma_col]
-    elif "volume" in df.columns:
-        vol_sma = df["volume"].rolling(20, min_periods=5).mean()
-    else:
-        return pd.Series(False, index=df.index, dtype=bool)
+    if vol_sma_col not in df.columns:
+        raise MissingIndicatorError([vol_sma_col])
 
-    return (vol_sma > min_volume).fillna(False)
+    return (df[vol_sma_col] > min_volume).fillna(False)
 
 
 def cond_volume_dryup(
@@ -52,15 +48,14 @@ def cond_volume_dryup(
     vol_sma_col: str = "volume_sma_20",
 ) -> pd.Series:
     """Condition: Traded volume is subdued / contracted relative to moving average."""
-    if df.empty or "volume" not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
     if "vol_dryup" in df.columns:
         return (df["vol_dryup"] <= max_ratio).fillna(False)
 
-    if vol_sma_col in df.columns:
-        vol_sma = df[vol_sma_col]
-    else:
-        vol_sma = df["volume"].rolling(20, min_periods=5).mean()
+    missing = [c for c in ("volume", vol_sma_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
 
-    return (df["volume"] <= max_ratio * vol_sma).fillna(False)
+    return (df["volume"] <= max_ratio * df[vol_sma_col]).fillna(False)

@@ -24,7 +24,8 @@ from src.screeners.classic import (
     RsiOverboughtScreener,
     RsiOversoldScreener,
 )
-from src.screeners.swing import SwingMomentumScreener, SwingVolumeScreener
+from src.screeners.swing_momentum import SwingMomentumScreener
+from src.screeners.swing_volume import SwingVolumeScreener
 
 
 def _base_s1_row(**overrides) -> dict:

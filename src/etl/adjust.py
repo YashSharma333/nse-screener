@@ -1,5 +1,4 @@
-"""
-Corporate Actions Adjustment Engine
+"""Corporate Actions Adjustment Engine
 ===================================
 Detects splits, bonuses, and capital actions using Bhavcopy PREV_CLOSE comparisons,
 calculates backwards cumulative adjustment factors, and reconstructs historical
@@ -16,7 +15,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from src.db.models import AdjFactor, DailyPrice
@@ -33,6 +32,7 @@ def detect_events(
     df: pd.DataFrame,
     global_trading_days: Sequence[date] | None = None,
     non_trading_days: set[date] | None = None,
+    total_db_symbols: int | None = None,
 ) -> pd.DataFrame:
     """Detect corporate actions (splits, bonuses) by comparing PREV_CLOSE to prior CLOSE.
 
@@ -45,6 +45,9 @@ def detect_events(
         Ordered sequence of all valid market trading dates.
     non_trading_days: set[date] | None
         Set of known market holidays / non-trading weekdays.
+    total_db_symbols: int | None
+        Total number of active symbols in the database, used as the denominator for
+        cross-sectional suppression guard.
 
     Returns
     -------
@@ -74,14 +77,12 @@ def detect_events(
         return pd.DataFrame(columns=keep_cols)
 
     # 1. Trading-day continuity check
-    # Convert dates to datetime.date objects for comparison
     cur_dates = work["date"].dt.date.to_numpy()
     prev_dates = work["date_prev"].dt.date.to_numpy()
 
     holidays = non_trading_days or set()
 
     if global_trading_days is not None and len(global_trading_days) > 1:
-        # Build mapping of trading_day -> previous_trading_day
         sorted_g_days = sorted(set(global_trading_days))
         prev_g_map = {sorted_g_days[i]: sorted_g_days[i - 1] for i in range(1, len(sorted_g_days))}
 
@@ -90,8 +91,6 @@ def detect_events(
             dtype=bool,
         )
     else:
-        # Fallback: check business day continuity
-        # Consecutive business days have busday_count == 1
         consecutive = np.zeros(len(cur_dates), dtype=bool)
         for i in range(len(cur_dates)):
             d_prev = prev_dates[i]
@@ -100,8 +99,6 @@ def detect_events(
             if bus_count <= 1:
                 consecutive[i] = True
             elif holidays:
-                # Check if all intermediate weekdays are known holidays
-                # Range from d_prev + 1 day to d_curr - 1 day
                 days_between = pd.date_range(
                     d_prev + pd.Timedelta(days=1), d_curr - pd.Timedelta(days=1)
                 )
@@ -114,13 +111,6 @@ def detect_events(
         logger.info(
             "Skipped ratio check for %d rows with missing preceding trading day", skipped_count
         )
-        for idx in np.where(~consecutive)[0]:
-            logger.debug(
-                "Missing trading day gap for %s between %s and %s — skipping ratio check",
-                work.iloc[idx]["symbol"],
-                prev_dates[idx],
-                cur_dates[idx],
-            )
         work = work[consecutive].copy()
 
     if work.empty:
@@ -139,9 +129,13 @@ def detect_events(
         return pd.DataFrame(columns=keep_cols)
 
     # 2. Cross-sectional guard:
-    # If > 15% of active symbols show an event on the same date, treat as market-wide gap
+    # Denominator must be total symbols in DB (Seed E).
+    # If > 15% of total active symbols show an event on the same date, treat as market-wide gap.
+    # Minimum universe size threshold is 20 symbols. If total symbols < 20, suppression is skipped.
     events["event_date"] = events["date"].dt.date
-    n_total_symbols = work_df["symbol"].nunique()
+    n_total_symbols = (
+        total_db_symbols if total_db_symbols is not None else work_df["symbol"].nunique()
+    )
 
     if n_total_symbols >= 5:
         date_counts = events.groupby("event_date")["symbol"].nunique()
@@ -176,18 +170,11 @@ def detect_events(
 
 
 def cumulative_factors(dates: Sequence[date], events_df: pd.DataFrame) -> np.ndarray:
-    """Compute cumulative backward adjustment factor for each date in a symbol series.
-
-    For date t:
-        cum_t = product of factor_e for all material events e with date_e > t
-
-    If there are no subsequent material events, cum_t = 1.0.
-    """
+    """Compute cumulative backward adjustment factor for each date in a symbol series."""
     sorted_dates = pd.to_datetime(pd.Series(dates)).reset_index(drop=True)
     if events_df.empty:
         return np.ones(len(sorted_dates), dtype=np.float64)
 
-    # Only material events are applied
     mat_events = events_df[events_df["ratio_kind"] == "material"].copy()
     if mat_events.empty:
         return np.ones(len(sorted_dates), dtype=np.float64)
@@ -196,14 +183,10 @@ def cumulative_factors(dates: Sequence[date], events_df: pd.DataFrame) -> np.nda
     event_dates = mat_events["date"].to_numpy()
     event_factors = mat_events["factor"].to_numpy()
 
-    # Vectorized cumulative product across event thresholds
     date_matrix = sorted_dates.to_numpy()[:, None]  # Shape (N, 1)
     event_matrix = event_dates[None, :]  # Shape (1, E)
 
-    # Condition: event date > trading date t
     applies = event_matrix > date_matrix  # Shape (N, E)
-
-    # Broadcast factor where applied, 1.0 elsewhere, then take product along axis 1
     factors_grid = np.where(applies, event_factors[None, :], 1.0)
     cum_factors = np.prod(factors_grid, axis=1)
 
@@ -226,6 +209,7 @@ def rebuild_adjusted(
     """Recompute corporate action adjustment factors and update daily_prices.
 
     Idempotent: updates adj_open, adj_high, adj_low, adj_close, adj_volume.
+    Updates only rows whose adjusted values changed or are NULL.
     """
     target_engine = engine or default_engine
     if target_engine is None and session is None:
@@ -236,7 +220,6 @@ def rebuild_adjusted(
         "Rebuilding adjusted prices (symbols=%s)...", "all" if symbols is None else len(symbols)
     )
 
-    # 1. Load prices and global trading days
     if session is not None:
         conn = session.connection()
         close_conn = False
@@ -245,32 +228,30 @@ def rebuild_adjusted(
         close_conn = True
 
     try:
+        # Determine total symbol count in database for the cross-sectional guard
+        total_syms_stmt = select(func.count(func.distinct(DailyPrice.symbol)))
+        total_db_symbols = conn.execute(total_syms_stmt).scalar() or 0
+
+        columns_to_select = [
+            DailyPrice.symbol,
+            DailyPrice.date,
+            DailyPrice.open,
+            DailyPrice.high,
+            DailyPrice.low,
+            DailyPrice.close,
+            DailyPrice.prev_close,
+            DailyPrice.volume,
+            DailyPrice.adj_close,
+        ]
+
         if symbols:
             stmt = (
-                select(
-                    DailyPrice.symbol,
-                    DailyPrice.date,
-                    DailyPrice.open,
-                    DailyPrice.high,
-                    DailyPrice.low,
-                    DailyPrice.close,
-                    DailyPrice.prev_close,
-                    DailyPrice.volume,
-                )
+                select(*columns_to_select)
                 .where(DailyPrice.symbol.in_(symbols))
                 .order_by(DailyPrice.symbol, DailyPrice.date)
             )
         else:
-            stmt = select(
-                DailyPrice.symbol,
-                DailyPrice.date,
-                DailyPrice.open,
-                DailyPrice.high,
-                DailyPrice.low,
-                DailyPrice.close,
-                DailyPrice.prev_close,
-                DailyPrice.volume,
-            ).order_by(DailyPrice.symbol, DailyPrice.date)
+            stmt = select(*columns_to_select).order_by(DailyPrice.symbol, DailyPrice.date)
 
         df = pd.read_sql(stmt, conn)
 
@@ -288,17 +269,19 @@ def rebuild_adjusted(
         logger.info("No prices to adjust.")
         return 0
 
-    # 2. Detect events across the dataset
-    events_df = detect_events(df, global_trading_days=global_trading_days)
+    # 2. Detect events across the dataset with total database symbols denominator
+    events_df = detect_events(
+        df,
+        global_trading_days=global_trading_days,
+        total_db_symbols=total_db_symbols,
+    )
 
     def _sync_db(active_session: Session) -> None:
-        # A. Remove stale events for the symbols being rebuilt
         target_symbols = symbols or df["symbol"].unique().tolist()
         if target_symbols:
             del_stmt = delete(AdjFactor).where(AdjFactor.symbol.in_(target_symbols))
             active_session.execute(del_stmt)
 
-        # B. Upsert newly detected events
         if not events_df.empty:
             ev_records = [
                 {
@@ -307,7 +290,7 @@ def rebuild_adjusted(
                     "factor": float(ev["factor"]),
                     "ratio_kind": ev["ratio_kind"],
                 }
-                for _, ev in events_df.iterrows()
+                for ev in events_df.to_dict("records")
             ]
             upsert_rows(active_session, AdjFactor, ev_records)
 
@@ -319,7 +302,7 @@ def rebuild_adjusted(
 
     save_events_report(events_df)
 
-    # 3. Vectorized adjusted price calculation per symbol
+    # 3. Vectorized adjusted price calculation per symbol, updating only changed/NULL rows
     updated_rows = 0
     grouped = df.groupby("symbol")
     update_sql = text("""
@@ -343,7 +326,6 @@ def rebuild_adjusted(
             dates_list = sym_df["date"].tolist()
             cum_facts = cumulative_factors(dates_list, sym_events)
 
-            # Adjusted price = raw price * cum_t
             open_vals = sym_df["open"].to_numpy(dtype=float)
             high_vals = sym_df["high"].to_numpy(dtype=float)
             low_vals = sym_df["low"].to_numpy(dtype=float)
@@ -362,7 +344,20 @@ def rebuild_adjusted(
                 d.date() if isinstance(d, pd.Timestamp) else d for d in sym_df["date"].tolist()
             ]
 
+            existing_adj = sym_df["adj_close"].to_numpy() if "adj_close" in sym_df.columns else None
+
             for i in range(len(sym_dates)):
+                target_c = float(adj_close[i]) if not np.isnan(adj_close[i]) else None
+                # Update only rows whose values changed or are NULL
+                if (
+                    existing_adj is not None
+                    and (ex_val := existing_adj[i]) is not None
+                    and not np.isnan(ex_val)
+                    and target_c is not None
+                    and abs(float(ex_val) - target_c) < 1e-4
+                ):
+                    continue
+
                 all_update_records.append(
                     {
                         "b_symbol": sym,
@@ -370,29 +365,24 @@ def rebuild_adjusted(
                         "b_adj_open": None if np.isnan(adj_open[i]) else float(adj_open[i]),
                         "b_adj_high": None if np.isnan(adj_high[i]) else float(adj_high[i]),
                         "b_adj_low": None if np.isnan(adj_low[i]) else float(adj_low[i]),
-                        "b_adj_close": None if np.isnan(adj_close[i]) else float(adj_close[i]),
-                        "b_adj_volume": None if np.isnan(adj_volume[i]) else int(adj_volume[i]),
+                        "b_adj_close": target_c,
+                        "b_adj_volume": int(adj_volume[i]),
                     }
                 )
 
-        for b_start in range(0, len(all_update_records), 500):
-            active_session.execute(update_sql, all_update_records[b_start : b_start + 500])
-
         updated_rows = len(all_update_records)
+        for b_start in range(0, len(all_update_records), 1000):
+            batch = all_update_records[b_start : b_start + 1000]
+            active_session.execute(update_sql, batch)
+
+        logger.info("Adjusted prices update complete: modified %d rows.", updated_rows)
         return updated_rows
 
     if session is not None:
-        _apply_updates(session)
+        return _apply_updates(session)
     else:
         with get_db() as s:
-            _apply_updates(s)
-
-    logger.info(
-        "Adjusted price rebuild complete. %d records updated across %d symbols.",
-        updated_rows,
-        len(grouped),
-    )
-    return updated_rows
+            return _apply_updates(s)
 
 
 def adjust_new_rows(
@@ -402,14 +392,70 @@ def adjust_new_rows(
 ) -> int:
     """Incrementally adjust newly loaded price rows.
 
-    1. Checks if newly loaded rows contain any new material events.
+    1. Checks if newly loaded rows contain any new material events by comparing
+       against each symbol's last stored close in the database (Seed D).
     2. If a symbol has a new event, triggers a full rebuild for that symbol.
     3. If no new events exist, populates adj_* = raw for the new rows.
     """
     if new_df.empty:
         return 0
 
-    new_events = detect_events(new_df)
+    target_engine = engine or default_engine
+    if target_engine is None and session is None:
+        logger.warning("Database engine offline. Skipping incremental price adjustment.")
+        return 0
+
+    work_new = new_df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(work_new["date"]):
+        work_new["date"] = pd.to_datetime(work_new["date"])
+
+    symbols = work_new["symbol"].unique().tolist()
+    min_date = work_new["date"].dt.date.min()
+
+    def _fetch_prior_and_total(active_conn: Any) -> tuple[pd.DataFrame, int]:
+        total_syms = (
+            active_conn.execute(select(func.count(func.distinct(DailyPrice.symbol)))).scalar() or 0
+        )
+
+        sub = (
+            select(DailyPrice.symbol, func.max(DailyPrice.date).label("max_date"))
+            .where(DailyPrice.symbol.in_(symbols), DailyPrice.date < min_date)
+            .group_by(DailyPrice.symbol)
+            .subquery()
+        )
+        prior_stmt = (
+            select(
+                DailyPrice.symbol,
+                DailyPrice.date,
+                DailyPrice.close,
+                DailyPrice.prev_close,
+            )
+            .join(
+                sub,
+                (DailyPrice.symbol == sub.c.symbol) & (DailyPrice.date == sub.c.max_date),
+            )
+            .order_by(DailyPrice.symbol, DailyPrice.date)
+        )
+        prior_df = pd.read_sql(prior_stmt, active_conn)
+        return prior_df, total_syms
+
+    if session is not None:
+        prior_df, total_db_symbols = _fetch_prior_and_total(session.connection())
+    else:
+        with target_engine.connect() as conn:
+            prior_df, total_db_symbols = _fetch_prior_and_total(conn)
+
+    if not prior_df.empty:
+        combined_df = pd.concat([prior_df, work_new], ignore_index=True)
+    else:
+        combined_df = work_new
+
+    new_events = detect_events(combined_df, total_db_symbols=total_db_symbols)
+
+    if not new_events.empty:
+        event_dates = pd.to_datetime(new_events["date"]).dt.date
+        new_events = new_events[event_dates >= min_date].copy()
+
     material_events = (
         new_events[new_events["ratio_kind"] == "material"]
         if not new_events.empty
@@ -435,17 +481,13 @@ def adjust_new_rows(
         WHERE symbol = :b_symbol AND date = :b_date
     """)
 
-    records = [
-        {
-            "b_symbol": row["symbol"],
-            "b_date": row["date"].date() if isinstance(row["date"], pd.Timestamp) else row["date"],
-        }
-        for _, row in new_df.iterrows()
-    ]
+    sym_list = work_new["symbol"].tolist()
+    date_list = [d.date() if isinstance(d, pd.Timestamp) else d for d in work_new["date"].tolist()]
+    records = [{"b_symbol": s, "b_date": d} for s, d in zip(sym_list, date_list, strict=False)]
 
     def _run_adj(active_session: Session) -> None:
-        for b_start in range(0, len(records), 500):
-            active_session.execute(update_sql, records[b_start : b_start + 500])
+        for b_start in range(0, len(records), 1000):
+            active_session.execute(update_sql, records[b_start : b_start + 1000])
 
     if session is not None:
         _run_adj(session)

@@ -24,13 +24,14 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 from sqlalchemy import text
 
 from config.settings import PROJECT_ROOT, setup_logging
 from src.db.models import DailyPrice
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
-from src.etl.adjust import rebuild_adjusted
+from src.etl.adjust import adjust_new_rows, rebuild_adjusted
 from src.ingestion.benchmark import load_benchmarks
 from src.ingestion.downloader import NSEBhavcopyDownloader
 from src.ingestion.index_constituents import (
@@ -520,11 +521,13 @@ class BhavcopyETL:
         success, failed = self.load_to_db(stock_rows)
 
         if success:
-            # 4. Rebuild adjusted prices
+            # 4. Incrementally adjust prices for newly loaded rows
             try:
-                rebuild_adjusted()
+                all_new_rows = [row for rows in stock_rows.values() for row in rows]
+                new_df = pd.DataFrame(all_new_rows)
+                adjust_new_rows(new_df)
             except Exception as adj_exc:
-                logger.warning("Could not rebuild adjusted prices: %s", adj_exc)
+                logger.warning("Could not incrementally adjust new price rows: %s", adj_exc)
 
             # 5. Ingest benchmarks for newly downloaded dates
             try:
