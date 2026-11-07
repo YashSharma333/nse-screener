@@ -258,18 +258,25 @@ class StrategySpec(BaseModel):
     @classmethod
     def from_json(cls, data_or_path: str | Path | dict[str, Any]) -> StrategySpec:
         """Instantiate StrategySpec from JSON string, dictionary, or file path."""
-        if isinstance(data_or_path, (str, Path)):
-            p = Path(data_or_path)
-            if p.is_file():
-                content = p.read_text(encoding="utf-8")
-                return cls.model_validate_json(content)
-            # Try parsing as JSON string directly
+        if isinstance(data_or_path, Path):
+            if not data_or_path.is_file():
+                raise FileNotFoundError(f"Strategy specification file not found: {data_or_path}")
+            content = data_or_path.read_text(encoding="utf-8")
+            return cls.model_validate_json(content)
+
+        if isinstance(data_or_path, str):
+            stripped = data_or_path.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                return cls.model_validate_json(stripped)
             try:
-                return cls.model_validate_json(str(data_or_path))
-            except Exception:
-                raise FileNotFoundError(
-                    f"Strategy specification file not found: {data_or_path}"
-                ) from None
+                p = Path(data_or_path)
+                if p.is_file():
+                    content = p.read_text(encoding="utf-8")
+                    return cls.model_validate_json(content)
+            except OSError:
+                pass
+            return cls.model_validate_json(data_or_path)
+
         if isinstance(data_or_path, dict):
             return cls.model_validate(data_or_path)
         raise TypeError(f"Unsupported input type for StrategySpec.from_json: {type(data_or_path)}")
