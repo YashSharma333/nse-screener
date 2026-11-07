@@ -10,6 +10,10 @@ import src.screeners.classic  # noqa: F401
 from src.screeners.base import MissingIndicatorError, Screener, ScreenerMetadata
 from src.screeners.breakout_52w import Breakout52wParams, Breakout52wVolumeScreener
 from src.screeners.composite_trend import CompositeTrendParams, CompositeTrendScreener
+from src.screeners.declarative import (
+    create_declarative_screener,
+    load_custom_screeners,
+)
 from src.screeners.minervini import MinerviniParams, MinerviniTrendTemplateScreener
 from src.screeners.registry import (
     clear_registry,
@@ -49,8 +53,13 @@ __all__ = [
     "VcpLiteParams",
     "VcpLiteScreener",
     "clear_registry",
+    "create_declarative_screener",
     "get_screener",
     "get_screener_keys",
     "list_screeners",
+    "load_custom_screeners",
     "register_screener",
 ]
+
+# Auto-discover declarative JSON screeners
+load_custom_screeners()
