@@ -388,8 +388,6 @@ def render_sidebar_controls() -> None:
                 etl = BhavcopyETL()
                 res = etl.run_incremental()
                 st.session_state.etl_status = res
-                # Invalidate in-memory session cache to display freshly updated records
-                st.session_state.market_data_cache = None
         except Exception as exc:
             st.session_state.etl_status = {"status": "error", "message": str(exc)}
         finally:

@@ -1,8 +1,7 @@
-"""
-Screener Base Class Architecture
+"""Screener Base Class Architecture
 ================================
 Provides the abstract base class `Screener` ensuring all systematic screens:
-1. Define standardized metadata (key, name, description, category, version).
+1. Define standardized metadata (key, name, description, category, version, status).
 2. Group their screening rules strictly by nature:
    - Price conditions
    - Volume conditions
@@ -14,10 +13,23 @@ Provides the abstract base class `Screener` ensuring all systematic screens:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Sequence
+from dataclasses import dataclass, fields, is_dataclass
+from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
+
+
+class MissingIndicatorError(Exception):
+    """Raised when required precomputed indicator columns are missing from the input."""
+
+    def __init__(self, missing_columns: Sequence[str] | set[str] | list[str]):
+        self.missing_columns = sorted(missing_columns)
+        super().__init__(f"Missing required indicator columns: {', '.join(self.missing_columns)}")
+
+    def __str__(self) -> str:
+        return f"Missing required indicator columns: {', '.join(self.missing_columns)}"
 
 
 @dataclass(frozen=True)
@@ -29,6 +41,9 @@ class ScreenerMetadata:
     description: str
     category: str
     version: str = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    evidence_columns: tuple[str, ...] = ()
+    required_columns: tuple[str, ...] = ()
 
 
 class Screener:
@@ -39,9 +54,25 @@ class Screener:
     description: str = ""
     category: str = "general"
     version: str = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    evidence_columns: tuple[str, ...] = ()
+    required_columns: tuple[str, ...] = ()
+    params_cls: type | None = None
 
     def __init__(self, **params: Any) -> None:
-        self.params: dict[str, Any] = params
+        if self.params_cls is not None and is_dataclass(self.params_cls):
+            valid_fields = {f.name for f in fields(self.params_cls)}
+            unknown = set(params.keys()) - valid_fields
+            if unknown:
+                unknown_str = ", ".join(sorted(unknown))
+                valid_str = ", ".join(sorted(valid_fields))
+                raise TypeError(
+                    f"Unknown parameter(s) for {self.__class__.__name__}: {unknown_str}. "
+                    f"Valid parameters: {valid_str}"
+                )
+            self.params: Any = self.params_cls(**params)
+        else:
+            self.params = params
 
     @classmethod
     def get_metadata(cls) -> ScreenerMetadata:
@@ -51,7 +82,10 @@ class Screener:
             name=cls.name,
             description=cls.description,
             category=cls.category,
-            version=cls.version,
+            version=str(cls.version),
+            status=cls.status,
+            evidence_columns=cls.evidence_columns,
+            required_columns=cls.required_columns,
         )
 
     # ------------------------------------------------------------------
@@ -82,6 +116,7 @@ class Screener:
     # ------------------------------------------------------------------
     def conditions_by_nature(self, df: pd.DataFrame) -> dict[str, dict[str, pd.Series]]:
         """Return all conditions organized strictly by their nature."""
+        self._validate_required_columns(df)
         return {
             "universe": self.universe_conditions(df),
             "price": self.price_conditions(df),
@@ -89,6 +124,14 @@ class Screener:
             "crossover": self.crossover_conditions(df),
             "momentum": self.momentum_conditions(df),
         }
+
+    def _validate_required_columns(self, df: pd.DataFrame) -> None:
+        """Verify that all required columns are present in input DataFrame."""
+        if not self.required_columns or df.empty:
+            return
+        missing = [col for col in self.required_columns if col not in df.columns]
+        if missing:
+            raise MissingIndicatorError(missing)
 
     def all_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
         """Return a flattened mapping of {condition_name: boolean_series}."""
@@ -121,7 +164,7 @@ class Screener:
         return df[mask].copy()
 
     def explain(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Evaluate conditions and produce detailed diagnostic columns.
+        """Evaluate conditions and produce detailed diagnostic columns without iterrows.
 
         Added diagnostic columns:
         - `cond_{name}`: boolean column per condition
@@ -176,22 +219,33 @@ class Screener:
 
         cond_matrix = pd.concat(cond_series_list, axis=1)
         cond_matrix.columns = cond_names
-        passed_count = cond_matrix.sum(axis=1)
+
+        # Vectorized diagnostics using NumPy array operations (G5)
+        cond_values = cond_matrix.to_numpy(dtype=bool)  # Shape (N, C)
+        failed_matrix = ~cond_values
+        passed_count = cond_values.sum(axis=1)
         total_count = len(cond_names)
 
         res["conditions_passed"] = passed_count
         res["conditions_total"] = total_count
         res["passed"] = passed_count == total_count
-        res["near_miss"] = passed_count == (total_count - 1)
+        near_miss_mask = passed_count == (total_count - 1)
+        res["near_miss"] = near_miss_mask
 
-        failed_lists: list[list[str]] = []
-        near_miss_on_list: list[str] = []
-        for _, row in cond_matrix.iterrows():
-            failed = [name for name, val in row.items() if not val]
-            failed_lists.append(failed)
-            near_miss_on_list.append(failed[0] if len(failed) == 1 else "")
+        # Vectorized near_miss_on
+        cond_names_arr = np.array(cond_names, dtype=object)
+        single_fail_idx = np.argmin(cond_values, axis=1)
+        res["near_miss_on"] = np.where(near_miss_mask, cond_names_arr[single_fail_idx], "")
+
+        # Vectorized failed_conditions list-per-row
+        n_rows = len(df)
+        failed_lists: list[list[str]] = [[] for _ in range(n_rows)]
+        row_indices, col_indices = np.where(failed_matrix)
+        for r, c in zip(row_indices, col_indices, strict=False):
+            failed_lists[r].append(cond_names[c])
 
         res["failed_conditions"] = failed_lists
-        res["near_miss_on"] = near_miss_on_list
-
         return res
+
+
+BaseScreener = Screener

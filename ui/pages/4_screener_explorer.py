@@ -30,7 +30,7 @@ import streamlit as st
 from src.screeners.registry import get_screener, list_screeners
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
-from ui.data import get_market_data, render_uninitialized_prompt
+from ui.data import get_snapshot, render_uninitialized_prompt
 
 
 def setup_page_config() -> None:
@@ -48,9 +48,8 @@ def main() -> None:
         setup_page_config()
         apply_terminal_theme()
 
-        data = get_market_data()
+        data = get_snapshot()
         snapshot = data["snapshot"]
-        indicators_df = data["indicators"]
         is_live = data["is_live"]
 
         render_terminal_header(
@@ -66,13 +65,19 @@ def main() -> None:
             render_uninitialized_prompt()
             return
 
-        all_screeners = list_screeners()
-        if not all_screeners:
-            st.warning("No screeners registered in the system.")
-            return
-
         # Sidebar Screener Selection
         st.sidebar.markdown("### 🔍 Select Screener")
+        show_experimental = st.sidebar.checkbox(
+            "Show experimental screeners",
+            value=False,
+            help="Include experimental screeners alongside production-ready core screeners.",
+        )
+        status_filter = None if show_experimental else "core"
+        all_screeners = list_screeners(status=status_filter)
+        if not all_screeners:
+            st.warning("No screeners registered matching the selected status filter.")
+            return
+
         categories = sorted({s.category.upper() for s in all_screeners})
         selected_cat = st.sidebar.selectbox("Category Filter", ["ALL", *categories])
 
@@ -205,7 +210,7 @@ def main() -> None:
             if not qualifying.empty
             else (near_misses.iloc[0]["symbol"] if not near_misses.empty else None)
         )
-        render_stock_inspector(indicators_df, default_symbol=top_symbol, key_prefix="explorer")
+        render_stock_inspector(snapshot, default_symbol=top_symbol, key_prefix="explorer")
 
     except Exception as exc:
         logger.error("Screener Explorer page error: %s", exc, exc_info=True)

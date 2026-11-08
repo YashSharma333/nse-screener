@@ -1,14 +1,31 @@
-"""
-Momentum & Oscillator Screening Conditions
-==========================================
-Reusable condition functions evaluating RSI, comparative relative strength,
-percentile ranks, return caps/floors, and multi-period return ratios.
+"""Momentum and Oscillator Screening Conditions
+============================================
+Reusable condition functions evaluating RSI, MACD histograms, relative strength,
+and rate-of-change return bounds.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
+
+from src.screeners.base import MissingIndicatorError
+
+
+def cond_rsi_bounds(
+    df: pd.DataFrame,
+    min_rsi: float = 40.0,
+    max_rsi: float = 70.0,
+    rsi_col: str = "rsi_14",
+) -> pd.Series:
+    """Condition: RSI indicator falls within [min_rsi, max_rsi]."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    if rsi_col not in df.columns:
+        raise MissingIndicatorError([rsi_col])
+
+    rsi = df[rsi_col]
+    return ((rsi >= min_rsi) & (rsi <= max_rsi)).fillna(False)
 
 
 def cond_rsi_in_range(
@@ -17,10 +34,8 @@ def cond_rsi_in_range(
     upper: float = 55.0,
     rsi_col: str = "rsi_14",
 ) -> pd.Series:
-    """Condition: RSI oscillator is between lower and upper bounds."""
-    if df.empty or rsi_col not in df.columns:
-        return pd.Series(False, index=df.index, dtype=bool)
-    return ((df[rsi_col] >= lower) & (df[rsi_col] <= upper)).fillna(False)
+    """Condition: RSI indicator falls within support range [lower, upper]."""
+    return cond_rsi_bounds(df, min_rsi=lower, max_rsi=upper, rsi_col=rsi_col)
 
 
 def cond_rsi_oversold(
@@ -28,9 +43,13 @@ def cond_rsi_oversold(
     threshold: float = 30.0,
     rsi_col: str = "rsi_14",
 ) -> pd.Series:
-    """Condition: RSI is below oversold threshold."""
-    if df.empty or rsi_col not in df.columns:
+    """Condition: RSI indicator is oversold (< threshold)."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    if rsi_col not in df.columns:
+        raise MissingIndicatorError([rsi_col])
+
     return (df[rsi_col] < threshold).fillna(False)
 
 
@@ -39,10 +58,46 @@ def cond_rsi_overbought(
     threshold: float = 70.0,
     rsi_col: str = "rsi_14",
 ) -> pd.Series:
-    """Condition: RSI is above overbought threshold."""
-    if df.empty or rsi_col not in df.columns:
+    """Condition: RSI indicator is overbought (> threshold)."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    if rsi_col not in df.columns:
+        raise MissingIndicatorError([rsi_col])
+
     return (df[rsi_col] > threshold).fillna(False)
+
+
+def cond_macd_histogram_positive(df: pd.DataFrame) -> pd.Series:
+    """Condition: MACD histogram is strictly greater than 0."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    if "macd_histogram" not in df.columns:
+        raise MissingIndicatorError(["macd_histogram"])
+
+    return (df["macd_histogram"] > 0.0).fillna(False)
+
+
+def cond_relative_strength_positive(
+    df: pd.DataFrame,
+    period: int = 63,
+    benchmark_code: str = "NIFTY 500",
+) -> pd.Series:
+    """Condition: Relative return performance vs benchmark is positive."""
+    if df.empty:
+        return pd.Series(False, index=df.index, dtype=bool)
+
+    safe_bm = benchmark_code.replace(" ", "_")
+    col_name = f"rs_{period}d_{safe_bm}"
+
+    if col_name not in df.columns:
+        fallback_col = f"rs_{period}d"
+        if fallback_col in df.columns:
+            return (df[fallback_col] > 0.0).fillna(False)
+        raise MissingIndicatorError([col_name])
+
+    return (df[col_name] > 0.0).fillna(False)
 
 
 def cond_relative_strength_leader(
@@ -50,20 +105,28 @@ def cond_relative_strength_leader(
     rs_col: str = "rs_63d",
     min_rs: float = 0.0,
 ) -> pd.Series:
-    """Condition: Relative strength vs benchmark is strictly above min_rs."""
-    if df.empty or rs_col not in df.columns:
+    """Condition: Relative strength vs benchmark exceeds min_rs."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    if rs_col not in df.columns:
+        raise MissingIndicatorError([rs_col])
+
     return (df[rs_col] > min_rs).fillna(False)
 
 
 def cond_percentile_rank_leader(
     df: pd.DataFrame,
     rank_col: str = "ret_rank_252d",
-    min_rank: float = 80.0,
+    min_rank: float = 70.0,
 ) -> pd.Series:
-    """Condition: Cross-sectional return percentile rank is at or above min_rank."""
-    if df.empty or rank_col not in df.columns:
+    """Condition: Cross-sectional return percentile rank meets or exceeds min_rank."""
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
+
+    if rank_col not in df.columns:
+        raise MissingIndicatorError([rank_col])
+
     return (df[rank_col] >= min_rank).fillna(False)
 
 
@@ -76,17 +139,10 @@ def cond_return_capped(
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    if ret_col in df.columns:
-        ret = df[ret_col]
-    elif "close_60d" in df.columns and ret_col == "return_60d":
-        ret = ((df["close"] - df["close_60d"]) / df["close_60d"].replace(0, np.nan)) * 100.0
-    elif "close" in df.columns:
-        shifted = df["close"].shift(60)
-        ret = ((df["close"] - shifted) / shifted.replace(0, np.nan)) * 100.0
-    else:
-        return pd.Series(False, index=df.index, dtype=bool)
+    if ret_col not in df.columns:
+        raise MissingIndicatorError([ret_col])
 
-    return (ret <= max_return).fillna(False)
+    return (df[ret_col] <= max_return).fillna(False)
 
 
 def cond_return_floor(
@@ -98,17 +154,10 @@ def cond_return_floor(
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    if ret_col in df.columns:
-        ret = df[ret_col]
-    elif "close_120d" in df.columns and ret_col == "return_120d":
-        ret = ((df["close"] - df["close_120d"]) / df["close_120d"].replace(0, np.nan)) * 100.0
-    elif "close" in df.columns:
-        shifted = df["close"].shift(120)
-        ret = ((df["close"] - shifted) / shifted.replace(0, np.nan)) * 100.0
-    else:
-        return pd.Series(False, index=df.index, dtype=bool)
+    if ret_col not in df.columns:
+        raise MissingIndicatorError([ret_col])
 
-    return (ret >= min_return).fillna(False)
+    return (df[ret_col] >= min_return).fillna(False)
 
 
 def cond_return_ratio(
@@ -119,21 +168,19 @@ def cond_return_ratio(
     max_val: float | None = None,
 ) -> pd.Series:
     """Condition: ((Close - Close_N) / Close_D) * 100 bounded within [min_val, max_val]."""
-    if df.empty or "close" not in df.columns:
+    if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
 
-    c_num = (
-        df[f"close_{numerator_shift}d"]
-        if f"close_{numerator_shift}d" in df.columns
-        else df["close"].shift(numerator_shift)
-    )
-    c_den = (
-        df[f"close_{denominator_shift}d"]
-        if f"close_{denominator_shift}d" in df.columns
-        else df["close"].shift(denominator_shift)
-    )
+    c_num_col = f"close_{numerator_shift}d"
+    c_den_col = f"close_{denominator_shift}d"
+    missing = [c for c in ("close", c_num_col, c_den_col) if c not in df.columns]
+    if missing:
+        raise MissingIndicatorError(missing)
 
-    ratio = ((df["close"] - c_num) / c_den.replace(0, np.nan)) * 100.0
+    c_num = df[c_num_col]
+    c_den = df[c_den_col].replace(0, float("nan"))
+
+    ratio = ((df["close"] - c_num) / c_den) * 100.0
     mask = pd.Series(True, index=df.index)
 
     if min_val is not None:

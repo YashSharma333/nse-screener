@@ -3,7 +3,7 @@ Momentum & Oscillator Technical Indicators
 ==========================================
 Contains velocity, strength, oscillator, and comparative performance indicators:
 Relative Strength Index (RSI), MACD, Relative Performance vs Benchmark (RS),
-Cross-Sectional Return Percentile Ranks, and the custom HMM composite momentum rule.
+Cross-Sectional Return Percentile Ranks, and the custom RSI Momentum composite rule.
 """
 
 from __future__ import annotations
@@ -131,12 +131,11 @@ def calculate_cross_sectional_ranks(
     return rank_126, rank_252
 
 
-def calculate_hmm_indicator(df: pd.DataFrame) -> pd.Series:
-    """Calculate custom composite breakout momentum condition ('HMM').
+def calculate_rsi_momentum(df: pd.DataFrame) -> pd.Series:
+    """Calculate composite breakout momentum condition ('RSI Momentum').
 
-    NOTE: Despite the legacy naming, this indicator is NOT a probabilistic
-    Hidden Markov Model. It is a deterministic rule-based composite filter
-    combining:
+    NOTE: Formerly referred to as 'HMM' in earlier revisions. This rule is a
+    deterministic rule-based composite filter combining:
       1. Condition A: RSI(9) >= WMA(RSI(9), 21) + 1.1 and 45 <= RSI(9) <= 65
       2. Condition B: EMA(20) > SMA(50) > SMA(200) and Close > SMA(50) & SMA(200)
       3. Condition C: Close >= 0.85 * (1-day shifted 252d High)
@@ -165,5 +164,5 @@ def calculate_hmm_indicator(df: pd.DataFrame) -> pd.Series:
     vol_sma_20 = df.get("volume_sma_20", pd.Series(0, index=df.index))
     cond_d = (vol > 1.5 * vol_sma_20) & (vol_sma_20 > 250_000)
 
-    hmm = cond_a & cond_b & cond_c & cond_d
-    return hmm.fillna(False)
+    res = cond_a & cond_b & cond_c & cond_d
+    return res.fillna(False)

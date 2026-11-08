@@ -1,5 +1,4 @@
-"""
-Classic Technical Filter Screeners
+"""Classic Technical Filter Screeners
 ==================================
 Standard technical screens categorized as "classic":
 - Moving average positioning (Above 50 SMA, Above 200 SMA)
@@ -11,7 +10,8 @@ Standard technical screens categorized as "classic":
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Literal
 
 import pandas as pd
 
@@ -35,6 +35,49 @@ from src.screeners.conditions.price import (
 from src.screeners.registry import register_screener
 
 
+@dataclass(frozen=True)
+class EmptyParams:
+    """Empty parameters for parameterless classic screeners."""
+
+
+@dataclass(frozen=True)
+class ThresholdPctParams:
+    """Configurable percentage threshold parameter."""
+
+    threshold_pct: float = 5.0
+
+
+@dataclass(frozen=True)
+class RsiThresholdParams:
+    """Configurable RSI threshold parameter."""
+
+    threshold: float = 30.0
+
+
+@dataclass(frozen=True)
+class RsiOverboughtParams:
+    """Configurable RSI overbought threshold parameter."""
+
+    threshold: float = 70.0
+
+
+@dataclass(frozen=True)
+class VolatilityThresholdParams:
+    """Configurable volatility threshold parameter."""
+
+    threshold: float = 0.03
+
+
+@dataclass(frozen=True)
+class SqueezeThresholdParams:
+    """Configurable Bollinger Squeeze threshold parameter."""
+
+    threshold: float = 0.1
+
+
+# ---------------------------------------------------------------------------
+# 1. Moving Average Screens
+# ---------------------------------------------------------------------------
 @register_screener()
 class Above50SmaScreener(Screener):
     """Stocks with Close price above 50-day Simple Moving Average."""
@@ -43,6 +86,11 @@ class Above50SmaScreener(Screener):
     name = "Above 50 SMA"
     description = "Stocks trading strictly above their 50-day Simple Moving Average."
     category = "classic"
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = EmptyParams
+    evidence_columns = ("close", "sma_50")
+    required_columns = ("close", "sma_50")
 
     def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
         return {"close_above_sma50": cond_above_sma(df, "sma_50")}
@@ -56,11 +104,19 @@ class Above200SmaScreener(Screener):
     name = "Above 200 SMA"
     description = "Stocks trading strictly above their 200-day Simple Moving Average."
     category = "classic"
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = EmptyParams
+    evidence_columns = ("close", "sma_200")
+    required_columns = ("close", "sma_200")
 
     def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
         return {"close_above_sma200": cond_above_sma(df, "sma_200")}
 
 
+# ---------------------------------------------------------------------------
+# 2. Crossover Screens
+# ---------------------------------------------------------------------------
 @register_screener()
 class GoldenCrossScreener(Screener):
     """Stocks where 50-day SMA crossed above 200-day SMA."""
@@ -69,6 +125,11 @@ class GoldenCrossScreener(Screener):
     name = "Golden Cross"
     description = "Stocks undergoing a classical Golden Cross (50 SMA crossing above 200 SMA)."
     category = "classic"
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = EmptyParams
+    evidence_columns = ("golden_cross", "sma_50", "sma_200")
+    required_columns = ("golden_cross",)
 
     def crossover_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
         return {"golden_cross": cond_golden_cross(df)}
@@ -82,11 +143,37 @@ class DeathCrossScreener(Screener):
     name = "Death Cross"
     description = "Stocks undergoing a classical Death Cross (50 SMA crossing below 200 SMA)."
     category = "classic"
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = EmptyParams
+    evidence_columns = ("death_cross", "sma_50", "sma_200")
+    required_columns = ("death_cross",)
 
     def crossover_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
         return {"death_cross": cond_death_cross(df)}
 
 
+@register_screener()
+class BullishMacdCrossoverScreener(Screener):
+    """Stocks where MACD line crossed above signal line."""
+
+    key = "bullish_macd_crossover"
+    name = "Bullish MACD Crossover"
+    description = "Stocks where the MACD line crossed above the 9-day signal line."
+    category = "classic"
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = EmptyParams
+    evidence_columns = ("macd_cross_up", "macd_line", "macd_signal")
+    required_columns = ("macd_cross_up",)
+
+    def crossover_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+        return {"macd_cross_up": cond_macd_bullish_cross(df)}
+
+
+# ---------------------------------------------------------------------------
+# 3. 52-Week Extreme Screens
+# ---------------------------------------------------------------------------
 @register_screener()
 class Near52WeekHighScreener(Screener):
     """Stocks within a configurable percentage of their 52-week High."""
@@ -95,15 +182,17 @@ class Near52WeekHighScreener(Screener):
     name = "Near 52-Week High"
     description = "Stocks trading within N% of their 52-week High."
     category = "classic"
-
-    def __init__(self, threshold_pct: float = 5.0, **kwargs: Any) -> None:
-        super().__init__(threshold_pct=threshold_pct, **kwargs)
-        self.threshold_pct = threshold_pct
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = ThresholdPctParams
+    evidence_columns = ("close", "high_52w")
+    required_columns = ("close", "high_52w")
 
     def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+        params: ThresholdPctParams = self.params
         return {
             "within_52w_high": cond_within_pct_of_52w_high(
-                df, max_pct_below=self.threshold_pct, high_col="high_52w"
+                df, max_pct_below=params.threshold_pct, high_col="high_52w"
             )
         }
 
@@ -116,15 +205,20 @@ class Near52WeekLowScreener(Screener):
     name = "Near 52-Week Low"
     description = "Stocks trading within N% of their 52-week Low."
     category = "classic"
-
-    def __init__(self, threshold_pct: float = 5.0, **kwargs: Any) -> None:
-        super().__init__(threshold_pct=threshold_pct, **kwargs)
-        self.threshold_pct = threshold_pct
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = ThresholdPctParams
+    evidence_columns = ("close", "low_52w")
+    required_columns = ("close", "low_52w")
 
     def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {"near_52w_low": cond_near_52w_low(df, threshold_pct=self.threshold_pct)}
+        params: ThresholdPctParams = self.params
+        return {"near_52w_low": cond_near_52w_low(df, threshold_pct=params.threshold_pct)}
 
 
+# ---------------------------------------------------------------------------
+# 4. Momentum Extremes
+# ---------------------------------------------------------------------------
 @register_screener()
 class RsiOversoldScreener(Screener):
     """Stocks with RSI(14) below oversold threshold."""
@@ -133,13 +227,15 @@ class RsiOversoldScreener(Screener):
     name = "RSI Oversold"
     description = "Stocks with RSI(14) below oversold threshold (default < 30)."
     category = "classic"
-
-    def __init__(self, threshold: float = 30.0, **kwargs: Any) -> None:
-        super().__init__(threshold=threshold, **kwargs)
-        self.threshold = threshold
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = RsiThresholdParams
+    evidence_columns = ("rsi_14",)
+    required_columns = ("rsi_14",)
 
     def momentum_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {"rsi_oversold": cond_rsi_oversold(df, threshold=self.threshold)}
+        params: RsiThresholdParams = self.params
+        return {"rsi_oversold": cond_rsi_oversold(df, threshold=params.threshold)}
 
 
 @register_screener()
@@ -150,28 +246,20 @@ class RsiOverboughtScreener(Screener):
     name = "RSI Overbought"
     description = "Stocks with RSI(14) above overbought threshold (default > 70)."
     category = "classic"
-
-    def __init__(self, threshold: float = 70.0, **kwargs: Any) -> None:
-        super().__init__(threshold=threshold, **kwargs)
-        self.threshold = threshold
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = RsiOverboughtParams
+    evidence_columns = ("rsi_14",)
+    required_columns = ("rsi_14",)
 
     def momentum_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {"rsi_overbought": cond_rsi_overbought(df, threshold=self.threshold)}
+        params: RsiOverboughtParams = self.params
+        return {"rsi_overbought": cond_rsi_overbought(df, threshold=params.threshold)}
 
 
-@register_screener()
-class BullishMacdCrossoverScreener(Screener):
-    """Stocks where MACD line crossed above signal line."""
-
-    key = "bullish_macd_crossover"
-    name = "Bullish MACD Crossover"
-    description = "Stocks where the MACD line crossed above the 9-day signal line."
-    category = "classic"
-
-    def crossover_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {"macd_cross_up": cond_macd_bullish_cross(df)}
-
-
+# ---------------------------------------------------------------------------
+# 5. Volatility Behaviors
+# ---------------------------------------------------------------------------
 @register_screener()
 class HighVolatilityScreener(Screener):
     """Stocks with daily return volatility exceeding threshold."""
@@ -180,13 +268,15 @@ class HighVolatilityScreener(Screener):
     name = "High Volatility"
     description = "Stocks with 20-day daily return volatility exceeding threshold (default > 3%)."
     category = "classic"
-
-    def __init__(self, threshold: float = 0.03, **kwargs: Any) -> None:
-        super().__init__(threshold=threshold, **kwargs)
-        self.threshold = threshold
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = VolatilityThresholdParams
+    evidence_columns = ("volatility_20",)
+    required_columns = ("volatility_20",)
 
     def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {"high_volatility": cond_high_volatility(df, threshold=self.threshold)}
+        params: VolatilityThresholdParams = self.params
+        return {"high_volatility": cond_high_volatility(df, threshold=params.threshold)}
 
 
 @register_screener()
@@ -197,10 +287,12 @@ class BollingerSqueezeScreener(Screener):
     name = "Bollinger Squeeze"
     description = "Stocks where price is near the lower Bollinger Band (< 10% band width)."
     category = "classic"
-
-    def __init__(self, threshold: float = 0.1, **kwargs: Any) -> None:
-        super().__init__(threshold=threshold, **kwargs)
-        self.threshold = threshold
+    version = "1.0"
+    status: Literal["core", "experimental"] = "experimental"
+    params_cls = SqueezeThresholdParams
+    evidence_columns = ("close", "bb_upper", "bb_lower")
+    required_columns = ("close", "bb_upper", "bb_lower")
 
     def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {"bollinger_squeeze": cond_bollinger_squeeze(df, threshold=self.threshold)}
+        params: SqueezeThresholdParams = self.params
+        return {"bollinger_squeeze": cond_bollinger_squeeze(df, threshold=params.threshold)}

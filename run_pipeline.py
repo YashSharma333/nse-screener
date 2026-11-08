@@ -67,12 +67,15 @@ def main() -> None:
     parser.add_argument(
         "--rebuild-adjusted",
         action="store_true",
-        help="Recompute corporate action price adjustments (splits/bonuses) and update database",
+        help=(
+            "Recompute corporate action price adjustments (splits/bonuses), "
+            "update database, and refresh indicator cache"
+        ),
     )
     parser.add_argument(
         "--benchmarks",
         action="store_true",
-        help="Download and ingest benchmark index prices standalone",
+        help="Download and ingest benchmark index prices standalone, and refresh indicator cache",
     )
     parser.add_argument(
         "--refresh-cache",
@@ -107,10 +110,20 @@ def main() -> None:
             logger.info("Executing standalone corporate action price adjustments...")
             updated = etl.rebuild_adjusted_prices()
             logger.info("Adjusted prices rebuild complete. Updated: %d rows.", updated)
+            logger.info("Refreshing indicator cache after adjustment rebuild...")
+            from src.db.data_service import load_indicator_snapshot
+
+            load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+            logger.info("Indicator cache refreshed successfully.")
         elif args.benchmarks:
             logger.info("Executing standalone benchmark index ingestion...")
             count = etl.ingest_benchmarks()
             logger.info("Benchmark ingestion complete. Ingested: %d records.", count)
+            logger.info("Refreshing indicator cache after benchmark ingestion...")
+            from src.db.data_service import load_indicator_snapshot
+
+            load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+            logger.info("Indicator cache refreshed successfully.")
         elif args.incremental:
             logger.info("Executing incremental ETL update...")
             res = etl.run_incremental(lookback_days=args.lookback)

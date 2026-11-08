@@ -19,7 +19,7 @@ import streamlit as st
 from src.screeners.registry import get_screener
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
-from ui.data import get_market_data, render_uninitialized_prompt
+from ui.data import get_snapshot, render_uninitialized_prompt
 
 logger = logging.getLogger("ui.screener_view")
 
@@ -44,9 +44,8 @@ def render_screener_page(
 
     apply_terminal_theme()
 
-    data = get_market_data()
+    data = get_snapshot()
     snapshot = data["snapshot"]
-    indicators_df = data["indicators"]
     is_live = data["is_live"]
 
     render_terminal_header(
@@ -116,7 +115,7 @@ def render_screener_page(
         if not qualifying.empty
         else (near_misses.iloc[0]["symbol"] if not near_misses.empty else None)
     )
-    render_stock_inspector(indicators_df, default_symbol=top_symbol, key_prefix=key_prefix)
+    render_stock_inspector(snapshot, default_symbol=top_symbol, key_prefix=key_prefix)
 
 
 def _render_results_table(df: pd.DataFrame, csv_filename: str) -> None:
