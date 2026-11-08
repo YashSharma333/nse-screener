@@ -1,0 +1,44 @@
+{
+  "name": "RSI Momentum Swing Trail",
+  "version": "1.0",
+  "description": "Fast momentum shift strategy (RSI 9 > WMA 21 of RSI 9) with 4% initial stop, 3% trailing stop, and 8% percentage target.",
+  "author": "trader",
+  "status": "candidate",
+  "universe": "NIFTY 500",
+  "entry": {
+    "screener_key": "rsi_momentum",
+    "inline_rules": [],
+    "timing": "next_open"
+  },
+  "exit": {
+    "stop_loss_type": "percentage",
+    "stop_loss_value": 4.0,
+    "target_type": "percentage",
+    "target_value": 8.0,
+    "trailing_stop_type": "percentage",
+    "trailing_stop_value": 3.0,
+    "breakeven": false,
+    "move_to_breakeven_at_r": null,
+    "max_holding_days": 12,
+    "exit_rules": []
+  },
+  "sizing": {
+    "method": "risk_percent",
+    "risk_percent": 1.0,
+    "fixed_amount": 50000.0,
+    "max_positions": 5,
+    "max_portfolio_heat_percent": 5.0
+  },
+  "costs": {
+    "slippage_bps": 5.0,
+    "dp_charge_per_scrip_day": 0.0,
+    "exchange_turnover_rate": 0.0000307,
+    "sebi_turnover_rate": 0.000001,
+    "stt_buy_rate": 0.001,
+    "stt_sell_rate": 0.001,
+    "stamp_duty_rate": 0.00015,
+    "gst_rate": 0.18,
+    "brokerage_per_order": 0.0,
+    "stcg_tax_rate": 0.20
+  }
+}

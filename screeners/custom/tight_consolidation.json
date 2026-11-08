@@ -1,0 +1,20 @@
+{
+  "key": "custom_tight_consolidation",
+  "name": "Tight Consolidation",
+  "category": "pattern",
+  "description": "Equities in confirmed uptrend consolidating tightly with low volatility and dry volume.",
+  "version": "1.0",
+  "status": "experimental",
+  "rules": [
+    "close > sma_50",
+    "close > sma_200",
+    "volume < volume_sma_20 * 0.8"
+  ],
+  "evidence_columns": [
+    "close",
+    "sma_50",
+    "sma_200",
+    "volume",
+    "volume_sma_20"
+  ]
+}
