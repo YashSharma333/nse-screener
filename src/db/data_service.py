@@ -296,6 +296,23 @@ def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame
     return latest
 
 
+def _date_literal(schema: Any, value: Any) -> Any:
+    """Convert ``value`` to an Arrow scalar matching the type of the cache's ``date`` column.
+
+    Arrow does not compare ``date32`` columns with strings, so filters must use a value of the
+    same type as the stored column (``date32`` normally; timestamp or string for older caches).
+    """
+    import pyarrow as pa
+
+    day = pd.Timestamp(value).date()
+    field_type = schema.field("date").type
+    if pa.types.is_date(field_type):
+        return pa.scalar(day, type=field_type)
+    if pa.types.is_timestamp(field_type):
+        return pa.scalar(pd.Timestamp(day), type=field_type)
+    return pa.scalar(day.isoformat(), type=pa.string())
+
+
 def load_indicator_snapshot(
     use_adjusted: bool = True,
     force_refresh: bool = False,
@@ -348,7 +365,8 @@ def load_indicator_snapshot(
                             max_cache_date = dates_tbl["date"].to_pandas().max()
 
                         dataset = ds.dataset(cache_path, format="parquet")
-                        table = dataset.to_table(filter=ds.field("date") == str(max_cache_date))
+                        latest = _date_literal(dataset.schema, max_cache_date)
+                        table = dataset.to_table(filter=ds.field("date") == latest)
                         snapshot = table.to_pandas()
                         if not snapshot.empty and "date" in snapshot.columns:
                             snapshot["date"] = pd.to_datetime(snapshot["date"]).dt.date
@@ -460,12 +478,10 @@ def load_indicator_history(
         sym_filter = ds.field("symbol").isin(list(symbols))
         filter_expr = sym_filter if filter_expr is None else (filter_expr & sym_filter)
     if start:
-        start_str = start.isoformat() if isinstance(start, date) else str(start)
-        start_filter = ds.field("date") >= start_str
+        start_filter = ds.field("date") >= _date_literal(dataset.schema, start)
         filter_expr = start_filter if filter_expr is None else (filter_expr & start_filter)
     if end:
-        end_str = end.isoformat() if isinstance(end, date) else str(end)
-        end_filter = ds.field("date") <= end_str
+        end_filter = ds.field("date") <= _date_literal(dataset.schema, end)
         filter_expr = end_filter if filter_expr is None else (filter_expr & end_filter)
 
     proj_columns = None
