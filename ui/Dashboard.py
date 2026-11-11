@@ -26,7 +26,6 @@ import pandas as pd
 import streamlit as st
 
 from src.etl.pipeline import BhavcopyETL
-from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 from ui.data import get_snapshot, render_uninitialized_prompt
 
@@ -67,9 +66,9 @@ def run_incremental_update() -> None:
 def format_master_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Map raw technical indicator columns to clean presentation names."""
     col_mapping = {
+        "date": "Date",
         "symbol": "Symbol",
         "index_name": "Index Category",
-        "date": "Date",
         "close": "Close",
         "volume": "Volume",
         "pct_change_daily": "% Change Daily",
@@ -102,13 +101,11 @@ def main() -> None:
         is_live = data["is_live"]
 
         render_terminal_header(
-            title="NSE Master Market Screener",
-            subtitle="CROSS-SECTIONAL TECHNICAL & QUANTITATIVE SNAPSHOT",
+            title="NSE Screener",
+            subtitle="TECHNICAL & QUANTITATIVE SNAPSHOT",
             status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
             is_live=is_live,
         )
-
-        st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
         if not is_live:
             st.warning(
@@ -146,18 +143,16 @@ def main() -> None:
         formatted_df = format_master_dataframe(snapshot)
 
         # Filters Row
-        f1, f2, f3 = st.columns([1.5, 1.5, 3])
+        f1, f2 = st.columns([1.5, 4.5])
         with f1:
             indices = sorted(formatted_df["Index Category"].dropna().unique().tolist())
             selected_indices = st.multiselect("Index Filter", options=indices, default=indices)
         with f2:
-            search_query = st.text_input("Search Symbol", placeholder="e.g. RELIANCE, TCS")
-        with f3:
             all_display_cols = list(formatted_df.columns)
             primary_defaults = [
+                "Date",
                 "Symbol",
                 "Index Category",
-                "Date",
                 "Close",
                 "Volume",
                 "% Change Daily",
@@ -183,10 +178,6 @@ def main() -> None:
         filtered_df = formatted_df.copy()
         if selected_indices:
             filtered_df = filtered_df[filtered_df["Index Category"].isin(selected_indices)]
-        if search_query.strip():
-            filtered_df = filtered_df[
-                filtered_df["Symbol"].str.contains(search_query.strip().upper(), na=False)
-            ]
 
         # Summary KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -219,9 +210,9 @@ def main() -> None:
 
         # Formatting configurations
         column_config = {
+            "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
             "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
             "Index Category": st.column_config.TextColumn("Index", width="medium"),
-            "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
             "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
             "Volume": st.column_config.NumberColumn("Volume", format="%d"),
             "% Change Daily": st.column_config.NumberColumn("% Change Daily", format="%.2f%%"),
@@ -253,13 +244,13 @@ def main() -> None:
 
         st.markdown("---")
 
-        # Interactive Technical Stock Inspector Drilldown
-        default_sym = (
-            display_view["Symbol"].iloc[0]
-            if not display_view.empty and "Symbol" in display_view.columns
-            else None
-        )
-        render_stock_inspector(snapshot, default_symbol=default_sym, key_prefix="dash")
+        # # Interactive Technical Stock Inspector Drilldown
+        # default_sym = (
+        #     display_view["Symbol"].iloc[0]
+        #     if not display_view.empty and "Symbol" in display_view.columns
+        #     else None
+        # )
+        # render_stock_inspector(snapshot, default_symbol=default_sym, key_prefix="dash")
 
     except Exception as exc:
         logger.error("Dashboard page crash: %s", exc, exc_info=True)
