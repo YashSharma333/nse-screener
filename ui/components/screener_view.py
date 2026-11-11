@@ -120,11 +120,19 @@ def render_screener_page(
 
 def _render_results_table(df: pd.DataFrame, csv_filename: str) -> None:
     res = df.copy()
-    if "volume" in res.columns and "volume_sma_20" in res.columns:
+    if (
+        "vol_multiple" not in res.columns
+        and "volume" in res.columns
+        and "volume_sma_20" in res.columns
+    ):
         v_nz = res["volume_sma_20"].replace(0, np.nan)
         res["vol_multiple"] = res["volume"] / v_nz
 
-    if "high_252d_prev" in res.columns and "close" in res.columns:
+    if (
+        "pct_from_52w_high" not in res.columns
+        and "high_252d_prev" in res.columns
+        and "close" in res.columns
+    ):
         h_nz = res["high_252d_prev"].replace(0, np.nan)
         res["pct_from_52w_high"] = ((res["close"] - res["high_252d_prev"]) / h_nz) * 100.0
 
