@@ -3,12 +3,14 @@ Tests for Screener Base Class and Registry (T10)
 ===============================================
 Verifies:
 - Standardized screener registration, discovery, and instantiation.
-- Grouped screening conditions by nature (Price, Volume, Crossover, Momentum).
+- Single unified rules() method.
 - Execution (`run()`) and detailed diagnosis (`explain()`).
 - Near-miss identification when exactly 1 condition fails.
 """
 
 from __future__ import annotations
+
+from typing import Any, ClassVar
 
 import pandas as pd
 import pytest
@@ -23,32 +25,21 @@ from src.screeners.registry import (
 
 
 class DummySampleScreener(Screener):
-    """Test screener with conditions in all 4 nature categories."""
+    """Test screener using the unified rules() pattern."""
 
     key = "dummy_test_screener"
     name = "Dummy Test Screener"
     description = "Screener used for testing registry and explainability"
     category = "test"
+    default_params: ClassVar[dict[str, Any]] = {}
 
-    def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+    def rules(self, df: pd.DataFrame, p: dict[str, Any]) -> dict[str, pd.Series]:
         return {
-            "close_above_sma50": df["close"] > df["sma_50"],
-            "within_10pct_52w_high": df["close"] >= 0.90 * df["high_52w"],
-        }
-
-    def volume_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "volume_above_sma": df["volume"] > df["volume_sma_20"],
-        }
-
-    def crossover_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "golden_cross_recent": df["golden_cross_10d"],
-        }
-
-    def momentum_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "rsi_bullish": df["rsi_14"] > 50.0,
+            "close_above_sma50": (df["close"] > df["sma_50"]).fillna(False),
+            "within_10pct_52w_high": (df["close"] >= 0.90 * df["high_52w"]).fillna(False),
+            "volume_above_sma": (df["volume"] > df["volume_sma_20"]).fillna(False),
+            "golden_cross_recent": df["golden_cross_10d"].fillna(False).astype(bool),
+            "rsi_bullish": (df["rsi_14"] > 50.0).fillna(False),
         }
 
 
@@ -77,7 +68,7 @@ def test_registry_registration_and_lookup() -> None:
 
 
 def test_screener_run_and_explain() -> None:
-    """Verify run() and explain() across all condition groups."""
+    """Verify run() and explain() across all conditions."""
     screener = DummySampleScreener()
 
     # 3 rows:
@@ -108,10 +99,6 @@ def test_screener_run_and_explain() -> None:
     # Check condition columns
     assert "cond_close_above_sma50" in explained.columns
     assert "cond_rsi_bullish" in explained.columns
-    assert "pass_price" in explained.columns
-    assert "pass_volume" in explained.columns
-    assert "pass_crossover" in explained.columns
-    assert "pass_momentum" in explained.columns
 
     # Row 0
     row0 = explained.iloc[0]
@@ -130,8 +117,6 @@ def test_screener_run_and_explain() -> None:
     assert row1["near_miss"] is True or row1["near_miss"] == 1
     assert row1["near_miss_on"] == "rsi_bullish"
     assert row1["failed_conditions"] == ["rsi_bullish"]
-    assert row1["pass_price"] is True or row1["pass_price"] == 1
-    assert row1["pass_momentum"] is False or row1["pass_momentum"] == 0
 
     # Row 2: Failed multiple conditions -> Not a near miss
     row2 = explained.iloc[2]

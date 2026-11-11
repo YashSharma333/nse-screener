@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.screeners.classic import (
+from src.screeners.catalog import (
     Above50SmaScreener,
     Above200SmaScreener,
     BollingerSqueezeScreener,
@@ -23,9 +23,9 @@ from src.screeners.classic import (
     Near52WeekLowScreener,
     RsiOverboughtScreener,
     RsiOversoldScreener,
+    SwingMomentumScreener,
+    SwingVolumeScreener,
 )
-from src.screeners.swing_momentum import SwingMomentumScreener
-from src.screeners.swing_volume import SwingVolumeScreener
 
 
 def _base_s1_row(**overrides) -> dict:

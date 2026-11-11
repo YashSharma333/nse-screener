@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -16,45 +17,19 @@ class SyntheticTenConditionScreener(Screener):
     key = "synthetic_10_cond"
     name = "Synthetic 10 Condition Screener"
     category = "test"
+    default_params: ClassVar[dict[str, Any]] = {}
 
-    def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "c1": (df["v1"] > 50).fillna(False),
-            "c2": (df["v2"] > 50).fillna(False),
-            "c3": (df["v3"] > 50).fillna(False),
-        }
-
-    def volume_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "c4": (df["v4"] > 50).fillna(False),
-            "c5": (df["v5"] > 50).fillna(False),
-        }
-
-    def crossover_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "c6": (df["v6"] > 50).fillna(False),
-            "c7": (df["v7"] > 50).fillna(False),
-        }
-
-    def momentum_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        return {
-            "c8": (df["v8"] > 50).fillna(False),
-            "c9": (df["v9"] > 50).fillna(False),
-            "c10": (df["v10"] > 50).fillna(False),
-        }
+    def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
+        return {f"c{i}": (df[f"v{i}"] > 50).fillna(False) for i in range(1, 11)}
 
 
 def _legacy_explain_reference(
     screener: Screener, df: pd.DataFrame
 ) -> tuple[list[list[str]], list[str]]:
     """Old row-wise implementation for equivalence testing."""
-    grouped = screener.conditions_by_nature(df)
-    cond_names: list[str] = []
-    cond_series_list: list[pd.Series] = []
-    for _nature, conds in grouped.items():
-        for name, series in conds.items():
-            cond_names.append(name)
-            cond_series_list.append(series.fillna(False).astype(bool))
+    conds = screener.all_conditions(df)
+    cond_names: list[str] = list(conds.keys())
+    cond_series_list: list[pd.Series] = [s.fillna(False).astype(bool) for s in conds.values()]
 
     cond_matrix = pd.concat(cond_series_list, axis=1)
     cond_matrix.columns = cond_names
