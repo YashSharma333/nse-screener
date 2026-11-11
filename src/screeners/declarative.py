@@ -56,14 +56,13 @@ def create_declarative_screener(spec: dict[str, Any]) -> type[Screener]:
     evidence_cols = tuple(spec.get("evidence_columns", sorted(all_req_cols)))
     required_cols = tuple(sorted(all_req_cols))
 
-    # Dynamically build methods
-    def conditions_by_nature(self, df: pd.DataFrame) -> dict[str, dict[str, pd.Series]]:
-        self._validate_required_columns(df)
+    # Dynamically build rules method
+    def screener_rules(_self, df: pd.DataFrame, _p: dict[str, Any]) -> dict[str, pd.Series]:
         conds: dict[str, pd.Series] = {}
         for idx, rule_expr in enumerate(rules, start=1):
             rule_name = f"rule_{idx}"
             conds[rule_name] = evaluate_rule(rule_expr, df)
-        return {category: conds}
+        return conds
 
     attrs: dict[str, Any] = {
         "key": key,
@@ -74,8 +73,9 @@ def create_declarative_screener(spec: dict[str, Any]) -> type[Screener]:
         "status": screener_status,
         "evidence_columns": evidence_cols,
         "required_columns": required_cols,
-        "rules": rules,
-        "conditions_by_nature": conditions_by_nature,
+        "rule_expressions": rules,
+        "default_params": {},
+        "rules": screener_rules,
     }
 
     class_name = "".join(w.capitalize() for w in key.replace("-", "_").split("_")) + "Screener"

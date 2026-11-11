@@ -1,13 +1,14 @@
-"""Pluggable Screener Registry
-===========================
-Provides registration, lookup, and discovery for systematic screeners.
+"""Screener Registry
+===================
+A simple global dict that maps screener keys to their classes.
+Use ``@register_screener()`` on a class to add it; use ``get_screener(key)``
+to retrieve an instance anywhere in the codebase.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 from src.screeners.base import Screener
 
@@ -15,13 +16,21 @@ logger = logging.getLogger("src.screeners.registry")
 
 _REGISTRY: dict[str, type[Screener]] = {}
 
-T = TypeVar("T", bound=type[Screener])
 
+def register_screener(key: str | None = None):
+    """Class decorator that registers a Screener subclass into the global registry.
 
-def register_screener(key: str | None = None) -> Callable[[T], T]:
-    """Decorator to register a Screener subclass into the global registry."""
+    Usage:
+        @register_screener()          # uses the class's own ``key`` attribute
+        class MyScreener(Screener):
+            key = "my_screener"
+            ...
 
-    def decorator(cls: T) -> T:
+        @register_screener(key="alt_key")  # explicit override
+        class MyScreener(Screener): ...
+    """
+
+    def decorator(cls: type[Screener]) -> type[Screener]:
         screener_key = key or getattr(cls, "key", "")
         if not screener_key:
             raise ValueError(
@@ -41,19 +50,26 @@ def register_screener(key: str | None = None) -> Callable[[T], T]:
 
 
 def get_screener(key: str, **params: Any) -> Screener:
-    """Retrieve and instantiate a registered screener by key."""
+    """Return an instantiated screener for the given key.
+
+    Parameters
+    ----------
+    key : str
+        The screener's registered key (e.g. ``"swing_volume"``).
+    **params
+        Optional parameter overrides passed to the screener's ``__init__``.
+    """
     if key not in _REGISTRY:
         available = ", ".join(sorted(_REGISTRY.keys()))
         raise KeyError(f"Unknown screener '{key}'. Available screeners: {available}")
-    screener_cls = _REGISTRY[key]
-    return screener_cls(**params)
+    return _REGISTRY[key](**params)
 
 
 def list_screeners(
     category: str | None = None,
     status: Literal["core", "experimental"] | None = None,
 ) -> list[type[Screener]]:
-    """List registered screener classes, optionally filtered by category and/or status."""
+    """Return registered screener classes, optionally filtered by category or status."""
     screeners = list(_REGISTRY.values())
     if category is not None:
         screeners = [s for s in screeners if s.category.lower() == category.lower()]
@@ -66,11 +82,10 @@ def get_screener_keys(
     category: str | None = None,
     status: Literal["core", "experimental"] | None = None,
 ) -> list[str]:
-    """List all registered screener keys, optionally filtered by category and/or status."""
-    screeners = list_screeners(category=category, status=status)
-    return [s.key for s in screeners]
+    """Return all registered screener keys, optionally filtered."""
+    return [s.key for s in list_screeners(category=category, status=status)]
 
 
 def clear_registry() -> None:
-    """Clear registered screeners (intended for unit tests)."""
+    """Clear all registered screeners (for use in unit tests only)."""
     _REGISTRY.clear()
