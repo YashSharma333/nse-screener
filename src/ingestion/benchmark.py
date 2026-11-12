@@ -104,6 +104,35 @@ def record_non_trading_day(d: date) -> None:
             logger.warning("Failed saving benchmark non-trading days: %s", exc)
 
 
+def clear_non_trading_days(start: date, end: date) -> list[date]:
+    """Remove cached non-trading days in [start, end] from benchmark cache.
+
+    Returns the list of removed dates.
+    """
+    existing_str = load_non_trading_days()
+    to_remove: list[date] = []
+    remaining: set[str] = set()
+    for s in existing_str:
+        try:
+            d = date.fromisoformat(s)
+            if start <= d <= end:
+                to_remove.append(d)
+            else:
+                remaining.add(s)
+        except ValueError:
+            remaining.add(s)
+
+    if to_remove:
+        try:
+            _ensure_cache_dir()
+            with NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
+                json.dump(sorted(remaining), f, indent=2)
+        except Exception as exc:
+            logger.warning("Failed saving benchmark non-trading days: %s", exc)
+
+    return sorted(to_remove)
+
+
 class BenchmarkSource(ABC):
     """Abstract interface for downloading index benchmark prices."""
 

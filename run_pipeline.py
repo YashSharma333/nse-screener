@@ -7,6 +7,7 @@ Executes massive historical loads or incremental updates into MySQL.
 import argparse
 import logging
 import sys
+from datetime import date
 
 from config.settings import setup_logging
 from src.etl.pipeline import BhavcopyETL
@@ -82,6 +83,23 @@ def main() -> None:
         action="store_true",
         help="Rebuild the pre-computed indicator Parquet cache from MySQL without downloading",
     )
+    parser.add_argument(
+        "--recheck-non-trading",
+        action="store_true",
+        help="Clear and re-probe cached non-trading days within --start and --end range",
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="Start date in YYYY-MM-DD format (used with --recheck-non-trading or --benchmarks)",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="End date in YYYY-MM-DD format (used with --recheck-non-trading or --benchmarks)",
+    )
 
     args = parser.parse_args()
 
@@ -115,9 +133,42 @@ def main() -> None:
 
             load_indicator_snapshot(use_adjusted=True, force_refresh=True)
             logger.info("Indicator cache refreshed successfully.")
+        elif args.recheck_non_trading:
+            if not args.start or not args.end:
+                logger.error("--recheck-non-trading requires both --start and --end (YYYY-MM-DD)")
+                sys.exit(1)
+            try:
+                start_date = date.fromisoformat(args.start)
+                end_date = date.fromisoformat(args.end)
+            except ValueError as val_err:
+                logger.error("Invalid date format for --start/--end: %s", val_err)
+                sys.exit(1)
+            if start_date > end_date:
+                logger.error(
+                    "--start date (%s) cannot be after --end date (%s)", start_date, end_date
+                )
+                sys.exit(1)
+
+            logger.info(
+                "Executing recheck of cached non-trading days (%s → %s)...",
+                start_date,
+                end_date,
+            )
+            success, failed = etl.recheck_non_trading(
+                start=start_date,
+                end=end_date,
+                skip_constituent_filter=args.skip_constituents,
+            )
+            logger.info(
+                "Recheck completed. Loaded: %d symbols, Failed: %d symbols.",
+                len(success),
+                len(failed),
+            )
         elif args.benchmarks:
             logger.info("Executing standalone benchmark index ingestion...")
-            count = etl.ingest_benchmarks()
+            start_date = date.fromisoformat(args.start) if args.start else None
+            end_date = date.fromisoformat(args.end) if args.end else None
+            count = etl.ingest_benchmarks(start_date=start_date, end_date=end_date)
             logger.info("Benchmark ingestion complete. Ingested: %d records.", count)
             logger.info("Refreshing indicator cache after benchmark ingestion...")
             from src.db.data_service import load_indicator_snapshot
