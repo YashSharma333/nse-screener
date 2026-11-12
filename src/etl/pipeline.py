@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Sequence
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -32,7 +33,15 @@ from src.db.models import DailyPrice
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
-from src.ingestion.benchmark import load_benchmarks
+from src.ingestion.benchmark import (
+    clear_non_trading_days as clear_benchmark_non_trading_days,
+)
+from src.ingestion.benchmark import (
+    load_benchmarks,
+)
+from src.ingestion.benchmark import (
+    load_non_trading_days as load_benchmark_non_trading_days,
+)
 from src.ingestion.downloader import NSEBhavcopyDownloader
 from src.ingestion.index_constituents import (
     NSEIndexConstituents,
@@ -94,6 +103,18 @@ class BhavcopyETL:
         except Exception as exc:
             logger.warning("Database init_db skipped during ETL setup: %s", exc)
 
+    RECENT_NON_TRADING_BUFFER_DAYS = 3  # Dates within this window are never cached as non-trading
+
+    @classmethod
+    def _is_recent_date(cls, d: date, ref_date: date | None = None) -> bool:
+        """Check if date `d` is within the last 3 calendar days of `ref_date` (defaults to today).
+
+        Dates within the last 3 calendar days must never be recorded as non-trading or skipped
+        based on the cache, because NSE may publish Bhavcopy later in the day.
+        """
+        today = ref_date or date.today()
+        return d >= today - timedelta(days=cls.RECENT_NON_TRADING_BUFFER_DAYS)
+
     def get_non_trading_days(self) -> set[date]:
         """Load confirmed non-trading dates (holidays, 404s) from JSON cache."""
         if not self.non_trading_path.exists():
@@ -121,6 +142,28 @@ class BhavcopyETL:
             logger.warning("Could not write non_trading_days.json: %s", exc)
             if tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
+
+    def clear_non_trading_days(self, start: date, end: date) -> list[date]:
+        """Atomically remove cached non-trading dates in [start, end] from JSON cache.
+
+        Returns the list of removed dates.
+        """
+        existing = self.get_non_trading_days()
+        to_remove = {d for d in existing if start <= d <= end}
+        if not to_remove:
+            return []
+        remaining = existing - to_remove
+        iso_list = sorted(d.isoformat() for d in remaining)
+        tmp_path = self.non_trading_path.with_suffix(".json.tmp")
+        try:
+            self.non_trading_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(json.dumps(iso_list, indent=2), encoding="utf-8")
+            tmp_path.replace(self.non_trading_path)
+        except Exception as exc:
+            logger.warning("Could not write non_trading_days.json: %s", exc)
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+        return sorted(to_remove)
 
     def get_stored_dates(self) -> set[date]:
         """Retrieve distinct dates already stored in daily_prices."""
@@ -241,13 +284,22 @@ class BhavcopyETL:
     # Step 2 — Collect new rows
     # ------------------------------------------------------------------
     @staticmethod
-    def _weekdays(start: date, end: date):
-        """Yield every weekday (Mon–Fri) in ``[start, end]``."""
+    def _calendar_days(start: date, end: date):
+        """Yield every calendar day (including weekends/holidays) in ``[start, end]``.
+
+        NSE occasionally conducts special trading sessions on weekends or
+        holidays (e.g. Diwali Muhurat trading on Sunday, Budget Day on Saturday,
+        or disaster recovery live trading sessions). Probing every calendar day
+        ensures these special bars are captured, while ordinary non-trading
+        weekends and holidays return 404 and are cached in non_trading_days.json.
+        """
         cur = start
         while cur <= end:
-            if cur.weekday() < 5:
-                yield cur
+            yield cur
             cur += timedelta(days=1)
+
+    # Backward-compatibility alias
+    _weekdays = _calendar_days
 
     def collect_new_rows(
         self,
@@ -255,8 +307,9 @@ class BhavcopyETL:
         end: date,
         symbol_filter: set[str] | None = None,
         symbol_index_map: dict[str, str] | None = None,
+        dates: Sequence[date] | None = None,
     ) -> dict[str, list[dict]]:
-        """Download Bhavcopy files for each weekday and bucket rows by symbol.
+        """Download Bhavcopy files for candidate calendar days and bucket rows by symbol.
 
         Parameters
         ----------
@@ -267,27 +320,39 @@ class BhavcopyETL:
             stocks are retained.
         symbol_index_map:
             Optional mapping from symbol to index name ("NIFTY 100", etc.).
+        dates:
+            Optional explicit sequence of dates to process. When omitted,
+            all calendar days in ``[start, end]`` are probed.
 
         Returns
         -------
         ``{symbol: [row_dict, …]}`` where each dict has keys
         ``date, symbol, open, high, low, close, volume, index_name``.
         """
-        all_dates = list(self._weekdays(start, end))
+        # Weekends are probed because NSE holds special sessions (e.g. Diwali Muhurat, Budget day).
+        all_dates = list(dates) if dates is not None else list(self._calendar_days(start, end))
         total = len(all_dates)
         stock_rows: dict[str, list[dict]] = {}
         trading_days = 0
 
         if not all_dates:
-            logger.info("No trading weekdays to process in range %s → %s.", start, end)
+            logger.info("No candidate calendar days to process in range %s → %s.", start, end)
             return stock_rows
 
+        non_trading_days = self.get_non_trading_days()
         logger.info("Scanning %d potential trading days (%s → %s) …", total, start, end)
 
         for idx, d in enumerate(all_dates, 1):
+            # Skip known non-trading days cached from previous 404/holiday checks,
+            # but never skip a date within the last 3 calendar days (NSE may publish late).
+            if d in non_trading_days and not self._is_recent_date(d):
+                logger.debug("  [%3d/%d]  %s  — skipped (cached non-trading day)", idx, total, d)
+                continue
+
             try:
                 df = self._downloader.download_bhavcopy(d)
             except Exception as exc:
+                # Network / server errors must NOT be recorded as non-trading days
                 logger.error("Failed to download Bhavcopy for %s: %s", d, exc)
                 continue
 
@@ -301,7 +366,17 @@ class BhavcopyETL:
 
             if df is None or df.empty:
                 logger.debug("  [%3d/%d]  %s  — holiday / weekend / 404", idx, total, d)
-                self.record_non_trading_days([d])
+                # Never record a date within the last 3 calendar days as non-trading
+                if not self._is_recent_date(d):
+                    self.record_non_trading_days([d])
+                    non_trading_days.add(d)
+                else:
+                    logger.debug(
+                        "  [%3d/%d]  %s  — within last 3 days; not recording as non-trading",
+                        idx,
+                        total,
+                        d,
+                    )
                 time.sleep(0.05)
                 continue
 
@@ -593,18 +668,25 @@ class BhavcopyETL:
             chunk_days,
         )
 
-        all_weekdays = list(self._weekdays(start, today))
+        # Probe every calendar day (including weekends/holidays) so special sessions
+        # (e.g. Diwali Muhurat trading on Sunday, Budget Day Saturday) are ingested.
+        all_candidate_days = list(self._calendar_days(start, today))
         stored_dates = self.get_stored_dates()
         non_trading_days = self.get_non_trading_days()
 
+        # Never skip a date within the last 3 calendar days because of the cache.
         missing_dates = sorted(
-            [d for d in all_weekdays if d not in stored_dates and d not in non_trading_days]
+            [
+                d
+                for d in all_candidate_days
+                if d not in stored_dates and (self._is_recent_date(d) or d not in non_trading_days)
+            ]
         )
 
         logger.info(
-            "Backfill scan: %d total weekdays in window (%s -> %s). "
+            "Backfill scan: %d total calendar days in window (%s -> %s). "
             "Already stored: %d, Known non-trading: %d, Missing to download: %d.",
-            len(all_weekdays),
+            len(all_candidate_days),
             start,
             today,
             len(stored_dates),
@@ -674,7 +756,13 @@ class BhavcopyETL:
 
                 if df is None or df.empty:
                     logger.debug("%s is a confirmed holiday / non-trading date", d)
-                    chunk_non_trading.add(d)
+                    # Never record a date within the last 3 calendar days as non-trading
+                    if not self._is_recent_date(d):
+                        chunk_non_trading.add(d)
+                    else:
+                        logger.debug(
+                            "%s is within last 3 days; skipping recording to non-trading cache", d
+                        )
                     time.sleep(0.05)
                     continue
 
@@ -806,21 +894,107 @@ class BhavcopyETL:
         """Standalone helper to recompute corporate action adjustments."""
         return rebuild_adjusted(symbols=symbols)
 
+    def recheck_non_trading(
+        self,
+        start: date,
+        end: date,
+        symbol_filter: set[str] | None = None,
+        symbol_index_map: dict[str, str] | None = None,
+        skip_constituent_filter: bool = False,
+    ) -> tuple[list[str], list[str]]:
+        """Remove cached non-trading days in [start, end] and re-probe them.
+
+        Earlier runs may have cached a weekend or holiday special trading session
+        as a non-trading day. This clears the cache for the date range and re-probes
+        Bhavcopy data. Any special session data found is upserted into MySQL and
+        incrementally price-adjusted. Ordinary non-trading days (404) are re-recorded.
+        """
+        cleared = self.clear_non_trading_days(start, end)
+        try:
+            clear_benchmark_non_trading_days(start, end)
+        except Exception as bench_exc:
+            logger.debug("Benchmark non-trading cache clear skipped: %s", bench_exc)
+
+        logger.info(
+            "Rechecking non-trading days in range %s → %s (cleared %d cached dates)",
+            start,
+            end,
+            len(cleared),
+        )
+
+        stored_dates = self.get_stored_dates()
+        dates_to_probe = [d for d in self._calendar_days(start, end) if d not in stored_dates]
+
+        if not dates_to_probe:
+            logger.info(
+                "All dates in range %s → %s are already stored. Nothing to probe.", start, end
+            )
+            return [], []
+
+        if symbol_filter is not None:
+            idx_map = symbol_index_map or {}
+        elif skip_constituent_filter:
+            symbol_filter = None
+            idx_map = {}
+        else:
+            try:
+                fetcher = NSEIndexConstituents()
+                result = fetcher.fetch_all()
+                symbol_filter = result.symbols
+                idx_map = dict(result)
+            except Exception as exc:
+                logger.warning(
+                    "Could not fetch index constituents (%s) — proceeding with all symbols",
+                    exc,
+                )
+                symbol_filter = None
+                idx_map = {}
+
+        stock_rows = self.collect_new_rows(
+            start=start,
+            end=end,
+            symbol_filter=symbol_filter,
+            symbol_index_map=idx_map,
+            dates=dates_to_probe,
+        )
+
+        if not stock_rows:
+            logger.info("No trading data found when re-checking range %s → %s.", start, end)
+            return [], []
+
+        success, failed = self.load_to_db(stock_rows)
+        if success:
+            try:
+                # Rebuild corporate action adjustments across full history, ensuring historical
+                # sessions inserted before a split/bonus receive correct cumulative factors.
+                affected_symbols = sorted(stock_rows.keys())
+                rebuild_adjusted(symbols=affected_symbols)
+            except Exception as adj_exc:
+                logger.warning("Could not rebuild adjusted prices for rechecked rows: %s", adj_exc)
+
+        return success, failed
+
     def ingest_benchmarks(
         self,
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> int:
-        """Standalone helper to ingest benchmark index history."""
+        """Standalone helper to ingest benchmark index history.
+
+        NSE occasionally conducts special trading sessions on weekends or
+        holidays (e.g. Diwali Muhurat trading on Sunday, Budget Day on Saturday).
+        Probing every calendar day ensures benchmark indices for these sessions
+        are ingested, while missing index files (404s) are skipped and recorded
+        in the benchmark non-trading days cache using existing benchmark helpers.
+        """
         fetch_start = start_date or (date.today() - timedelta(days=self.initial_days_back))
         fetch_end = end_date or date.today()
 
-        dates: list[date] = []
-        cur = fetch_start
-        while cur <= fetch_end:
-            if cur.weekday() < 5:  # Mon-Fri
-                dates.append(cur)
-            cur += timedelta(days=1)
+        # Probe every calendar day (including weekends/holidays) so special sessions are included
+        all_candidate_days = list(self._calendar_days(fetch_start, fetch_end))
+        cached_non_trading = load_benchmark_non_trading_days()
+
+        dates = [d for d in all_candidate_days if d.isoformat() not in cached_non_trading]
 
         logger.info(
             "Ingesting benchmark history for %d dates (%s -> %s)",
