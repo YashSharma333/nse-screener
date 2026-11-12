@@ -22,14 +22,15 @@ import json
 import logging
 import time
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import delete, select, text
+from sqlalchemy.orm import Session
 
 from config.settings import PROJECT_ROOT, setup_logging
-from src.db.models import DailyPrice
+from src.db.models import BenchmarkPrice, DailyPrice
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
@@ -38,11 +39,12 @@ from src.ingestion.benchmark import (
 )
 from src.ingestion.benchmark import (
     load_benchmarks,
+    record_non_trading_day,
 )
 from src.ingestion.benchmark import (
     load_non_trading_days as load_benchmark_non_trading_days,
 )
-from src.ingestion.downloader import NSEBhavcopyDownloader
+from src.ingestion.downloader import NSEBhavcopyDownloader, parse_trade_date
 from src.ingestion.index_constituents import (
     NSEIndexConstituents,
     snapshot_index_constituents,
@@ -379,6 +381,24 @@ class BhavcopyETL:
                     )
                 time.sleep(0.05)
                 continue
+
+            # Validation: ensure file's TradeDate matches candidate date d
+            if "TradeDate" in df.columns:
+                td_series = df["TradeDate"].dropna()
+                if not td_series.empty:
+                    file_td = parse_trade_date(td_series.iloc[0])
+                    if file_td is not None and file_td != d:
+                        logger.warning(
+                            "collect_new_rows: Trade date mismatch for %s (file has %s) "
+                            "— rejecting rows",
+                            d,
+                            file_td,
+                        )
+                        if not self._is_recent_date(d):
+                            self.record_non_trading_days([d])
+                            non_trading_days.add(d)
+                        time.sleep(0.05)
+                        continue
 
             trading_days += 1
 
@@ -1003,3 +1023,331 @@ class BhavcopyETL:
             fetch_end,
         )
         return load_benchmarks(dates)
+
+    # ------------------------------------------------------------------
+    # Step 6 — Purge bogus duplicate sessions
+    # ------------------------------------------------------------------
+    def find_bogus_sessions(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+        session: Session | None = None,
+    ) -> list[dict]:
+        """Identify stored trading dates that are duplicate copies of the previous session.
+
+        A stored date is 'bogus' when >= 90% of the symbols it shares with the
+        previous stored date have identical close AND identical volume (minimum 100
+        common symbols). Genuine special sessions have different prices/volumes
+        and are not flagged.
+
+        Parameters
+        ----------
+        start, end:
+            Optional date range bounds.
+        session:
+            Optional SQLAlchemy Session (e.g. for testing).
+
+        Returns
+        -------
+        list of dict with keys:
+            'date', 'weekday', 'pct_identical', 'common_count', 'identical_count', 'prev_date'
+        """
+
+        def _to_date(val: object) -> date:
+            if isinstance(val, date) and not isinstance(val, pd.Timestamp):
+                return val
+            if isinstance(val, pd.Timestamp):
+                return val.date()
+            return date.fromisoformat(str(val).split("T")[0])
+
+        def _execute(s: Session) -> list[dict]:
+            stmt = select(DailyPrice.date).distinct().order_by(DailyPrice.date.asc())
+            raw_dates = s.execute(stmt).scalars().all()
+            all_stored_dates = [_to_date(d) for d in raw_dates]
+            unique_stored_dates = sorted(set(all_stored_dates))
+            if len(unique_stored_dates) < 2:
+                return []
+
+            date_to_idx = {d: idx for idx, d in enumerate(unique_stored_dates)}
+            candidate_pairs: list[tuple[date, date]] = []
+            for d in unique_stored_dates:
+                if start and d < start:
+                    continue
+                if end and d > end:
+                    continue
+                idx = date_to_idx[d]
+                if idx > 0:
+                    prev_d = unique_stored_dates[idx - 1]
+                    candidate_pairs.append((d, prev_d))
+
+            if not candidate_pairs:
+                return []
+
+            needed_dates = sorted({d for pair in candidate_pairs for d in pair})
+            day_data: dict[date, dict[str, tuple[float | None, int | None]]] = {
+                d: {} for d in needed_dates
+            }
+
+            chunk_size = 50
+            for i in range(0, len(needed_dates), chunk_size):
+                chunk = needed_dates[i : i + chunk_size]
+                q = select(
+                    DailyPrice.symbol, DailyPrice.date, DailyPrice.close, DailyPrice.volume
+                ).where(DailyPrice.date.in_(chunk))
+                rows = s.execute(q).all()
+                for sym, dt, c, v in rows:
+                    dt_obj = _to_date(dt)
+                    c_val = float(c) if c is not None else None
+                    v_val = int(v) if v is not None else None
+                    if dt_obj in day_data:
+                        day_data[dt_obj][str(sym)] = (c_val, v_val)
+
+            bogus: list[dict] = []
+            for d, prev_d in candidate_pairs:
+                curr_map = day_data.get(d, {})
+                prev_map = day_data.get(prev_d, {})
+
+                common_syms = set(curr_map.keys()) & set(prev_map.keys())
+                if len(common_syms) < 100:
+                    continue
+
+                identical_count = 0
+                for sym in common_syms:
+                    c1, v1 = curr_map[sym]
+                    c2, v2 = prev_map[sym]
+                    if (
+                        c1 is not None
+                        and c2 is not None
+                        and v1 is not None
+                        and v2 is not None
+                        and abs(c1 - c2) < 1e-4
+                        and v1 == v2
+                    ):
+                        identical_count += 1
+
+                pct_identical = (identical_count / len(common_syms)) * 100.0
+                if pct_identical >= 90.0:
+                    bogus.append(
+                        {
+                            "date": d,
+                            "weekday": d.strftime("%A"),
+                            "pct_identical": pct_identical,
+                            "common_count": len(common_syms),
+                            "identical_count": identical_count,
+                            "prev_date": prev_d,
+                        }
+                    )
+
+            return bogus
+
+        if session is not None:
+            return _execute(session)
+        with get_db() as s:
+            return _execute(s)
+
+    def purge_bogus_sessions(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+        dry_run: bool = True,
+        confirm: bool = False,
+        reports_dir: Path | None = None,
+        benchmark_cache_dir: Path | None = None,
+        session: Session | None = None,
+    ) -> dict:
+        """Detect and optionally purge bogus duplicated weekend/holiday sessions.
+
+        Parameters
+        ----------
+        start, end:
+            Optional date range bounds.
+        dry_run:
+            If True, only reports/bogus_sessions.csv is written; no data is deleted.
+        confirm:
+            Must be True (via --yes) to execute row deletion, cache purging,
+            and adjusted price rebuild.
+        reports_dir:
+            Directory to write CSV reports to (defaults to PROJECT_ROOT / 'reports').
+        session:
+            Optional SQLAlchemy Session.
+        """
+        r_dir = reports_dir or (PROJECT_ROOT / "reports")
+        r_dir.mkdir(parents=True, exist_ok=True)
+        bogus_csv = r_dir / "bogus_sessions.csv"
+
+        bogus_list = self.find_bogus_sessions(start=start, end=end, session=session)
+
+        # Write reports/bogus_sessions.csv (date, weekday, %identical)
+        df_bogus = pd.DataFrame(
+            [
+                {
+                    "date": b["date"].isoformat(),
+                    "weekday": b["weekday"],
+                    "%identical": f"{b['pct_identical']:.2f}%",
+                }
+                for b in bogus_list
+            ],
+            columns=["date", "weekday", "%identical"],
+        )
+        df_bogus.to_csv(bogus_csv, index=False)
+        logger.info("Wrote %d bogus sessions to %s", len(bogus_list), bogus_csv)
+
+        for b in bogus_list:
+            logger.info(
+                "  %s (%s): %.2f%% identical (%d/%d common symbols) to %s",
+                b["date"],
+                b["weekday"],
+                b["pct_identical"],
+                b["identical_count"],
+                b["common_count"],
+                b["prev_date"],
+            )
+
+        if dry_run or not confirm:
+            logger.info(
+                "Dry-run mode: %d bogus sessions flagged. "
+                "No database rows or caches were modified.",
+                len(bogus_list),
+            )
+            return {
+                "bogus_count": len(bogus_list),
+                "purged_dates": [b["date"] for b in bogus_list],
+                "dry_run": True,
+                "report_file": str(bogus_csv),
+            }
+
+        if not bogus_list:
+            logger.info("No bogus sessions to purge.")
+            return {
+                "bogus_count": 0,
+                "purged_dates": [],
+                "dry_run": False,
+                "report_file": str(bogus_csv),
+            }
+
+        bogus_dates = [b["date"] for b in bogus_list]
+
+        # Purge in one transaction
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        purged_backup_file = r_dir / f"purged_rows_{timestamp_str}.csv"
+
+        def _apply_purge(active_session: Session) -> int:
+            daily_rows = (
+                active_session.execute(select(DailyPrice).where(DailyPrice.date.in_(bogus_dates)))
+                .scalars()
+                .all()
+            )
+
+            bench_rows = (
+                active_session.execute(
+                    select(BenchmarkPrice).where(BenchmarkPrice.date.in_(bogus_dates))
+                )
+                .scalars()
+                .all()
+            )
+
+            backup_records = []
+            for r in daily_rows:
+                backup_records.append(
+                    {
+                        "table": "daily_prices",
+                        "symbol": r.symbol,
+                        "date": r.date.isoformat() if isinstance(r.date, date) else str(r.date),
+                        "open": float(r.open) if r.open is not None else None,
+                        "high": float(r.high) if r.high is not None else None,
+                        "low": float(r.low) if r.low is not None else None,
+                        "close": float(r.close) if r.close is not None else None,
+                        "volume": int(r.volume) if r.volume is not None else None,
+                        "prev_close": float(r.prev_close) if r.prev_close is not None else None,
+                        "index_name": r.index_name,
+                        "adj_open": float(r.adj_open) if r.adj_open is not None else None,
+                        "adj_high": float(r.adj_high) if r.adj_high is not None else None,
+                        "adj_low": float(r.adj_low) if r.adj_low is not None else None,
+                        "adj_close": float(r.adj_close) if r.adj_close is not None else None,
+                        "adj_volume": int(r.adj_volume) if r.adj_volume is not None else None,
+                    }
+                )
+            for b in bench_rows:
+                backup_records.append(
+                    {
+                        "table": "benchmark_prices",
+                        "symbol": b.index_code,
+                        "date": b.date.isoformat() if isinstance(b.date, date) else str(b.date),
+                        "open": None,
+                        "high": None,
+                        "low": None,
+                        "close": float(b.close) if b.close is not None else None,
+                        "volume": None,
+                        "prev_close": None,
+                        "index_name": None,
+                        "adj_open": None,
+                        "adj_high": None,
+                        "adj_low": None,
+                        "adj_close": None,
+                        "adj_volume": None,
+                    }
+                )
+
+            df_backup = pd.DataFrame(backup_records)
+            df_backup.to_csv(purged_backup_file, index=False)
+            logger.info(
+                "Backed up %d deleted rows to %s",
+                len(backup_records),
+                purged_backup_file,
+            )
+
+            active_session.execute(delete(DailyPrice).where(DailyPrice.date.in_(bogus_dates)))
+            active_session.execute(
+                delete(BenchmarkPrice).where(BenchmarkPrice.date.in_(bogus_dates))
+            )
+            active_session.commit()
+            return len(backup_records)
+
+        if session is not None:
+            total_backed = _apply_purge(session)
+        else:
+            with get_db() as s:
+                total_backed = _apply_purge(s)
+
+        # 3. Delete parquet cache files for each date
+        target_cache = (
+            self.cache_dir
+            if self.cache_dir is not None
+            else getattr(self._downloader, "_cache_dir", RAW_DIR / "bhavcopy_cache")
+        )
+        from src.ingestion import benchmark
+
+        bench_cache = benchmark_cache_dir or benchmark.BENCHMARK_CACHE_DIR
+        for d in bogus_dates:
+            f = target_cache / f"{d.isoformat()}.parquet"
+            f.unlink(missing_ok=True)
+            bf = bench_cache / f"{d.isoformat()}.parquet"
+            bf.unlink(missing_ok=True)
+
+        # 4. Record dates in both non_trading_days caches
+        self.record_non_trading_days(bogus_dates)
+        for d in bogus_dates:
+            record_non_trading_day(d)
+
+        # 5. Run rebuild_adjusted for all symbols
+        logger.info("Rebuilding adjusted prices after purging bogus sessions...")
+        rebuild_adjusted(session=session)
+
+        # 6. Refresh pre-computed indicator cache
+        logger.info("Refreshing indicator cache after purging bogus sessions...")
+        try:
+            from src.db.data_service import load_indicator_snapshot
+
+            load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+        except Exception as exc:
+            logger.warning("Could not refresh indicator cache: %s", exc)
+
+        logger.info("Purge completed successfully for %d dates.", len(bogus_dates))
+        return {
+            "bogus_count": len(bogus_dates),
+            "purged_dates": bogus_dates,
+            "dry_run": False,
+            "backup_file": str(purged_backup_file),
+            "report_file": str(bogus_csv),
+            "deleted_rows": total_backed,
+        }

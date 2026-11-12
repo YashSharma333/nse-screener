@@ -89,16 +89,37 @@ def main() -> None:
         help="Clear and re-probe cached non-trading days within --start and --end range",
     )
     parser.add_argument(
+        "--purge-bogus-sessions",
+        action="store_true",
+        help="Detect and purge bogus duplicated weekend/holiday sessions from the database",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Perform a dry-run detection of bogus sessions without deleting anything",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm deletion when running --purge-bogus-sessions",
+    )
+    parser.add_argument(
         "--start",
         type=str,
         default=None,
-        help="Start date in YYYY-MM-DD format (used with --recheck-non-trading or --benchmarks)",
+        help=(
+            "Start date in YYYY-MM-DD format (used with --recheck-non-trading, "
+            "--benchmarks, or --purge-bogus-sessions)"
+        ),
     )
     parser.add_argument(
         "--end",
         type=str,
         default=None,
-        help="End date in YYYY-MM-DD format (used with --recheck-non-trading or --benchmarks)",
+        help=(
+            "End date in YYYY-MM-DD format (used with --recheck-non-trading, "
+            "--benchmarks, or --purge-bogus-sessions)"
+        ),
     )
 
     args = parser.parse_args()
@@ -163,6 +184,51 @@ def main() -> None:
                 "Recheck completed. Loaded: %d symbols, Failed: %d symbols.",
                 len(success),
                 len(failed),
+            )
+        elif args.purge_bogus_sessions:
+            start_date = None
+            end_date = None
+            if args.start:
+                try:
+                    start_date = date.fromisoformat(args.start)
+                except ValueError as val_err:
+                    logger.error("Invalid date format for --start: %s", val_err)
+                    sys.exit(1)
+            if args.end:
+                try:
+                    end_date = date.fromisoformat(args.end)
+                except ValueError as val_err:
+                    logger.error("Invalid date format for --end: %s", val_err)
+                    sys.exit(1)
+            if start_date and end_date and start_date > end_date:
+                logger.error(
+                    "--start date (%s) cannot be after --end date (%s)", start_date, end_date
+                )
+                sys.exit(1)
+
+            dry_run = args.dry_run or (not args.yes)
+            if dry_run and not args.dry_run:
+                logger.info(
+                    "--purge-bogus-sessions invoked without --yes: defaulting to --dry-run mode."
+                )
+
+            logger.info(
+                "Executing bogus session purge (start=%s, end=%s, dry_run=%s, confirm=%s)...",
+                start_date,
+                end_date,
+                dry_run,
+                args.yes,
+            )
+            result = etl.purge_bogus_sessions(
+                start=start_date,
+                end=end_date,
+                dry_run=dry_run,
+                confirm=args.yes,
+            )
+            logger.info(
+                "Purge completed [%s]. Bogus sessions: %d",
+                "DRY RUN" if result.get("dry_run") else "PURGED",
+                result.get("bogus_count", 0),
             )
         elif args.benchmarks:
             logger.info("Executing standalone benchmark index ingestion...")

@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from src.db.models import BenchmarkPrice
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
+from src.ingestion.downloader import parse_trade_date
 
 logger = logging.getLogger("src.ingestion.benchmark")
 
@@ -90,18 +91,29 @@ def load_non_trading_days() -> set[str]:
     return set()
 
 
-def record_non_trading_day(d: date) -> None:
-    """Record a verified non-trading day (404/empty) to prevent repeated fetches."""
+def record_non_trading_days(dates: Sequence[date]) -> None:
+    """Record multiple verified non-trading days in one batch."""
+    if not dates:
+        return
     _ensure_cache_dir()
     existing = load_non_trading_days()
-    d_str = d.isoformat()
-    if d_str not in existing:
-        existing.add(d_str)
+    updated = False
+    for d in dates:
+        d_str = d.isoformat()
+        if d_str not in existing:
+            existing.add(d_str)
+            updated = True
+    if updated:
         try:
             with NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
                 json.dump(sorted(existing), f, indent=2)
         except Exception as exc:
             logger.warning("Failed saving benchmark non-trading days: %s", exc)
+
+
+def record_non_trading_day(d: date) -> None:
+    """Record a verified non-trading day (404/empty) to prevent repeated fetches."""
+    record_non_trading_days([d])
 
 
 def clear_non_trading_days(start: date, end: date) -> list[date]:
@@ -180,7 +192,24 @@ class NSEIndexSource(BenchmarkSource):
         if cache_file.exists():
             try:
                 cdf = pd.read_parquet(cache_file)
-                return dict(zip(cdf["index_code"], cdf["close"], strict=False))
+                if "date" in cdf.columns:
+                    cached_dates = cdf["date"].dropna()
+                    if not cached_dates.empty:
+                        cached_d = parse_trade_date(cached_dates.iloc[0])
+                        if cached_d is not None and cached_d != d:
+                            logger.warning(
+                                "Cached benchmark parquet for %s has mismatched date %s "
+                                "— unlinking",
+                                d,
+                                cached_d,
+                            )
+                            cache_file.unlink(missing_ok=True)
+                        else:
+                            return dict(zip(cdf["index_code"], cdf["close"], strict=False))
+                    else:
+                        return dict(zip(cdf["index_code"], cdf["close"], strict=False))
+                else:
+                    return dict(zip(cdf["index_code"], cdf["close"], strict=False))
             except Exception as e:
                 logger.warning("Corrupt benchmark cache %s: %s", cache_file, e)
 
@@ -197,6 +226,30 @@ class NSEIndexSource(BenchmarkSource):
             df = pd.read_csv(io.StringIO(resp.text))
             df.columns = df.columns.str.strip()
 
+            # Date validation: compare file's own trade date with requested date d
+            date_col = next(
+                (c for c in df.columns if c.lower() in ("index date", "index_date", "date")),
+                None,
+            )
+            file_date: date | None = None
+            if date_col is not None:
+                non_null_dates = df[date_col].dropna()
+                if not non_null_dates.empty:
+                    file_date = parse_trade_date(non_null_dates.iloc[0])
+
+            if date_col is None or file_date is None or file_date != d:
+                raw_val = df[date_col].iloc[0] if (date_col and not df[date_col].empty) else None
+                logger.warning(
+                    "Benchmark trade date mismatch for %s: file reports %r "
+                    "(parsed: %s, expected: %s) — skipping and recording as non-trading",
+                    d,
+                    raw_val,
+                    file_date,
+                    d,
+                )
+                record_non_trading_day(d)
+                return None
+
             results: dict[str, float] = {}
             for row in df.to_dict("records"):
                 idx_name = str(row.get("Index Name", "")).strip().lower()
@@ -211,7 +264,9 @@ class NSEIndexSource(BenchmarkSource):
                         pass
 
             if results:
-                cache_df = pd.DataFrame([{"index_code": k, "close": v} for k, v in results.items()])
+                cache_df = pd.DataFrame(
+                    [{"index_code": k, "close": v, "date": d} for k, v in results.items()]
+                )
                 cache_df.to_parquet(cache_file, index=False)
                 return results
 
