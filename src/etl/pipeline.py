@@ -103,6 +103,18 @@ class BhavcopyETL:
         except Exception as exc:
             logger.warning("Database init_db skipped during ETL setup: %s", exc)
 
+    RECENT_NON_TRADING_BUFFER_DAYS = 3  # Dates within this window are never cached as non-trading
+
+    @classmethod
+    def _is_recent_date(cls, d: date, ref_date: date | None = None) -> bool:
+        """Check if date `d` is within the last 3 calendar days of `ref_date` (defaults to today).
+
+        Dates within the last 3 calendar days must never be recorded as non-trading or skipped
+        based on the cache, because NSE may publish Bhavcopy later in the day.
+        """
+        today = ref_date or date.today()
+        return d >= today - timedelta(days=cls.RECENT_NON_TRADING_BUFFER_DAYS)
+
     def get_non_trading_days(self) -> set[date]:
         """Load confirmed non-trading dates (holidays, 404s) from JSON cache."""
         if not self.non_trading_path.exists():
@@ -331,8 +343,9 @@ class BhavcopyETL:
         logger.info("Scanning %d potential trading days (%s → %s) …", total, start, end)
 
         for idx, d in enumerate(all_dates, 1):
-            # Skip known non-trading days cached from previous 404/holiday checks
-            if d in non_trading_days:
+            # Skip known non-trading days cached from previous 404/holiday checks,
+            # but never skip a date within the last 3 calendar days (NSE may publish late).
+            if d in non_trading_days and not self._is_recent_date(d):
                 logger.debug("  [%3d/%d]  %s  — skipped (cached non-trading day)", idx, total, d)
                 continue
 
@@ -353,8 +366,17 @@ class BhavcopyETL:
 
             if df is None or df.empty:
                 logger.debug("  [%3d/%d]  %s  — holiday / weekend / 404", idx, total, d)
-                self.record_non_trading_days([d])
-                non_trading_days.add(d)
+                # Never record a date within the last 3 calendar days as non-trading
+                if not self._is_recent_date(d):
+                    self.record_non_trading_days([d])
+                    non_trading_days.add(d)
+                else:
+                    logger.debug(
+                        "  [%3d/%d]  %s  — within last 3 days; not recording as non-trading",
+                        idx,
+                        total,
+                        d,
+                    )
                 time.sleep(0.05)
                 continue
 
@@ -652,8 +674,13 @@ class BhavcopyETL:
         stored_dates = self.get_stored_dates()
         non_trading_days = self.get_non_trading_days()
 
+        # Never skip a date within the last 3 calendar days because of the cache.
         missing_dates = sorted(
-            [d for d in all_candidate_days if d not in stored_dates and d not in non_trading_days]
+            [
+                d
+                for d in all_candidate_days
+                if d not in stored_dates and (self._is_recent_date(d) or d not in non_trading_days)
+            ]
         )
 
         logger.info(
@@ -729,7 +756,13 @@ class BhavcopyETL:
 
                 if df is None or df.empty:
                     logger.debug("%s is a confirmed holiday / non-trading date", d)
-                    chunk_non_trading.add(d)
+                    # Never record a date within the last 3 calendar days as non-trading
+                    if not self._is_recent_date(d):
+                        chunk_non_trading.add(d)
+                    else:
+                        logger.debug(
+                            "%s is within last 3 days; skipping recording to non-trading cache", d
+                        )
                     time.sleep(0.05)
                     continue
 
@@ -932,11 +965,12 @@ class BhavcopyETL:
         success, failed = self.load_to_db(stock_rows)
         if success:
             try:
-                all_new_rows = [row for rows in stock_rows.values() for row in rows]
-                new_df = pd.DataFrame(all_new_rows)
-                adjust_new_rows(new_df)
+                # Rebuild corporate action adjustments across full history, ensuring historical
+                # sessions inserted before a split/bonus receive correct cumulative factors.
+                affected_symbols = sorted(stock_rows.keys())
+                rebuild_adjusted(symbols=affected_symbols)
             except Exception as adj_exc:
-                logger.warning("Could not adjust prices for rechecked rows: %s", adj_exc)
+                logger.warning("Could not rebuild adjusted prices for rechecked rows: %s", adj_exc)
 
         return success, failed
 

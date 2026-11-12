@@ -102,7 +102,8 @@ def test_fake_downloader_sunday_stored_and_second_run_zero_requests(sqlite_db, t
     etl = BhavcopyETL(cache_dir=cache_dir)
     mock_downloader = MagicMock()
 
-    sunday_date = date(2024, 11, 3)  # Sunday Diwali Muhurat session
+    # Special weekend session (Diwali Muhurat 2024 was Friday 1 Nov 2024)
+    sunday_date = date(2024, 11, 3)
     end_date = date(2024, 11, 4)  # Monday
 
     def fake_download(d: date):
@@ -246,7 +247,10 @@ def test_recheck_non_trading_clears_and_reprobes_requested_range_only(sqlite_db,
         finally:
             session.close()
 
-    with patch("src.etl.pipeline.get_db", _get_test_db), patch("src.etl.pipeline.adjust_new_rows"):
+    with (
+        patch("src.etl.pipeline.get_db", _get_test_db),
+        patch("src.etl.pipeline.rebuild_adjusted") as mock_rebuild,
+    ):
         success, failed = etl.recheck_non_trading(
             start=date(2024, 11, 2),
             end=date(2024, 11, 10),
@@ -255,6 +259,7 @@ def test_recheck_non_trading_clears_and_reprobes_requested_range_only(sqlite_db,
 
         assert "RELIANCE" in success
         assert failed == []
+        mock_rebuild.assert_called_once_with(symbols=["RELIANCE"])
 
         # Check DB has the Sunday row
         with session_factory() as session:
@@ -315,8 +320,9 @@ def test_fri_sun_mon_price_sequence_no_false_split_and_normal_bar_indicators():
     - Sunday is treated as a normal bar by technical indicator calculation.
     - Uses real PyArrow date32 column type.
     """
-    fri_date = date(2024, 11, 1)
-    sun_date = date(2024, 11, 3)  # Diwali Muhurat session
+    fri_date = date(2024, 11, 1)  # Diwali Muhurat 2024 was Friday 1 Nov 2024
+    # Special weekend trading session (e.g. disaster recovery / live session)
+    sun_date = date(2024, 11, 3)
     mon_date = date(2024, 11, 4)
 
     raw_data = [
@@ -466,3 +472,211 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(sqlite_db, 
                 assert indices["NIFTY 500"] == 22100.0
                 for r in rows:
                     assert r.date == sun_date
+
+
+def test_same_day_rerun_not_blocked_when_bhavcopy_initially_missing(sqlite_db, tmp_path: Path):
+    """Regression test: Same-day re-run must not be blocked.
+
+    If an update runs before NSE publishes today's Bhavcopy (returns None/404),
+    that 404 must NOT be recorded as non-trading, and a subsequent run on the same
+    day must make a request and store the rows once available.
+    """
+    _engine, session_factory = sqlite_db
+    cache_dir = tmp_path / "bhavcopy_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    non_trading_file = cache_dir / "non_trading_days.json"
+
+    etl = BhavcopyETL(cache_dir=cache_dir)
+    mock_downloader = MagicMock()
+    today = date.today()
+
+    @contextmanager
+    def _get_test_db():
+        session = session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # Run 1: NSE has not yet published today's Bhavcopy -> returns None
+    mock_downloader.download_bhavcopy.return_value = None
+    etl._downloader = mock_downloader
+
+    with patch("src.etl.pipeline.get_db", _get_test_db):
+        stock_rows_1 = etl.collect_new_rows(today, today)
+        assert stock_rows_1 == {}
+
+        # "Today" must NOT be recorded as non-trading in non_trading_days.json
+        assert today not in etl.get_non_trading_days()
+        if non_trading_file.exists():
+            cached_days = set(json.loads(non_trading_file.read_text(encoding="utf-8")))
+            assert today.isoformat() not in cached_days
+
+        # Even if a previous buggy run had cached today, it must never be skipped!
+        etl.record_non_trading_days([today])  # intentionally simulate stale cache entry
+
+        # Run 2: Later in the day, NSE publishes today's Bhavcopy
+        mock_downloader.download_bhavcopy.reset_mock()
+        mock_downloader.download_bhavcopy.return_value = _make_bhavcopy_df(
+            today, symbol="INFY", close=1850.0, prev_close=1840.0
+        )
+
+        stock_rows_2 = etl.collect_new_rows(today, today)
+        assert "INFY" in stock_rows_2
+        assert mock_downloader.download_bhavcopy.call_count == 1
+
+        success, failed = etl.load_to_db(stock_rows_2)
+        assert "INFY" in success
+        assert failed == []
+
+        with session_factory() as session:
+            rows = session.query(DailyPrice).filter_by(symbol="INFY", date=today).all()
+            assert len(rows) == 1
+            assert rows[0].close == 1850.0
+
+
+def test_recheck_historical_session_rebuilds_adjustments_for_subsequent_split(
+    sqlite_db, tmp_path: Path
+):
+    """Test recheck_non_trading rebuilds corporate action adjustments for historical sessions.
+
+    Stock with a 2:1 split on 2025-02-04 (NSE PrevClose already adjusted to 50 on the ex-date).
+    Insert a Saturday session on 2025-02-01 (raw close 100), then run recheck.
+    The Saturday adj_close must equal the neighbouring days' adj_close (50), not raw 100.
+    >= 30 flat filler symbols are seeded so the market-wide event guard does not trigger.
+    """
+    engine, session_factory = sqlite_db
+    cache_dir = tmp_path / "bhavcopy_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    non_trading_file = cache_dir / "non_trading_days.json"
+
+    # Pre-seed non_trading_days.json with the Saturday session (previously cached as holiday)
+    sat_date = date(2025, 2, 1)
+    non_trading_file.write_text(json.dumps([sat_date.isoformat()]), encoding="utf-8")
+
+    # Dates in sequence
+    fri_date = date(2025, 1, 31)
+    mon_date = date(2025, 2, 3)
+    tue_date = date(2025, 2, 4)  # Ex-date of 2:1 split
+
+    with session_factory() as session:
+        # Pre-seed >= 30 flat filler symbols so cross-sectional guard does not suppress the split
+        for i in range(35):
+            sym = f"SYM{i:02d}"
+            for d in [fri_date, mon_date, tue_date]:
+                session.add(
+                    DailyPrice(
+                        symbol=sym,
+                        date=d,
+                        open=100.0,
+                        high=100.0,
+                        low=100.0,
+                        close=100.0,
+                        prev_close=100.0,
+                        volume=1000,
+                        adj_close=100.0,
+                    )
+                )
+
+        # Pre-seed SPLIT_STOCK on Fri, Mon, Tue
+        # On Tue 2025-02-04, 2:1 split ex-date: PrevClose is adjusted to 50.0 by NSE
+        session.add(
+            DailyPrice(
+                symbol="SPLIT_STOCK",
+                date=fri_date,
+                open=100.0,
+                high=100.0,
+                low=100.0,
+                close=100.0,
+                prev_close=100.0,
+                volume=10000,
+                adj_close=50.0,
+            )
+        )
+        session.add(
+            DailyPrice(
+                symbol="SPLIT_STOCK",
+                date=mon_date,
+                open=100.0,
+                high=100.0,
+                low=100.0,
+                close=100.0,
+                prev_close=100.0,
+                volume=10000,
+                adj_close=50.0,
+            )
+        )
+        session.add(
+            DailyPrice(
+                symbol="SPLIT_STOCK",
+                date=tue_date,
+                open=50.0,
+                high=50.0,
+                low=50.0,
+                close=50.0,
+                prev_close=50.0,
+                volume=20000,
+                adj_close=50.0,
+            )
+        )
+        session.commit()
+
+    etl = BhavcopyETL(cache_dir=cache_dir)
+    mock_downloader = MagicMock()
+
+    # Saturday session has raw unadjusted close 100.0
+    mock_downloader.download_bhavcopy.return_value = _make_bhavcopy_df(
+        sat_date, symbol="SPLIT_STOCK", close=100.0, prev_close=100.0
+    )
+    etl._downloader = mock_downloader
+
+    @contextmanager
+    def _get_test_db():
+        session = session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    with (
+        patch("src.etl.pipeline.get_db", _get_test_db),
+        patch("src.etl.adjust.get_db", _get_test_db),
+        patch("src.etl.adjust.default_engine", engine),
+    ):
+        success, failed = etl.recheck_non_trading(
+            start=sat_date,
+            end=sat_date,
+            skip_constituent_filter=True,
+        )
+
+        assert "SPLIT_STOCK" in success
+        assert failed == []
+
+        # Check all 4 days of SPLIT_STOCK in daily_prices
+        with session_factory() as session:
+            rows = (
+                session.query(DailyPrice)
+                .filter_by(symbol="SPLIT_STOCK")
+                .order_by(DailyPrice.date)
+                .all()
+            )
+            assert len(rows) == 4
+            dates_found = [r.date for r in rows]
+            assert dates_found == [fri_date, sat_date, mon_date, tue_date]
+
+            sat_row = next(r for r in rows if r.date == sat_date)
+            # Raw close is 100.0
+            assert sat_row.close == 100.0
+            # Due to rebuild_adjusted, Saturday row gets the 0.5 split factor
+            # It must equal neighbouring days' adj_close of 50.0, NOT raw 100.0!
+            assert sat_row.adj_close == 50.0
+            for r in rows:
+                assert r.adj_close == 50.0
