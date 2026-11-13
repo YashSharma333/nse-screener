@@ -14,8 +14,10 @@ logs/
 # Data (Keep out of source control)
 data/raw/*
 data/processed/*
+data/universe/*.xlsx
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/universe/.gitkeep
 reports/*.csv
 
 # Environment Variables

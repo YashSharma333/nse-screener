@@ -333,6 +333,7 @@ When setting up a fresh database from scratch or reconstructing 10 years of hist
 alembic upgrade head
 
 # Step 3: Import the stock universe from the official market-cap Excel file
+# (The user places the Excel file manually at data/universe/m-cap_1.xlsx)
 python run_pipeline.py --import-universe data/universe/m-cap_1.xlsx --yes
 
 # Step 4: Fill missing symbols from any locally cached Bhavcopy files
@@ -415,7 +416,7 @@ flowchart TD
 
 ### 3. Excel File Format & Location
 
-* **Standard File Path:** `data/universe/m-cap_1.xlsx`
+* **Manual File Placement:** The universe Excel file is **not tracked in git**; the user places the file manually into `data/universe/` (e.g. `data/universe/m-cap_1.xlsx`).
 * **Expected Columns:**
   1. `Sr.` — Serial number
   2. `Stock Name` — Official company name (e.g., `Reliance Industries Ltd.`)
@@ -537,7 +538,7 @@ nse-screener/
 ├── data/
 │   ├── raw/bhavcopy_cache/       # Local Parquet cache for downloaded market files
 │   ├── processed/                # Pre-computed indicator snapshots & sidecars (.meta.json)
-│   └── universe/                 # Market cap universe Excel files (e.g. m-cap_1.xlsx)
+│   └── universe/                 # Market cap universe directory (user places Excel file here manually)
 ├── docs/
 │   ├── bhavcopy_columns.md       # Raw Bhavcopy format specification & historical URL tests
 │   └── index_files.md            # Verified NSE benchmark index codes & URLs

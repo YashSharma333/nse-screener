@@ -45,7 +45,7 @@ def get_universe_symbols(session: Session | None = None) -> set[str]:
         Set of ticker symbols where ``in_universe == True``. If ``stock_master``
         table is empty (0 records), logs a warning and returns an empty set.
     """
-    if not check_connection():
+    if session is None and not check_connection():
         logger.warning("Database offline; cannot query stock_master universe.")
         return set()
 
@@ -236,7 +236,7 @@ def get_benchmark_returns(
 
 def get_db_cache_metadata(connection: Any = None) -> dict[str, Any]:
     """Query current database state for cache validation."""
-    if not check_connection():
+    if connection is None and not check_connection():
         return {}
 
     def _query(conn: Any) -> dict[str, Any]:
