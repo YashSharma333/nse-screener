@@ -18,7 +18,7 @@ import io
 import logging
 import time
 import zipfile
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import requests
@@ -68,6 +68,31 @@ MAX_RETRIES = 3
 RETRY_WAIT = 6  # seconds between retries
 REQUEST_TIMEOUT = 25  # seconds per HTTP request
 REQUEST_DELAY = 0.8  # polite delay between daily downloads
+
+
+def parse_trade_date(val: object) -> date | None:
+    """Parse trade date string or object into a datetime.date."""
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, date) and not isinstance(val, pd.Timestamp):
+        return val
+    if isinstance(val, pd.Timestamp):
+        return val.date()
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    for fmt_str in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(val_str, fmt_str).date()
+        except ValueError:
+            pass
+    try:
+        dt = pd.to_datetime(val_str, dayfirst=True)
+        if not pd.isna(dt):
+            return dt.date()
+    except Exception:
+        pass
+    return None
 
 
 class NSEBhavcopyDownloader:
@@ -150,7 +175,7 @@ class NSEBhavcopyDownloader:
     # Parsing
     # ------------------------------------------------------------------
     @staticmethod
-    def _parse(content: bytes, fmt: str) -> pd.DataFrame | None:
+    def _parse(content: bytes, fmt: str, requested_date: date | None = None) -> pd.DataFrame | None:
         """Parse raw Bhavcopy bytes into a normalised DataFrame.
 
         Parameters
@@ -160,11 +185,15 @@ class NSEBhavcopyDownloader:
         fmt:
             ``"new"`` for the plain-CSV format, ``"zip"`` for the zipped
             archive format.
+        requested_date:
+            Optional expected trade date. When provided, the date in the file
+            (DATE1 for new format; TIMESTAMP for zip format) is validated against
+            requested_date. If it differs or cannot be parsed, returns None.
 
         Returns
         -------
-        DataFrame with columns ``[Symbol, Open, High, Low, Close, Volume]``
-        filtered to Series == EQ, or ``None`` on parse failure.
+        DataFrame with columns ``[Symbol, Open, High, Low, Close, Volume, TradeDate]``
+        filtered to Series == EQ, or ``None`` on parse or date validation failure.
         """
         try:
             if fmt == "zip":
@@ -213,13 +242,68 @@ class NSEBhavcopyDownloader:
                 logger.debug("Parsed CSV has no 'Symbol' column — skipping")
                 return None
 
+            # Detect and validate the file's own trading date column:
+            # new format uses DATE1; zip format uses TIMESTAMP.
+            date_col: str | None = None
+            if fmt == "new":
+                candidates = [c for c in df.columns if c.upper() == "DATE1"] or [
+                    c for c in df.columns if c.upper() == "TIMESTAMP"
+                ]
+            else:
+                candidates = [c for c in df.columns if c.upper() == "TIMESTAMP"] or [
+                    c for c in df.columns if c.upper() == "DATE1"
+                ]
+            if not candidates:
+                candidates = [c for c in df.columns if c.upper() in ("TRADEDATE", "DATE")]
+            if candidates:
+                date_col = candidates[0]
+
+            trade_date: date | None = None
+            if date_col is not None:
+                non_null_dates = df[date_col].dropna()
+                if not non_null_dates.empty:
+                    trade_date = parse_trade_date(non_null_dates.iloc[0])
+
+            if requested_date is not None:
+                if date_col is None or trade_date is None:
+                    logger.warning(
+                        "%s (%s format): Required trade date column missing or unparseable "
+                        "(col=%s) — treating as unavailable",
+                        requested_date,
+                        fmt,
+                        date_col,
+                    )
+                    return None
+                if trade_date != requested_date:
+                    logger.warning(
+                        "%s (%s format): Trade date mismatch: file reports %s, requested %s "
+                        "— treating as unavailable",
+                        requested_date,
+                        fmt,
+                        trade_date,
+                        requested_date,
+                    )
+                    return None
+
+            if trade_date is not None:
+                df["TradeDate"] = trade_date
+
             # Keep only equity series
             if "Series" in df.columns:
                 df = df[df["Series"].str.strip() == "EQ"]
 
             keep = [
                 c
-                for c in ["Symbol", "Open", "High", "Low", "Close", "PrevClose", "Volume"]
+                for c in [
+                    "Symbol",
+                    "Open",
+                    "High",
+                    "Low",
+                    "Close",
+                    "PrevClose",
+                    "Volume",
+                    "TradeDate",
+                ]
                 if c in df.columns
             ]
             return df[keep].reset_index(drop=True)
@@ -249,6 +333,21 @@ class NSEBhavcopyDownloader:
                     logger.info(
                         "Cached parquet for %s lacks PrevClose schema — treating as cache miss", d
                     )
+                elif "TradeDate" in cached_df.columns:
+                    td_vals = cached_df["TradeDate"].dropna()
+                    if not td_vals.empty:
+                        cached_td = parse_trade_date(td_vals.iloc[0])
+                        if cached_td is not None and cached_td != d:
+                            logger.warning(
+                                "Cached parquet for %s has mismatched TradeDate %s — unlinking",
+                                d,
+                                cached_td,
+                            )
+                            cache_path.unlink(missing_ok=True)
+                        else:
+                            return cached_df
+                    else:
+                        return cached_df
                 else:
                     return cached_df
             except Exception as exc:
@@ -295,8 +394,9 @@ class NSEBhavcopyDownloader:
 
                     resp.raise_for_status()
 
-                    df = self._parse(resp.content, fmt)
+                    df = self._parse(resp.content, fmt, requested_date=d)
                     if df is not None and not df.empty:
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
                         df.to_parquet(cache_path, index=False)
                         logger.debug(
                             "%s downloaded via %s format (%d rows)",
