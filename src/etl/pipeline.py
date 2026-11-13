@@ -24,13 +24,15 @@ import time
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from config.settings import PROJECT_ROOT, setup_logging
-from src.db.models import BenchmarkPrice, DailyPrice
+from src.db.data_service import get_universe_symbols
+from src.db.models import BenchmarkPrice, DailyPrice, StockMaster
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
@@ -105,6 +107,11 @@ class BhavcopyETL:
         except Exception as exc:
             logger.warning("Database init_db skipped during ETL setup: %s", exc)
 
+    @property
+    def downloader(self) -> NSEBhavcopyDownloader:
+        """Return the underlying downloader instance."""
+        return self._downloader
+
     RECENT_NON_TRADING_BUFFER_DAYS = 3  # Dates within this window are never cached as non-trading
 
     @classmethod
@@ -167,24 +174,32 @@ class BhavcopyETL:
                 tmp_path.unlink(missing_ok=True)
         return sorted(to_remove)
 
-    def get_stored_dates(self) -> set[date]:
+    def get_stored_dates(self, session: Session | None = None) -> set[date]:
         """Retrieve distinct dates already stored in daily_prices."""
         query = text("SELECT DISTINCT date FROM daily_prices")
+
+        def _fetch(s: Session) -> set[date]:
+            rows = s.execute(query).fetchall()
+            result: set[date] = set()
+            for r in rows:
+                if not r or not r[0]:
+                    continue
+                val = r[0]
+                if isinstance(val, date) and not isinstance(val, pd.Timestamp):
+                    result.add(val)
+                elif isinstance(val, pd.Timestamp):
+                    result.add(val.date())
+                elif isinstance(val, str):
+                    result.add(date.fromisoformat(val[:10]))
+                else:
+                    result.add(date.fromisoformat(str(val)[:10]))
+            return result
+
         try:
-            with get_db() as session:
-                rows = session.execute(query).fetchall()
-                result: set[date] = set()
-                for r in rows:
-                    if not r or not r[0]:
-                        continue
-                    val = r[0]
-                    if isinstance(val, date):
-                        result.add(val)
-                    elif isinstance(val, str):
-                        result.add(date.fromisoformat(val[:10]))
-                    else:
-                        result.add(date.fromisoformat(str(val)[:10]))
-                return result
+            if session is not None:
+                return _fetch(session)
+            with get_db() as s:
+                return _fetch(s)
         except Exception as exc:
             logger.warning("Could not fetch stored dates from daily_prices: %s", exc)
             return set()
@@ -567,28 +582,42 @@ class BhavcopyETL:
             symbol_filter = None
             idx_map = {}
         else:
-            try:
-                fetcher = NSEIndexConstituents()
-                result = fetcher.fetch_all()
-                symbol_filter = result.symbols
-                idx_map = dict(result)
+            universe_syms = get_universe_symbols()
+            if universe_syms:
                 logger.info(
-                    "Auto-fetched constituent filter: %d symbols (Large Cap + Mid Cap + Small Cap)",
-                    len(symbol_filter),
+                    "Using stock_master universe filter (%d symbols)",
+                    len(universe_syms),
                 )
-                # Snapshot constituents to index_membership table
-                try:
-                    with get_db() as session:
-                        snapshot_index_constituents(session, result.per_index, as_of_date=fetch_end)
-                except Exception as snap_exc:
-                    logger.warning("Could not snapshot index constituents: %s", snap_exc)
-            except Exception as exc:
+                symbol_filter = universe_syms
+                idx_map = symbol_index_map or {}
+            else:
                 logger.warning(
-                    "Could not fetch index constituents (%s) — proceeding with all symbols",
-                    exc,
+                    "stock_master table is empty; falling back to NIFTY-constituent filter."
                 )
-                symbol_filter = None
-                idx_map = {}
+                try:
+                    fetcher = NSEIndexConstituents()
+                    result = fetcher.fetch_all()
+                    symbol_filter = result.symbols
+                    idx_map = dict(result)
+                    logger.info(
+                        "Auto-fetched constituent filter: %d symbols (Large/Mid/Small Cap)",
+                        len(symbol_filter),
+                    )
+                    # Snapshot constituents to index_membership table
+                    try:
+                        with get_db() as session:
+                            snapshot_index_constituents(
+                                session, result.per_index, as_of_date=fetch_end
+                            )
+                    except Exception as snap_exc:
+                        logger.warning("Could not snapshot index constituents: %s", snap_exc)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not fetch index constituents (%s) — proceeding with all symbols",
+                        exc,
+                    )
+                    symbol_filter = None
+                    idx_map = {}
 
         logger.info("=" * 62)
         logger.info("  Fetch range    : %s → %s", fetch_start, fetch_end)
@@ -726,22 +755,34 @@ class BhavcopyETL:
             symbol_filter = None
             idx_map = {}
         else:
-            try:
-                fetcher = NSEIndexConstituents()
-                result = fetcher.fetch_all()
-                symbol_filter = result.symbols
-                idx_map = dict(result)
-                try:
-                    with get_db() as session:
-                        snapshot_index_constituents(session, result.per_index, as_of_date=today)
-                except Exception as snap_exc:
-                    logger.warning("Could not snapshot index constituents: %s", snap_exc)
-            except Exception as exc:
-                logger.warning(
-                    "Could not fetch index constituents (%s) - proceeding with all symbols", exc
+            universe_syms = get_universe_symbols()
+            if universe_syms:
+                logger.info(
+                    "Using stock_master universe filter (%d symbols)",
+                    len(universe_syms),
                 )
-                symbol_filter = None
-                idx_map = {}
+                symbol_filter = universe_syms
+                idx_map = symbol_index_map or {}
+            else:
+                logger.warning(
+                    "stock_master table is empty; falling back to NIFTY-constituent filter."
+                )
+                try:
+                    fetcher = NSEIndexConstituents()
+                    result = fetcher.fetch_all()
+                    symbol_filter = result.symbols
+                    idx_map = dict(result)
+                    try:
+                        with get_db() as session:
+                            snapshot_index_constituents(session, result.per_index, as_of_date=today)
+                    except Exception as snap_exc:
+                        logger.warning("Could not snapshot index constituents: %s", snap_exc)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not fetch index constituents (%s) - proceeding with all symbols", exc
+                    )
+                    symbol_filter = None
+                    idx_map = {}
 
         all_success_symbols: set[str] = set()
         all_failed_symbols: set[str] = set()
@@ -957,18 +998,30 @@ class BhavcopyETL:
             symbol_filter = None
             idx_map = {}
         else:
-            try:
-                fetcher = NSEIndexConstituents()
-                result = fetcher.fetch_all()
-                symbol_filter = result.symbols
-                idx_map = dict(result)
-            except Exception as exc:
-                logger.warning(
-                    "Could not fetch index constituents (%s) — proceeding with all symbols",
-                    exc,
+            universe_syms = get_universe_symbols()
+            if universe_syms:
+                logger.info(
+                    "Using stock_master universe filter (%d symbols)",
+                    len(universe_syms),
                 )
-                symbol_filter = None
-                idx_map = {}
+                symbol_filter = universe_syms
+                idx_map = symbol_index_map or {}
+            else:
+                logger.warning(
+                    "stock_master table is empty; falling back to NIFTY-constituent filter."
+                )
+                try:
+                    fetcher = NSEIndexConstituents()
+                    result = fetcher.fetch_all()
+                    symbol_filter = result.symbols
+                    idx_map = dict(result)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not fetch index constituents (%s) — proceeding with all symbols",
+                        exc,
+                    )
+                    symbol_filter = None
+                    idx_map = {}
 
         stock_rows = self.collect_new_rows(
             start=start,
@@ -1350,4 +1403,532 @@ class BhavcopyETL:
             "backup_file": str(purged_backup_file),
             "report_file": str(bogus_csv),
             "deleted_rows": total_backed,
+        }
+
+    # ------------------------------------------------------------------
+    # Step 6 — Universe Import (Stock Master)
+    # ------------------------------------------------------------------
+    def import_universe(
+        self,
+        file_path: Path | str,
+        add_threshold: float = 500.0,
+        keep_threshold: float = 490.0,
+        dry_run: bool = True,
+        session: Session | None = None,
+        reports_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        """Import stock master and universe from an Excel file with hysteresis.
+
+        Hysteresis Rules:
+        - First import (stock_master empty): every stock in file with
+          market_cap >= keep_threshold (default 490) becomes in_universe=True, status='active'.
+          Stocks with market_cap < keep_threshold become in_universe=False,
+          status='below_threshold'.
+        - Later imports: a stock NOT yet in the universe is added only if
+          market_cap >= add_threshold (default 500); a stock already in the universe stays
+          while >= keep_threshold, else status='below_threshold', in_universe=False,
+          flagged_on=today.
+        - Symbols present in price history but missing from the file:
+          status='not_in_file', in_universe=False.
+        - Idempotent: re-running with the same file changes nothing.
+        - Price rows are NEVER deleted when status changes.
+
+        Writes reports/universe_import_report.csv: counts by status, sector, and cap_bucket;
+        Excel symbols that never appear in any cached Bhavcopy; stored symbols not in file.
+        """
+        path = Path(file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Universe file not found: {path}")
+
+        df = pd.read_excel(path)
+        if df.empty:
+            raise ValueError(f"Universe Excel file is empty: {path}")
+
+        cols_lower = {str(c).lower().strip(): c for c in df.columns}
+        sym_key = next((k for k in cols_lower if k == "symbol" or "symbol" in k), None)
+        name_key = next(
+            (
+                k
+                for k in cols_lower
+                if k in ("stock name", "stock_name", "company name", "company_name")
+            ),
+            None,
+        )
+        sector_key = next((k for k in cols_lower if k == "sector"), None)
+        ind_key = next((k for k in cols_lower if k == "industry"), None)
+        cap_key = next((k for k in cols_lower if k in ("marketcapname", "cap_bucket")), None)
+        mcap_key = next(
+            (k for k in cols_lower if "market_cap" in k or "market cap" in k or "m_cap" in k),
+            None,
+        )
+
+        if not sym_key:
+            raise ValueError(f"Could not find Symbol column in {path}. Columns: {list(df.columns)}")
+
+        today = date.today()
+        asof = today
+
+        def _execute_import(s: Session) -> dict[str, Any]:
+            existing_stocks = {sm.symbol: sm for sm in s.scalars(select(StockMaster)).all()}
+            is_first_import = len(existing_stocks) == 0
+
+            stored_symbols = set(s.scalars(select(DailyPrice.symbol).distinct()).all())
+
+            excel_symbols: set[str] = set()
+            planned_records: dict[str, dict[str, Any]] = {}
+
+            for _, row in df.iterrows():
+                raw_sym = row[cols_lower[sym_key]]
+                if pd.isna(raw_sym):
+                    continue
+                sym = str(raw_sym).strip().upper()
+                excel_symbols.add(sym)
+
+                raw_name = row[cols_lower[name_key]] if name_key else sym
+                company_name = str(raw_name).strip() if pd.notna(raw_name) else sym
+
+                sector = (
+                    str(row[cols_lower[sector_key]]).strip()
+                    if sector_key and pd.notna(row[cols_lower[sector_key]])
+                    else None
+                )
+                industry = (
+                    str(row[cols_lower[ind_key]]).strip()
+                    if ind_key and pd.notna(row[cols_lower[ind_key]])
+                    else None
+                )
+                cap_bucket = (
+                    str(row[cols_lower[cap_key]]).strip()
+                    if cap_key and pd.notna(row[cols_lower[cap_key]])
+                    else None
+                )
+
+                raw_mcap = row[cols_lower[mcap_key]] if mcap_key else 0.0
+                try:
+                    market_cap = float(raw_mcap) if pd.notna(raw_mcap) else 0.0
+                except (ValueError, TypeError):
+                    market_cap = 0.0
+
+                prev = existing_stocks.get(sym)
+
+                if is_first_import:
+                    if market_cap >= keep_threshold:
+                        in_universe = True
+                        status = "active"
+                        added_on = today
+                        flagged_on = None
+                    else:
+                        in_universe = False
+                        status = "below_threshold"
+                        added_on = today
+                        flagged_on = today
+                else:
+                    if prev is not None and prev.in_universe:
+                        if market_cap >= keep_threshold:
+                            in_universe = True
+                            status = "active"
+                            added_on = prev.added_on
+                            flagged_on = None
+                        else:
+                            in_universe = False
+                            status = "below_threshold"
+                            added_on = prev.added_on
+                            flagged_on = prev.flagged_on or today
+                    else:
+                        if market_cap >= add_threshold:
+                            in_universe = True
+                            status = "active"
+                            added_on = today
+                            flagged_on = None
+                        else:
+                            in_universe = False
+                            status = "below_threshold"
+                            added_on = prev.added_on if prev else today
+                            flagged_on = prev.flagged_on if (prev and prev.flagged_on) else today
+
+                planned_records[sym] = {
+                    "symbol": sym,
+                    "company_name": company_name,
+                    "sector": sector,
+                    "industry": industry,
+                    "cap_bucket": cap_bucket,
+                    "market_cap_cr": market_cap,
+                    "market_cap_asof": asof,
+                    "in_universe": in_universe,
+                    "status": status,
+                    "added_on": added_on,
+                    "flagged_on": flagged_on,
+                    "benchmark_index": prev.benchmark_index if prev else None,
+                    "source": path.name,
+                }
+
+            # Symbols present in price history but missing from the file
+            missing_stored = stored_symbols - excel_symbols
+            for sym in missing_stored:
+                prev = existing_stocks.get(sym)
+                planned_records[sym] = {
+                    "symbol": sym,
+                    "company_name": prev.company_name if prev else sym,
+                    "sector": prev.sector if prev else None,
+                    "industry": prev.industry if prev else None,
+                    "cap_bucket": prev.cap_bucket if prev else None,
+                    "market_cap_cr": float(prev.market_cap_cr)
+                    if prev and prev.market_cap_cr is not None
+                    else None,
+                    "market_cap_asof": prev.market_cap_asof if prev else None,
+                    "in_universe": False,
+                    "status": "not_in_file",
+                    "added_on": prev.added_on if prev else today,
+                    "flagged_on": prev.flagged_on if (prev and prev.flagged_on) else today,
+                    "benchmark_index": prev.benchmark_index if prev else None,
+                    "source": prev.source if prev else "price_history",
+                }
+
+            # Handle any stock in existing_stocks missing from Excel and price history
+            for sym, prev in existing_stocks.items():
+                if sym not in planned_records:
+                    planned_records[sym] = {
+                        "symbol": sym,
+                        "company_name": prev.company_name,
+                        "sector": prev.sector,
+                        "industry": prev.industry,
+                        "cap_bucket": prev.cap_bucket,
+                        "market_cap_cr": float(prev.market_cap_cr)
+                        if prev.market_cap_cr is not None
+                        else None,
+                        "market_cap_asof": prev.market_cap_asof,
+                        "in_universe": False,
+                        "status": "not_in_file",
+                        "added_on": prev.added_on,
+                        "flagged_on": prev.flagged_on or today,
+                        "benchmark_index": prev.benchmark_index,
+                        "source": prev.source,
+                    }
+
+            # Report data
+            status_counts: dict[str, int] = {}
+            for r in planned_records.values():
+                st = r["status"]
+                status_counts[st] = status_counts.get(st, 0) + 1
+
+            cap_bucket_counts: dict[str, int] = {}
+            for r in planned_records.values():
+                cb = r["cap_bucket"] or "Unknown"
+                cap_bucket_counts[cb] = cap_bucket_counts.get(cb, 0) + 1
+
+            sector_counts: dict[str, int] = {}
+            for r in planned_records.values():
+                sec = r["sector"] or "Unknown"
+                sector_counts[sec] = sector_counts.get(sec, 0) + 1
+
+            # Excel symbols that never appear in any cached Bhavcopy
+            bhav_symbols: set[str] = set()
+            target_cache = (
+                self.cache_dir
+                if self.cache_dir is not None
+                else getattr(self._downloader, "_cache_dir", RAW_DIR / "bhavcopy_cache")
+            )
+            if target_cache.exists():
+                import pyarrow.parquet as pq
+
+                for cf in target_cache.glob("*.parquet"):
+                    try:
+                        col = pq.read_table(cf, columns=["Symbol"]).column("Symbol")
+                        bhav_symbols.update(col.to_pylist())
+                    except Exception:
+                        pass
+
+            excel_not_in_bhav = sorted(excel_symbols - bhav_symbols) if bhav_symbols else []
+            stored_not_in_file = sorted(missing_stored)
+
+            r_dir = reports_dir or (PROJECT_ROOT / "reports")
+            r_dir.mkdir(parents=True, exist_ok=True)
+            report_csv = r_dir / "universe_import_report.csv"
+
+            report_rows = []
+            for st, cnt in sorted(status_counts.items()):
+                report_rows.append(
+                    {
+                        "section": "status_counts",
+                        "category": "status",
+                        "name": st,
+                        "count_or_value": str(cnt),
+                        "notes": "",
+                    }
+                )
+            for cb, cnt in sorted(cap_bucket_counts.items()):
+                report_rows.append(
+                    {
+                        "section": "cap_bucket_counts",
+                        "category": "cap_bucket",
+                        "name": cb,
+                        "count_or_value": str(cnt),
+                        "notes": "",
+                    }
+                )
+            for sec, cnt in sorted(sector_counts.items()):
+                report_rows.append(
+                    {
+                        "section": "sector_counts",
+                        "category": "sector",
+                        "name": sec,
+                        "count_or_value": str(cnt),
+                        "notes": "",
+                    }
+                )
+            for sym in excel_not_in_bhav:
+                report_rows.append(
+                    {
+                        "section": "excel_symbols_never_in_bhavcopy",
+                        "category": "symbol_mismatch",
+                        "name": sym,
+                        "count_or_value": "",
+                        "notes": "Never appeared in any cached Bhavcopy",
+                    }
+                )
+            for sym in stored_not_in_file:
+                report_rows.append(
+                    {
+                        "section": "stored_symbols_not_in_file",
+                        "category": "not_in_file",
+                        "name": sym,
+                        "count_or_value": "",
+                        "notes": "Present in price history but missing from Excel file",
+                    }
+                )
+
+            df_report = pd.DataFrame(
+                report_rows,
+                columns=["section", "category", "name", "count_or_value", "notes"],
+            )
+            df_report.to_csv(report_csv, index=False)
+            logger.info("Wrote universe import report to %s", report_csv)
+
+            if not dry_run:
+                records_list = list(planned_records.values())
+                upsert_rows(s, StockMaster, records_list, index_elements=["symbol"])
+                s.commit()
+                logger.info(
+                    "Saved %d stock_master records (active: %d, below: %d, not_in_file: %d)",
+                    len(records_list),
+                    status_counts.get("active", 0),
+                    status_counts.get("below_threshold", 0),
+                    status_counts.get("not_in_file", 0),
+                )
+            else:
+                logger.info(
+                    "[DRY RUN] Would save %d stock_master records "
+                    "(active: %d, below: %d, not_in_file: %d)",
+                    len(planned_records),
+                    status_counts.get("active", 0),
+                    status_counts.get("below_threshold", 0),
+                    status_counts.get("not_in_file", 0),
+                )
+
+            return {
+                "status": "success",
+                "dry_run": dry_run,
+                "total_records": len(planned_records),
+                "active_count": status_counts.get("active", 0),
+                "below_threshold_count": status_counts.get("below_threshold", 0),
+                "not_in_file_count": status_counts.get("not_in_file", 0),
+                "report_path": str(report_csv),
+                "status_counts": status_counts,
+                "sector_counts": sector_counts,
+                "cap_bucket_counts": cap_bucket_counts,
+                "excel_not_in_bhav_count": len(excel_not_in_bhav),
+                "stored_not_in_file_count": len(stored_not_in_file),
+            }
+
+        if session is not None:
+            return _execute_import(session)
+        with get_db() as s:
+            return _execute_import(s)
+
+    # ------------------------------------------------------------------
+    # Step 7 — Fill Missing Universe Symbols from Cache
+    # ------------------------------------------------------------------
+    def fill_missing_symbols(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+        session: Session | None = None,
+    ) -> dict[str, Any]:
+        """Fill missing universe symbols across stored trading dates from Bhavcopy cache.
+
+        For every stored trading date in [start, end] and every universe symbol lacking a row,
+        takes the row from data/raw/bhavcopy_cache/<date>.parquet.
+        Cache files from before T64b have no TradeDate: they are accepted for stored dates.
+        If the cache file is missing, it is downloaded with the validated downloader.
+        Processes date by date, bulk upserts, resumable and idempotent.
+        Symbols listed later (IPOs) simply have fewer rows.
+        After all dates: rebuilds adjusted prices for the added symbols once, then refreshes
+        the indicator cache.
+        """
+
+        def _get_universe(s: Session) -> set[str]:
+            return get_universe_symbols(session=s)
+
+        if session is not None:
+            universe_symbols = _get_universe(session)
+        else:
+            with get_db() as s:
+                universe_symbols = _get_universe(s)
+
+        if not universe_symbols:
+            logger.warning(
+                "No active universe symbols in stock_master. Run --import-universe first."
+            )
+            return {
+                "status": "warning",
+                "message": "No active universe symbols found",
+                "dates_processed": 0,
+                "rows_added": 0,
+                "symbols_added": 0,
+            }
+
+        stored_dates = self.get_stored_dates(session=session)
+        if start:
+            stored_dates = [d for d in stored_dates if d >= start]
+        if end:
+            stored_dates = [d for d in stored_dates if d <= end]
+        stored_dates = sorted(stored_dates)
+
+        if not stored_dates:
+            logger.info("No stored dates in range %s → %s to fill.", start, end)
+            return {
+                "status": "noop",
+                "dates_processed": 0,
+                "rows_added": 0,
+                "symbols_added": 0,
+            }
+
+        logger.info(
+            "Filling missing universe symbols across %d stored dates (%s → %s)...",
+            len(stored_dates),
+            stored_dates[0],
+            stored_dates[-1],
+        )
+
+        all_added_symbols: set[str] = set()
+        total_rows_added = 0
+        dates_with_additions = 0
+
+        target_cache = (
+            self.cache_dir
+            if self.cache_dir is not None
+            else getattr(self._downloader, "_cache_dir", RAW_DIR / "bhavcopy_cache")
+        )
+
+        for idx, d in enumerate(stored_dates, 1):
+
+            def _get_existing_syms(s: Session, current_d: date = d) -> set[str]:
+                stmt = select(DailyPrice.symbol).where(DailyPrice.date == current_d)
+                return set(s.scalars(stmt).all())
+
+            if session is not None:
+                existing_on_d = _get_existing_syms(session)
+            else:
+                with get_db() as s:
+                    existing_on_d = _get_existing_syms(s)
+
+            missing_on_d = universe_symbols - existing_on_d
+            if not missing_on_d:
+                continue
+
+            cache_file = target_cache / f"{d.isoformat()}.parquet"
+            if not cache_file.exists():
+                logger.info(
+                    "Cache file missing for stored date %s; downloading via downloader...",
+                    d,
+                )
+                df_downloaded = self.downloader.fetch(d)
+                if df_downloaded is None or df_downloaded.empty:
+                    logger.warning("Could not download bhavcopy for stored date %s; skipping.", d)
+                    continue
+
+            try:
+                import pyarrow.parquet as pq
+
+                tbl = pq.read_table(cache_file)
+                df_bhav = tbl.to_pandas()
+            except Exception as exc:
+                logger.warning("Failed to read parquet cache for %s (%s); skipping.", d, exc)
+                continue
+
+            cols_lower = {str(c).lower().strip(): c for c in df_bhav.columns}
+            sym_col = cols_lower.get("symbol") or cols_lower.get("tckrsymb")
+            if not sym_col:
+                logger.warning("No Symbol column in cache file %s", cache_file)
+                continue
+
+            sym_series = df_bhav[sym_col].astype(str).str.strip().str.upper()
+            df_missing = df_bhav[sym_series.isin(missing_on_d)]
+            if df_missing.empty:
+                continue
+
+            stock_rows: dict[str, list[dict]] = {}
+            for _, r in df_missing.iterrows():
+                sym = str(r[sym_col]).strip().upper()
+                open_val = r.get(cols_lower.get("open"))
+                high_val = r.get(cols_lower.get("high"))
+                low_val = r.get(cols_lower.get("low"))
+                close_val = r.get(cols_lower.get("close"))
+                vol_val = r.get(cols_lower.get("volume"))
+                prev_close_val = r.get(cols_lower.get("prevclose"))
+
+                row_dict = {
+                    "symbol": sym,
+                    "date": d,
+                    "open": float(open_val) if pd.notna(open_val) else None,
+                    "high": float(high_val) if pd.notna(high_val) else None,
+                    "low": float(low_val) if pd.notna(low_val) else None,
+                    "close": float(close_val) if pd.notna(close_val) else None,
+                    "volume": int(vol_val) if pd.notna(vol_val) else None,
+                    "prev_close": (float(prev_close_val) if pd.notna(prev_close_val) else None),
+                    "index_name": None,
+                }
+                stock_rows[sym] = [row_dict]
+                all_added_symbols.add(sym)
+
+            if stock_rows:
+                if session is not None:
+                    all_rows = [r for rows in stock_rows.values() for r in rows]
+                    upsert_rows(session, DailyPrice, all_rows, index_elements=["symbol", "date"])
+                    session.commit()
+                    success_count = len(stock_rows)
+                else:
+                    success, _ = self.load_to_db(stock_rows)
+                    success_count = len(success)
+
+                total_rows_added += success_count
+                dates_with_additions += 1
+                logger.info(
+                    "  [%3d/%d]  %s  ✓  Filled %d symbols",
+                    idx,
+                    len(stored_dates),
+                    d,
+                    success_count,
+                )
+
+        if all_added_symbols:
+            logger.info(
+                "Finished filling missing symbols. Rebuilding adjusted prices for %d symbols...",
+                len(all_added_symbols),
+            )
+            self.rebuild_adjusted_prices(symbols=sorted(all_added_symbols))
+            logger.info("Refreshing indicator cache...")
+            from src.db.data_service import load_indicator_snapshot
+
+            load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+            logger.info("Indicator cache refreshed successfully.")
+        else:
+            logger.info("No missing symbol rows were added across all stored dates.")
+
+        return {
+            "status": "success",
+            "dates_processed": len(stored_dates),
+            "dates_with_additions": dates_with_additions,
+            "rows_added": total_rows_added,
+            "symbols_added": len(all_added_symbols),
         }

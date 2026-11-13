@@ -26,6 +26,13 @@ LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
 LOG_BACKUP_COUNT = 3  # keep 3 rotated copies
 
 
+# ---------------------------------------------------------------------------
+# Indicator Computation & Cache Window Configuration
+# ---------------------------------------------------------------------------
+INDICATOR_HISTORY_YEARS: int = int(os.getenv("INDICATOR_HISTORY_YEARS", "2"))
+INDICATOR_WARMUP_BARS: int = int(os.getenv("INDICATOR_WARMUP_BARS", "300"))
+
+
 def setup_logging() -> None:
     """Configure the root logger with a file handler and a stdout handler.
 
