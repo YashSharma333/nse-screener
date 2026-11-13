@@ -68,7 +68,7 @@ def format_master_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     col_mapping = {
         "date": "Date",
         "symbol": "Symbol",
-        "index_name": "Index Category",
+        "index_name": "Cap Bucket",
         "close": "Close",
         "volume": "Volume",
         "pct_change_daily": "% Change Daily",
@@ -145,14 +145,14 @@ def main() -> None:
         # Filters Row
         f1, f2 = st.columns([1.5, 4.5])
         with f1:
-            indices = sorted(formatted_df["Index Category"].dropna().unique().tolist())
-            selected_indices = st.multiselect("Index Filter", options=indices, default=indices)
+            indices = sorted(formatted_df["Cap Bucket"].dropna().unique().tolist())
+            selected_indices = st.multiselect("Cap Bucket Filter", options=indices, default=indices)
         with f2:
             all_display_cols = list(formatted_df.columns)
             primary_defaults = [
                 "Date",
                 "Symbol",
-                "Index Category",
+                "Cap Bucket",
                 "Close",
                 "Volume",
                 "% Change Daily",
@@ -177,7 +177,7 @@ def main() -> None:
         # Apply Filters
         filtered_df = formatted_df.copy()
         if selected_indices:
-            filtered_df = filtered_df[filtered_df["Index Category"].isin(selected_indices)]
+            filtered_df = filtered_df[filtered_df["Cap Bucket"].isin(selected_indices)]
 
         # Summary KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -212,7 +212,7 @@ def main() -> None:
         column_config = {
             "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
             "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-            "Index Category": st.column_config.TextColumn("Index", width="medium"),
+            "Cap Bucket": st.column_config.TextColumn("Cap Bucket", width="medium"),
             "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
             "Volume": st.column_config.NumberColumn("Volume", format="%d"),
             "% Change Daily": st.column_config.NumberColumn("% Change Daily", format="%.2f%%"),

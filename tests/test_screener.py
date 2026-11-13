@@ -114,16 +114,22 @@ class TestScreener1SwingVolume:
         result = SwingVolumeScreener().run(df)
         assert len(result) == 0
 
-    def test_fails_not_in_tracked_index(self):
+    def test_fails_not_in_tracked_index_when_enforced(self):
         row = _base_s1_row(symbol="FAIL_IDX", index_name="NIFTY IT")
         df = pd.DataFrame([row])
-        result = SwingVolumeScreener().run(df)
+        # Default enforce_universe=False -> passes
+        assert len(SwingVolumeScreener().run(df)) == 1
+        # Backward compatibility: enforce_universe=True -> excluded
+        result = SwingVolumeScreener(enforce_universe=True).run(df)
         assert len(result) == 0
 
-    def test_nan_index_name_excluded(self):
+    def test_nan_index_name_excluded_when_enforced(self):
         row = _base_s1_row(symbol="FAIL_NAN", index_name=None)
         df = pd.DataFrame([row])
-        result = SwingVolumeScreener().run(df)
+        # Default enforce_universe=False -> passes
+        assert len(SwingVolumeScreener().run(df)) == 1
+        # Backward compatibility: enforce_universe=True -> excluded
+        result = SwingVolumeScreener(enforce_universe=True).run(df)
         assert len(result) == 0
 
     def test_mixed_pass_fail(self):

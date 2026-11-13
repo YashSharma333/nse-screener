@@ -8,6 +8,7 @@ import argparse
 import logging
 import sys
 from datetime import date
+from pathlib import Path
 
 from config.settings import setup_logging
 from src.etl.pipeline import BhavcopyETL
@@ -89,6 +90,33 @@ def main() -> None:
         help="Clear and re-probe cached non-trading days within --start and --end range",
     )
     parser.add_argument(
+        "--import-universe",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Import stock master and universe from Excel file "
+            "(dry-run by default; use --yes to write)"
+        ),
+    )
+    parser.add_argument(
+        "--add-threshold",
+        type=float,
+        default=500.0,
+        help="Market cap threshold in Crore to add stock to universe (default: 500.0)",
+    )
+    parser.add_argument(
+        "--keep-threshold",
+        type=float,
+        default=490.0,
+        help="Market cap threshold in Crore to retain existing universe stock (default: 490.0)",
+    )
+    parser.add_argument(
+        "--fill-missing-symbols",
+        action="store_true",
+        help="Fill missing universe symbols across stored trading dates from Bhavcopy cache",
+    )
+    parser.add_argument(
         "--purge-bogus-sessions",
         action="store_true",
         help="Detect and purge bogus duplicated weekend/holiday sessions from the database",
@@ -96,12 +124,15 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Perform a dry-run detection of bogus sessions without deleting anything",
+        help="Perform a dry-run detection/import without modifying the database",
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Confirm deletion when running --purge-bogus-sessions",
+        help=(
+            "Confirm writing changes to database "
+            "(used with --purge-bogus-sessions and --import-universe)"
+        ),
     )
     parser.add_argument(
         "--start",
@@ -109,7 +140,7 @@ def main() -> None:
         default=None,
         help=(
             "Start date in YYYY-MM-DD format (used with --recheck-non-trading, "
-            "--benchmarks, or --purge-bogus-sessions)"
+            "--benchmarks, --purge-bogus-sessions, or --fill-missing-symbols)"
         ),
     )
     parser.add_argument(
@@ -118,7 +149,7 @@ def main() -> None:
         default=None,
         help=(
             "End date in YYYY-MM-DD format (used with --recheck-non-trading, "
-            "--benchmarks, or --purge-bogus-sessions)"
+            "--benchmarks, --purge-bogus-sessions, or --fill-missing-symbols)"
         ),
     )
 
@@ -132,7 +163,70 @@ def main() -> None:
     )
 
     try:
-        if args.refresh_cache:
+        if args.import_universe:
+            file_path = Path(args.import_universe)
+            if not file_path.exists():
+                logger.error("Universe file does not exist: %s", file_path)
+                sys.exit(1)
+            dry_run = args.dry_run or (not args.yes)
+            if dry_run and not args.dry_run:
+                logger.info(
+                    "--import-universe invoked without --yes: defaulting to --dry-run mode."
+                )
+            logger.info(
+                "Importing universe from %s (add_th=%.1f, keep_th=%.1f, dry_run=%s)...",
+                file_path,
+                args.add_threshold,
+                args.keep_threshold,
+                dry_run,
+            )
+            res = etl.import_universe(
+                file_path=file_path,
+                add_threshold=args.add_threshold,
+                keep_threshold=args.keep_threshold,
+                dry_run=dry_run,
+            )
+            logger.info(
+                "Universe import [%s] complete: %d active, %d below threshold, %d not in file.",
+                "DRY RUN" if res.get("dry_run") else "SAVED",
+                res.get("active_count", 0),
+                res.get("below_threshold_count", 0),
+                res.get("not_in_file_count", 0),
+            )
+        elif args.fill_missing_symbols:
+            start_date = None
+            end_date = None
+            if args.start:
+                try:
+                    start_date = date.fromisoformat(args.start)
+                except ValueError as val_err:
+                    logger.error("Invalid date format for --start: %s", val_err)
+                    sys.exit(1)
+            if args.end:
+                try:
+                    end_date = date.fromisoformat(args.end)
+                except ValueError as val_err:
+                    logger.error("Invalid date format for --end: %s", val_err)
+                    sys.exit(1)
+            if start_date and end_date and start_date > end_date:
+                logger.error(
+                    "--start date (%s) cannot be after --end date (%s)", start_date, end_date
+                )
+                sys.exit(1)
+
+            logger.info(
+                "Executing fill missing universe symbols (start=%s, end=%s)...",
+                start_date,
+                end_date,
+            )
+            res = etl.fill_missing_symbols(start=start_date, end=end_date)
+            logger.info(
+                "Fill missing symbols complete: %d dates, %d rows added across %d symbols.",
+                res.get("dates_processed", 0),
+                res.get("rows_added", 0),
+                res.get("symbols_added", 0),
+            )
+        elif args.refresh_cache:
             logger.info("Rebuilding indicator Parquet cache from MySQL...")
             from src.db.data_service import load_indicator_snapshot
 

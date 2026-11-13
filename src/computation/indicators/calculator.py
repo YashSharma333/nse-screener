@@ -24,7 +24,7 @@ import pandas as pd
 logger = logging.getLogger("src.computation.indicators")
 
 # Bumped schema version whenever columns or formulas change
-INDICATORS_SCHEMA_VERSION = 3
+INDICATORS_SCHEMA_VERSION = 4
 
 
 # ===========================================================================

@@ -9,9 +9,10 @@ Provides unified bulk upsert functionality supporting both MySQL
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -44,6 +45,7 @@ def upsert_rows(
     update_columns: list[str] | None = None,
     index_elements: list[str] | None = None,
     batch_size: int = UPSERT_BATCH_SIZE,
+    coalesce_columns: Sequence[str] | None = ("index_name",),
 ) -> int:
     """Upsert a list of dictionary records into the database.
 
@@ -63,6 +65,9 @@ def upsert_rows(
         Inferred automatically from table unique constraints if None.
     batch_size : int
         Chunk size for batched execution.
+    coalesce_columns : Sequence[str] | None
+        Columns that should NEVER be overwritten by NULL if the stored value
+        in the database is non-NULL (default: ('index_name',)).
 
     Returns
     -------
@@ -83,6 +88,7 @@ def upsert_rows(
         index_set = set(index_elements) | {"id"}
         update_columns = [col for col in first_row if col not in index_set]
 
+    coalesce_set = set(coalesce_columns or ())
     total_rows = len(rows)
 
     for start_idx in range(0, total_rows, batch_size):
@@ -91,7 +97,14 @@ def upsert_rows(
         if "sqlite" in dialect_name:
             stmt = sqlite_insert(model)
             if update_columns:
-                set_dict = {col: getattr(stmt.excluded, col) for col in update_columns}
+                set_dict = {
+                    col: (
+                        func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
+                        if col in coalesce_set and hasattr(model, col)
+                        else getattr(stmt.excluded, col)
+                    )
+                    for col in update_columns
+                }
                 stmt = stmt.on_conflict_do_update(
                     index_elements=index_elements,
                     set_=set_dict,
@@ -103,7 +116,14 @@ def upsert_rows(
         elif "mysql" in dialect_name:
             stmt = mysql_insert(model)
             if update_columns:
-                set_dict = {col: getattr(stmt.inserted, col) for col in update_columns}
+                set_dict = {
+                    col: (
+                        func.coalesce(getattr(stmt.inserted, col), getattr(model, col))
+                        if col in coalesce_set and hasattr(model, col)
+                        else getattr(stmt.inserted, col)
+                    )
+                    for col in update_columns
+                }
                 stmt = stmt.on_duplicate_key_update(set_dict)
             else:
                 stmt = stmt.prefix_with("IGNORE")
@@ -116,7 +136,14 @@ def upsert_rows(
 
             stmt = pg_insert(model)
             if update_columns:
-                set_dict = {col: getattr(stmt.excluded, col) for col in update_columns}
+                set_dict = {
+                    col: (
+                        func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
+                        if col in coalesce_set and hasattr(model, col)
+                        else getattr(stmt.excluded, col)
+                    )
+                    for col in update_columns
+                }
                 stmt = stmt.on_conflict_do_update(
                     index_elements=index_elements,
                     set_=set_dict,

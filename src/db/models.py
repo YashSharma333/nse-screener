@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -200,4 +201,40 @@ class IndexMembership(Base):
         return (
             f"<IndexMembership(symbol={self.symbol!r}, index={self.index_code!r}, "
             f"valid_from={self.valid_from}, valid_to={self.valid_to})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stock master and universe model
+# ---------------------------------------------------------------------------
+class StockMaster(Base):
+    """Master registry of stocks, classifications, and universe inclusion status.
+
+    Tracks market capitalization, sector, industry, cap bucket, and universe
+    membership with hysteresis thresholds.
+    """
+
+    __tablename__ = "stock_master"
+
+    symbol = Column(String(50), primary_key=True)
+    company_name = Column(String(255), nullable=False)
+    sector = Column(String(100), nullable=True)
+    industry = Column(String(100), nullable=True)
+    cap_bucket = Column(String(50), nullable=True)
+    market_cap_cr = Column(Numeric(14, 2), nullable=True)
+    market_cap_asof = Column(Date, nullable=True)
+    in_universe = Column(
+        Boolean, nullable=False, default=False, server_default=text("0"), index=True
+    )
+    status = Column(String(30), nullable=False, index=True)
+    added_on = Column(Date, nullable=False)
+    flagged_on = Column(Date, nullable=True)
+    benchmark_index = Column(String(50), nullable=True)
+    source = Column(String(100), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<StockMaster(symbol={self.symbol!r}, company={self.company_name!r}, "
+            f"in_universe={self.in_universe}, status={self.status!r}, "
+            f"market_cap_cr={self.market_cap_cr})>"
         )
