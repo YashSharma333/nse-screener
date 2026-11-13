@@ -31,7 +31,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from config.settings import PROJECT_ROOT, setup_logging
-from src.db.data_service import get_universe_symbols
+from src.db.data_service import get_universe_cap_buckets
 from src.db.models import BenchmarkPrice, DailyPrice, StockMaster
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
@@ -426,7 +426,7 @@ class BhavcopyETL:
                 sym = row["Symbol"]
                 if sym not in stock_rows:
                     stock_rows[sym] = []
-                idx_name = symbol_index_map.get(sym) if symbol_index_map else None
+                idx_name = (symbol_index_map.get(sym) or "Unknown") if symbol_index_map else None
                 stock_rows[sym].append(
                     {
                         "symbol": sym,
@@ -582,14 +582,14 @@ class BhavcopyETL:
             symbol_filter = None
             idx_map = {}
         else:
-            universe_syms = get_universe_symbols()
-            if universe_syms:
+            universe_map = get_universe_cap_buckets()
+            if universe_map:
                 logger.info(
                     "Using stock_master universe filter (%d symbols)",
-                    len(universe_syms),
+                    len(universe_map),
                 )
-                symbol_filter = universe_syms
-                idx_map = symbol_index_map or {}
+                symbol_filter = set(universe_map.keys())
+                idx_map = symbol_index_map or universe_map
             else:
                 logger.warning(
                     "stock_master table is empty; falling back to NIFTY-constituent filter."
@@ -755,14 +755,14 @@ class BhavcopyETL:
             symbol_filter = None
             idx_map = {}
         else:
-            universe_syms = get_universe_symbols()
-            if universe_syms:
+            universe_map = get_universe_cap_buckets()
+            if universe_map:
                 logger.info(
                     "Using stock_master universe filter (%d symbols)",
-                    len(universe_syms),
+                    len(universe_map),
                 )
-                symbol_filter = universe_syms
-                idx_map = symbol_index_map or {}
+                symbol_filter = set(universe_map.keys())
+                idx_map = symbol_index_map or universe_map
             else:
                 logger.warning(
                     "stock_master table is empty; falling back to NIFTY-constituent filter."
@@ -998,14 +998,14 @@ class BhavcopyETL:
             symbol_filter = None
             idx_map = {}
         else:
-            universe_syms = get_universe_symbols()
-            if universe_syms:
+            universe_map = get_universe_cap_buckets()
+            if universe_map:
                 logger.info(
                     "Using stock_master universe filter (%d symbols)",
-                    len(universe_syms),
+                    len(universe_map),
                 )
-                symbol_filter = universe_syms
-                idx_map = symbol_index_map or {}
+                symbol_filter = set(universe_map.keys())
+                idx_map = symbol_index_map or universe_map
             else:
                 logger.warning(
                     "stock_master table is empty; falling back to NIFTY-constituent filter."
@@ -1766,14 +1766,16 @@ class BhavcopyETL:
         the indicator cache.
         """
 
-        def _get_universe(s: Session) -> set[str]:
-            return get_universe_symbols(session=s)
+        def _get_universe(s: Session) -> dict[str, str]:
+            return get_universe_cap_buckets(session=s)
 
         if session is not None:
-            universe_symbols = _get_universe(session)
+            universe_map = _get_universe(session)
         else:
             with get_db() as s:
-                universe_symbols = _get_universe(s)
+                universe_map = _get_universe(s)
+
+        universe_symbols = set(universe_map.keys())
 
         if not universe_symbols:
             logger.warning(
@@ -1886,7 +1888,7 @@ class BhavcopyETL:
                     "close": float(close_val) if pd.notna(close_val) else None,
                     "volume": int(vol_val) if pd.notna(vol_val) else None,
                     "prev_close": (float(prev_close_val) if pd.notna(prev_close_val) else None),
-                    "index_name": None,
+                    "index_name": universe_map.get(sym, "Unknown"),
                 }
                 stock_rows[sym] = [row_dict]
                 all_added_symbols.add(sym)

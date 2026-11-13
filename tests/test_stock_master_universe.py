@@ -35,10 +35,12 @@ from sqlalchemy.orm import sessionmaker
 from config.settings import PROJECT_ROOT
 from src.db.data_service import (
     INDICATORS_SCHEMA_VERSION,
+    get_universe_cap_buckets,
     get_universe_symbols,
     load_indicator_snapshot,
 )
 from src.db.models import Base, DailyPrice, StockMaster
+from src.db.upsert import upsert_rows
 from src.etl.pipeline import BhavcopyETL
 
 
@@ -651,3 +653,162 @@ def test_indicator_window_respects_warmup(tmp_path: Path, sqlite_db):
         assert meta["history_window_start"] == str(cutoff_date)
         assert meta["history_window_end"] == str(max_date)
         assert meta["warmup_bars"] >= 300
+
+
+# ===========================================================================
+# 9. Regression Tests: index_name populated from stock_master.cap_bucket & Swing Screeners
+# ===========================================================================
+def test_universe_mode_writes_cap_bucket_and_never_overwrites_with_null(sqlite_db, monkeypatch):
+    """(a) After an ingestion run in universe mode, stored rows have non-NULL index_name
+    matching stock_master.cap_bucket.
+    (b) Subsequent upsert with index_name=NULL never overwrites stored non-NULL value.
+    """
+    _engine, session_factory = sqlite_db
+    d1 = date(2026, 1, 15)
+
+    with session_factory() as session:
+        # Populate stock_master
+        session.add_all(
+            [
+                StockMaster(
+                    symbol="RELIANCE",
+                    company_name="Reliance Industries",
+                    cap_bucket="largecap",
+                    in_universe=True,
+                    status="active",
+                    added_on=d1,
+                ),
+                StockMaster(
+                    symbol="MIDCAP_CO",
+                    company_name="Midcap Co",
+                    cap_bucket="midcap",
+                    in_universe=True,
+                    status="active",
+                    added_on=d1,
+                ),
+                StockMaster(
+                    symbol="UNKNOWN_CO",
+                    company_name="Unknown Co",
+                    cap_bucket="",  # empty cap bucket -> defaults to 'Unknown'
+                    in_universe=True,
+                    status="active",
+                    added_on=d1,
+                ),
+            ]
+        )
+        session.commit()
+
+        # Check get_universe_cap_buckets helper
+        cap_map = get_universe_cap_buckets(session=session)
+        assert cap_map["RELIANCE"] == "largecap"
+        assert cap_map["MIDCAP_CO"] == "midcap"
+        assert cap_map["UNKNOWN_CO"] == "Unknown"
+
+        # Simulate collected rows in universe mode using the universe map
+        stock_rows = {
+            "RELIANCE": [
+                {
+                    "symbol": "RELIANCE",
+                    "date": d1,
+                    "open": 2500.0,
+                    "high": 2550.0,
+                    "low": 2490.0,
+                    "close": 2540.0,
+                    "volume": 1_000_000,
+                    "prev_close": 2490.0,
+                    "index_name": cap_map.get("RELIANCE", "Unknown"),
+                }
+            ],
+            "MIDCAP_CO": [
+                {
+                    "symbol": "MIDCAP_CO",
+                    "date": d1,
+                    "open": 500.0,
+                    "high": 520.0,
+                    "low": 495.0,
+                    "close": 515.0,
+                    "volume": 300_000,
+                    "prev_close": 495.0,
+                    "index_name": cap_map.get("MIDCAP_CO", "Unknown"),
+                }
+            ],
+        }
+
+        all_rows = [r for rows in stock_rows.values() for r in rows]
+        upsert_rows(session, DailyPrice, all_rows, index_elements=["symbol", "date"])
+        session.commit()
+
+        # Verify non-NULL index_name stored
+        rel = session.scalars(select(DailyPrice).where(DailyPrice.symbol == "RELIANCE")).one()
+        assert rel.index_name == "largecap"
+
+        mid = session.scalars(select(DailyPrice).where(DailyPrice.symbol == "MIDCAP_CO")).one()
+        assert mid.index_name == "midcap"
+
+        # TEST UPSERT SAFETY: upsert incoming row with index_name=None ->
+        # must NOT overwrite stored value
+        update_row = [
+            {
+                "symbol": "RELIANCE",
+                "date": d1,
+                "close": 2560.0,
+                "volume": 1_200_000,
+                "index_name": None,  # incoming None
+            }
+        ]
+        upsert_rows(session, DailyPrice, update_row, index_elements=["symbol", "date"])
+        session.commit()
+
+        rel_after = session.scalars(select(DailyPrice).where(DailyPrice.symbol == "RELIANCE")).one()
+        assert float(rel_after.close) == 2560.0
+        assert rel_after.volume == 1_200_000
+        # CRITICAL: index_name must STILL be 'largecap', NOT None!
+        assert rel_after.index_name == "largecap"
+
+
+def test_swing_screeners_return_symbol_from_universe_mode():
+    """(b) swing_volume and swing_momentum return a symbol whose rows came through
+    the universe mode path (index_name='largecap') and pass every other rule.
+    """
+    from src.screeners.catalog import SwingMomentumScreener, SwingVolumeScreener
+
+    # A stock row produced from universe mode where index_name is 'largecap'
+    row = {
+        "symbol": "SWING_STOCK",
+        "date": date(2026, 1, 15),
+        "close": 200.0,
+        "ema_20": 185.0,
+        "sma_50": 170.0,
+        "sma_200": 150.0,  # ma_alignment: ema_20 > sma_50 > sma_200; close > 50, 200
+        "high_252d_prev": 220.0,  # within 15% of 52W high (0.85 * 220 = 187 <= 200)
+        "volume": 500_000,  # volume > 1.5 * volume_sma_20
+        "volume_sma_20": 300_000,  # volume_sma_20 > 250k
+        "index_name": "largecap",  # From stock_master!
+        "return_60d": 20.0,  # <= 40
+        "return_120d": 35.0,  # >= 30
+        "close_180d": 120.0,
+        "close_252d": 100.0,  # ratio_180_252 = (200 - 120) / 100 * 100 = 80.0 (50 <= x <= 300)
+    }
+    df = pd.DataFrame([row])
+
+    # 1. Swing Volume Screener
+    s1 = SwingVolumeScreener()
+    assert s1.default_params["enforce_universe"] is False
+    res_s1 = s1.run(df)
+    assert len(res_s1) == 1
+    assert res_s1.iloc[0]["symbol"] == "SWING_STOCK"
+
+    # 2. Swing Momentum Screener
+    s2 = SwingMomentumScreener()
+    assert s2.default_params["enforce_universe"] is False
+    res_s2 = s2.run(df)
+    assert len(res_s2) == 1
+    assert res_s2.iloc[0]["symbol"] == "SWING_STOCK"
+
+    # 3. Backward compatibility: if enforce_universe=True, 'largecap' was not
+    # in legacy TRACKED_INDICES
+    res_s1_enforced = SwingVolumeScreener(enforce_universe=True).run(df)
+    assert len(res_s1_enforced) == 0
+
+    res_s2_enforced = SwingMomentumScreener(enforce_universe=True).run(df)
+    assert len(res_s2_enforced) == 0

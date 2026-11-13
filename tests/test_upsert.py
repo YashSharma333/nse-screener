@@ -52,3 +52,36 @@ def test_upsert_rows_sqlite_insert_and_update():
         assert stored[1].volume == 1500
         assert stored[2].date == d3
         assert float(stored[2].close) == 2650.0
+
+
+def test_upsert_rows_never_overwrites_non_null_index_name_with_null():
+    """Verify that upsert never overwrites an existing non-NULL index_name with NULL."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    d = date(2024, 1, 1)
+
+    with Session(engine) as session:
+        upsert_rows(
+            session,
+            DailyPrice,
+            [{"symbol": "TCS", "date": d, "close": 3500.0, "index_name": "largecap"}],
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        stored = session.query(DailyPrice).filter_by(symbol="TCS", date=d).one()
+        assert stored.index_name == "largecap"
+
+    # Upsert with index_name = None -> index_name MUST remain 'largecap'
+    with Session(engine) as session:
+        upsert_rows(
+            session,
+            DailyPrice,
+            [{"symbol": "TCS", "date": d, "close": 3550.0, "index_name": None}],
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        stored = session.query(DailyPrice).filter_by(symbol="TCS", date=d).one()
+        assert float(stored.close) == 3550.0
+        assert stored.index_name == "largecap"

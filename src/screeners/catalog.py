@@ -564,7 +564,7 @@ class SwingVolumeScreener(Screener):
         "vol_multiplier": 1.5,
         "min_volume": 250_000.0,
         "max_pct_from_high": 15.0,
-        "enforce_universe": True,
+        "enforce_universe": False,
     }
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
@@ -630,7 +630,7 @@ class SwingMomentumScreener(Screener):
         "vol_multiplier": 1.5,
         "min_volume": 250_000.0,
         "max_pct_from_high": 15.0,
-        "enforce_universe": True,
+        "enforce_universe": False,
         "max_return_60d": 40.0,
         "min_return_120d": 30.0,
         "ratio_180_252_min": 50.0,

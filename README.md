@@ -67,7 +67,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | **Language** | Python 3.11+ | Main programming language for scripts, calculations, and the UI. |
 | **Data Processing** | Pandas, NumPy, PyArrow | Fast data cleaning, vectorised rolling calculations, and Parquet caching. |
-| **Database** | MySQL 8.0, PyMySQL, SQLite | Stores daily stock prices, trading volumes, and index categories. |
+| **Database** | MySQL 8.0, PyMySQL, SQLite | Stores daily stock prices, trading volumes, and cap buckets / index categories. |
 | **Database Layer** | SQLAlchemy 2.0, Alembic | Manages schema migrations, connection pooling, and dialect-agnostic upserts. |
 | **Web Dashboard** | Streamlit, Plotly | Interactive terminal with dark mode, custom filters, and candlestick charts. |
 | **Networking** | Requests | Downloads market reports with session cookies and retry handlers. |
@@ -369,13 +369,16 @@ Open [http://localhost:8501](http://localhost:8501) in your web browser.
 
 ### 6. Run the Test Suite & Linters
 ```bash
-# Run full test suite with coverage
-pytest
+# Run full test suite with coverage (works completely offline without MySQL)
+MYSQL_HOST=127.0.0.1 MYSQL_PORT=1 pytest -q --cov=src --cov-report=term-missing
 
 # Run linter and formatter check
 ruff check .
 ruff format --check .
 ```
+
+> [!NOTE]
+> **Agent & Contributor Standing Rules:** All contributors and autonomous agents must follow the standing guidelines documented in [AGENTS.md](AGENTS.md) (covers issue-filing protocols, offline pre-push CI checks, pull request standards, and public repository data cleanliness).
 
 ---
 
@@ -598,7 +601,8 @@ nse-screener/
 ├── pyproject.toml               # Project configuration, ruff & pytest-cov settings
 ├── requirements.txt             # Runtime Python dependencies (pinned openpyxl)
 ├── requirements-dev.txt         # Development & test dependencies
-└── run_pipeline.py              # CLI tool for data ingestion and ETL operations
+├── run_pipeline.py              # CLI tool for data ingestion and ETL operations
+└── AGENTS.md                    # Standing guidelines for autonomous agents & contributors
 ```
 
 ---

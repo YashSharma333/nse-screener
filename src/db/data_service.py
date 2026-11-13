@@ -36,6 +36,44 @@ INDICATORS_CACHE_PATH = Path("data/processed/indicators.parquet")
 INDICATORS_META_PATH = Path("data/processed/indicators.meta.json")
 
 
+def get_universe_cap_buckets(session: Session | None = None) -> dict[str, str]:
+    """Retrieve active universe symbols mapped to their cap_bucket from ``stock_master``.
+
+    Returns
+    -------
+    dict[str, str]
+        Dictionary mapping ticker symbol -> cap_bucket (e.g. 'largecap', 'midcap', 'smallcap').
+        If cap_bucket is empty or NULL, values default to 'Unknown'.
+        If ``stock_master`` table is empty (0 records), logs a warning and returns an empty dict.
+    """
+    if session is None and not check_connection():
+        logger.warning("Database offline; cannot query stock_master universe.")
+        return {}
+
+    def _query(s: Session) -> dict[str, str]:
+        total_count = s.scalar(select(func.count()).select_from(StockMaster)) or 0
+        if total_count == 0:
+            logger.warning("stock_master table is empty; falling back to NIFTY-constituent filter.")
+            return {}
+
+        stmt = select(StockMaster.symbol, StockMaster.cap_bucket).where(
+            StockMaster.in_universe.is_(True)
+        )
+        return {
+            str(row[0]): (str(row[1]).strip() if row[1] and str(row[1]).strip() else "Unknown")
+            for row in s.execute(stmt).all()
+        }
+
+    try:
+        if session is not None:
+            return _query(session)
+        with get_db() as s:
+            return _query(s)
+    except Exception as exc:
+        logger.warning("Error querying stock_master cap buckets (%s); falling back.", exc)
+        return {}
+
+
 def get_universe_symbols(session: Session | None = None) -> set[str]:
     """Retrieve active universe symbols from ``stock_master``.
 
@@ -45,27 +83,8 @@ def get_universe_symbols(session: Session | None = None) -> set[str]:
         Set of ticker symbols where ``in_universe == True``. If ``stock_master``
         table is empty (0 records), logs a warning and returns an empty set.
     """
-    if session is None and not check_connection():
-        logger.warning("Database offline; cannot query stock_master universe.")
-        return set()
-
-    def _query(s: Session) -> set[str]:
-        total_count = s.scalar(select(func.count()).select_from(StockMaster)) or 0
-        if total_count == 0:
-            logger.warning("stock_master table is empty; falling back to NIFTY-constituent filter.")
-            return set()
-
-        stmt = select(StockMaster.symbol).where(StockMaster.in_universe.is_(True))
-        return set(s.scalars(stmt).all())
-
-    try:
-        if session is not None:
-            return _query(session)
-        with get_db() as s:
-            return _query(s)
-    except Exception as exc:
-        logger.warning("Error querying stock_master universe (%s); falling back.", exc)
-        return set()
+    cap_buckets = get_universe_cap_buckets(session=session)
+    return set(cap_buckets.keys())
 
 
 def load_raw_market_data(
@@ -657,6 +676,7 @@ __all__ = [
     "get_index_constituents",
     "get_latest_market_snapshot",
     "get_market_data",
+    "get_universe_cap_buckets",
     "get_universe_symbols",
     "load_indicator_history",
     "load_indicator_snapshot",

@@ -151,6 +151,8 @@ def _render_results_table(df: pd.DataFrame, csv_filename: str) -> None:
     ]
     available = [c for c in cols_order if c in res.columns]
     display_df = res[available].copy()
+    if "index_name" in display_df.columns:
+        display_df = display_df.rename(columns={"index_name": "Cap Bucket"})
 
     st.dataframe(display_df, width="stretch", hide_index=True)
     st.download_button(
