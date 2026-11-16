@@ -231,10 +231,39 @@ class StockMaster(Base):
     flagged_on = Column(Date, nullable=True)
     benchmark_index = Column(String(50), nullable=True)
     source = Column(String(100), nullable=True)
+    renamed_to = Column(String(50), nullable=True)
 
     def __repr__(self) -> str:
         return (
             f"<StockMaster(symbol={self.symbol!r}, company={self.company_name!r}, "
             f"in_universe={self.in_universe}, status={self.status!r}, "
             f"market_cap_cr={self.market_cap_cr})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Symbol alias and rename mapping model
+# ---------------------------------------------------------------------------
+class SymbolAlias(Base):
+    """Symbol rename and alias mapping.
+
+    Tracks corporate symbol changes (e.g. ICICIPRULI -> ICICILIFE) with continuity
+    verification status and implied price ratio.
+    """
+
+    __tablename__ = "symbol_alias"
+
+    old_symbol = Column(String(50), primary_key=True)
+    new_symbol = Column(String(50), primary_key=True)
+    effective_date = Column(Date, nullable=True)
+    status = Column(
+        String(30), nullable=False, default="candidate", server_default=text("'candidate'")
+    )
+    implied_ratio = Column(Numeric(14, 4), nullable=True)
+    note = Column(String(255), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<SymbolAlias(old={self.old_symbol!r}, new={self.new_symbol!r}, "
+            f"status={self.status!r}, ratio={self.implied_ratio})>"
         )

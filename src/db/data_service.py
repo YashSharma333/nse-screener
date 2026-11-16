@@ -57,7 +57,8 @@ def get_universe_cap_buckets(session: Session | None = None) -> dict[str, str]:
             return {}
 
         stmt = select(StockMaster.symbol, StockMaster.cap_bucket).where(
-            StockMaster.in_universe.is_(True)
+            StockMaster.in_universe.is_(True),
+            StockMaster.status != "renamed",
         )
         return {
             str(row[0]): (str(row[1]).strip() if row[1] and str(row[1]).strip() else "Unknown")
@@ -85,6 +86,56 @@ def get_universe_symbols(session: Session | None = None) -> set[str]:
     """
     cap_buckets = get_universe_cap_buckets(session=session)
     return set(cap_buckets.keys())
+
+
+def get_symbol_aliases(session: Session | None = None) -> dict[str, str]:
+    """Retrieve mapping of old_symbol -> new_symbol for applied aliases and renames.
+
+    Returns
+    -------
+    dict[str, str]
+        Dictionary mapping old_symbol -> new_symbol.
+    """
+    if session is None and not check_connection():
+        logger.warning("Database offline; cannot query symbol aliases.")
+        return {}
+
+    def _query(s: Session) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        # 1. From stock_master renamed_to
+        try:
+            sm_stmt = select(StockMaster.symbol, StockMaster.renamed_to).where(
+                StockMaster.renamed_to.is_not(None)
+            )
+            for row in s.execute(sm_stmt).all():
+                if row[0] and row[1]:
+                    aliases[str(row[0]).strip().upper()] = str(row[1]).strip().upper()
+        except Exception:
+            pass
+
+        # 2. From symbol_alias table
+        try:
+            from src.db.models import SymbolAlias
+
+            alias_stmt = select(SymbolAlias.old_symbol, SymbolAlias.new_symbol).where(
+                SymbolAlias.status.in_(["applied", "verified_exact", "verified_close"])
+            )
+            for row in s.execute(alias_stmt).all():
+                if row[0] and row[1]:
+                    aliases[str(row[0]).strip().upper()] = str(row[1]).strip().upper()
+        except Exception:
+            pass
+
+        return aliases
+
+    try:
+        if session is not None:
+            return _query(session)
+        with get_db() as s:
+            return _query(s)
+    except Exception as exc:
+        logger.warning("Error querying symbol aliases (%s); returning empty dict.", exc)
+        return {}
 
 
 def load_raw_market_data(
@@ -676,6 +727,7 @@ __all__ = [
     "get_index_constituents",
     "get_latest_market_snapshot",
     "get_market_data",
+    "get_symbol_aliases",
     "get_universe_cap_buckets",
     "get_universe_symbols",
     "load_indicator_history",

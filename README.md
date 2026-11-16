@@ -100,6 +100,7 @@ alembic downgrade -1
 | `004` | `b6162e8d027a` | `benchmark_prices` | Stores daily historical index prices for market benchmarks (`NIFTY 50`, `NIFTY 500`). |
 | `005` | `d4cfae65f184` | `index_membership` | Stores historical index constituent membership snapshots. |
 | `006` | `78422e33ba2d` | `stock_master` | Master stock directory: defines the active ~1,800 universe stocks with market cap, sector, industry, cap bucket, and hysteresis status. |
+| `007` | `f7c18050340f` | `symbol_alias`, `stock_master.renamed_to` | Symbol alias registry and renamed tracking: stores mappings between old and new equity ticker symbols, effective dates, verification classifications, and implied ratios; adds nullable `renamed_to` column on `stock_master`. |
 
 #### `stock_master` Table Schema
 
@@ -120,8 +121,26 @@ CREATE TABLE stock_master (
     flagged_on DATE NULL,
     benchmark_index VARCHAR(64) NULL,
     source VARCHAR(64) NOT NULL,
+    renamed_to VARCHAR(32) NULL,
     INDEX ix_stock_master_in_universe (in_universe),
     INDEX ix_stock_master_status (status)
+);
+```
+
+#### `symbol_alias` Table Schema
+
+The `symbol_alias` table tracks ticker renames, continuity check results, and implied ratios:
+
+```sql
+CREATE TABLE symbol_alias (
+    old_symbol VARCHAR(32) NOT NULL,
+    new_symbol VARCHAR(32) NOT NULL,
+    effective_date DATE NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'candidate',
+    implied_ratio NUMERIC(10, 4) NULL,
+    note TEXT NULL,
+    PRIMARY KEY (old_symbol, new_symbol),
+    INDEX ix_symbol_alias_status (status)
 );
 ```
 
@@ -236,9 +255,15 @@ python run_pipeline.py --import-universe data/universe/m-cap_1.xlsx --yes
 
 # Customize market-cap thresholds (e.g. ₹500 Cr to add, ₹490 Cr to retain)
 python run_pipeline.py --import-universe data/universe/m-cap_1.xlsx --add-threshold 500 --keep-threshold 490 --yes
+
+# Specify a custom universe overrides file (default: config/universe_overrides.csv)
+python run_pipeline.py --import-universe data/universe/m-cap_1.xlsx --universe-overrides config/universe_overrides.csv --yes
 ```
 * **Why it exists:** NSE lists over 2,200 stocks, but many are micro-caps with poor liquidity and wide bid-ask spreads. This command imports an investable universe (~1,800 stocks with market cap ≥ ₹490/₹500 Cr) and classifies them in `stock_master`.
-* **What it changes:** Updates the `stock_master` table using the 500/490 Cr hysteresis rule. It also outputs an audit report at `reports/universe_import_report.csv` detailing status breakdowns, sector distributions, and any symbol discrepancies.
+* **What it changes:** Updates the `stock_master` table using the 500/490 Cr hysteresis rule. Overrides in `config/universe_overrides.csv` (`force_include` or `force_exclude`) are applied *after* hysteresis:
+  - `force_include`: Forces `in_universe=True`, `status='active'`, `source='override'`, and sets `cap_bucket='Unknown'` if missing from the source file. Used for verified large caps missing from third-party exports (e.g. `GESHIP`, `HEXT`, `PIRAMALFIN`).
+  - `force_exclude`: Forces `in_universe=False`.
+  - Overrides survive subsequent re-imports and are fully audited in `reports/universe_import_report.csv`.
 
 ##### 2. Fill Missing Symbols from Cache (`--fill-missing-symbols`)
 ```bash
@@ -249,6 +274,7 @@ python run_pipeline.py --fill-missing-symbols
 python run_pipeline.py --fill-missing-symbols --start 2024-01-01 --end 2024-12-31
 ```
 * **Why it exists:** When you add new symbols to `stock_master`, prior historical sessions in your database might only contain rows for previously tracked stocks. This command iterates date-by-date through every trading session in `daily_prices`, identifies any active universe symbol that lacks a row, and populates it directly from `data/raw/bhavcopy_cache/<date>.parquet` (or downloads the session if the cache file is missing). Stocks listed more recently (IPOs) naturally have fewer rows and are handled cleanly.
+* **Alias-aware ingestion:** When filling missing history for renamed stocks, any cached rows under old ticker symbols registered in `symbol_alias` are automatically mapped to the new symbol. Ingestion never recreates rows under symbols marked with `status='renamed'`.
 * **What it changes:** Bulk upserts missing price rows into `daily_prices`, runs `rebuild_adjusted` for added symbols, and refreshes the indicator cache.
 
 ##### 3. Incremental Daily Ingestion (`--incremental`)
@@ -319,6 +345,53 @@ python run_pipeline.py --refresh-cache
 * **Why it exists:** Computes all 35+ technical indicators across the active universe without downloading any files from the internet, updating the local fast Parquet cache.
 * **What it changes:** Regenerates `data/processed/indicators.parquet` and its metadata sidecar `indicators.meta.json`.
 
+##### 10. Import Symbol Aliases (`--import-symbol-aliases`)
+```bash
+# Import default alias seed mappings (config/symbol_aliases.csv)
+python run_pipeline.py --import-symbol-aliases
+
+# Or import from a custom CSV file
+python run_pipeline.py --import-symbol-aliases path/to/custom_aliases.csv
+```
+* **Why it exists:** When listed companies change their ticker symbols on the NSE (e.g. `ICICIPRULI` -> `ICICILIFE`, `PEL` -> `PIRAMALFIN`), unmerged histories break indicator windows (SMA 200, 52-week High/Low, RS). This command registers known symbol rename candidate pairs into the `symbol_alias` database table with initial status `'candidate'`.
+* **What it changes:** Upserts candidate alias records into `symbol_alias`.
+
+##### 11. Apply Symbol Aliases (`--apply-symbol-aliases`)
+```bash
+# Dry-run verification (safe, prints summary and checks continuity without writing)
+python run_pipeline.py --apply-symbol-aliases
+
+# Confirm and execute rename merge in one atomic database transaction
+python run_pipeline.py --apply-symbol-aliases --yes
+```
+* **Why it exists:** Seamlessly links price history across ticker renames after rigorous verification against raw exchange Bhavcopy data.
+* **Raw Continuity Check:** Evaluates raw values directly from `data/raw/bhavcopy_cache/` (never unverified or adjusted prices). Compares the new symbol's first `PREV_CLOSE` with the old symbol's raw `CLOSE` on the last trading day before the new symbol began trading:
+  - `verified_exact`: Raw prices match within 1 tick (`|diff| <= 0.05`). Safe to merge.
+  - `verified_close`: Ratio within 1% (`abs(ratio - 1.0) <= 0.01`). Merges with warning (small dividend or rounding difference).
+  - `ratio_mismatch`: Implied ratio diverges (e.g. 2:1 split, bonus, or merger ratio). **Does NOT merge**. Prints implied ratio and logs an issue for manual review.
+  - `date_gap`: Old symbol has no traded row on the trading session immediately prior to new symbol's first date. **Does NOT merge**.
+  - `overlap`: Both symbols traded simultaneously on the same date with volume > 0 and differing prices. **Does NOT merge**.
+* **What it changes (when `--yes` is specified and verified):**
+  - Exports a safety backup of all rows being moved to `reports/alias_applied_<OLD>_<NEW>_<TIMESTAMP>.json`.
+  - Moves all `daily_prices` rows from OLD to NEW in one atomic transaction.
+  - Inserts any cached OLD rows under NEW if OLD had zero database rows (e.g. `PEL` -> `PIRAMALFIN`).
+  - Fills any missing gap dates for NEW directly from Bhavcopy cache.
+  - Copies sector, industry, and cap bucket metadata from OLD to NEW if NEW is unclassified.
+  - Marks OLD in `stock_master` as `status='renamed'`, `renamed_to=NEW`, and `in_universe=False`.
+  - Runs `rebuild_adjusted_prices` for the new symbol and refreshes the indicator cache.
+
+##### 12. Detect Symbol Renames (`--detect-renames`)
+```bash
+# Scan Bhavcopy cache for potential symbol renames (Read-only, default: last 60 days)
+python run_pipeline.py --detect-renames
+
+# Scan across a specific historical range
+python run_pipeline.py --detect-renames --start 2026-10-01 --end 2026-11-13
+```
+* **Why it exists:** Automatically discovers ticker renames across historical Bhavcopy files where an old symbol stops trading and a new symbol appears within 5 trading days with identical or near-identical prices.
+* **Disambiguation:** If one old symbol matches multiple new symbols (or vice-versa), selects the unique best match and marks competing candidates as `'ambiguous'`.
+* **What it changes:** Read-only operation. Outputs audit findings to `reports/rename_candidates.csv` and never modifies the database.
+
 ---
 
 #### 🌟 Recommended Order for a Fresh 10-Year Build
@@ -336,26 +409,31 @@ alembic upgrade head
 # (The user places the Excel file manually at data/universe/m-cap_1.xlsx)
 python run_pipeline.py --import-universe data/universe/m-cap_1.xlsx --yes
 
-# Step 4: Fill missing symbols from any locally cached Bhavcopy files
+# Step 4: Import and apply verified symbol aliases (ticker renames)
+python run_pipeline.py --import-symbol-aliases
+python run_pipeline.py --apply-symbol-aliases --yes
+
+# Step 5: Fill missing symbols from any locally cached Bhavcopy files
 python run_pipeline.py --fill-missing-symbols
 
-# Step 5: Backfill historical market data (e.g. 10 years / ~3650 days)
+# Step 6: Backfill historical market data (e.g. 10 years / ~3650 days)
 python run_pipeline.py --backfill --days-back 3650 --chunk-size 100
 
-# Step 6: Ingest benchmark indices (NIFTY 500, NIFTY 50)
+# Step 7: Ingest benchmark indices (NIFTY 500, NIFTY 50)
 python run_pipeline.py --benchmarks --start 2014-01-01
 
-# Step 7: Detect corporate actions (splits/bonuses) and compute indicators
+# Step 8: Detect corporate actions (splits/bonuses) and compute indicators
 python run_pipeline.py --rebuild-adjusted
 ```
 
 **Why this exact order matters:**
-1. **Migrations first:** Sets up the schema (`stock_master`, `daily_prices`, `adj_factors`) with all necessary indexes.
-2. **Universe import second:** Establishes the ~1,800 active universe symbols in `stock_master`. Subsequent backfills and ingestion will automatically filter for these symbols instead of wasting bandwidth and disk space on penny stocks.
-3. **Fill missing third:** Scans any existing Bhavcopy Parquet files in `data/raw/bhavcopy_cache/` so already-downloaded sessions are ingested immediately without hitting the network.
-4. **Backfill fourth:** Downloads historical sessions backwards in bounded 100-day chunks, storing data only for active universe symbols.
-5. **Benchmarks fifth:** Provides the broader market benchmark history required for Relative Strength (RS) calculations.
-6. **Rebuild adjusted sixth:** Processes full price history to detect all stock splits and bonuses chronologically, calculates adjusted prices, and generates the high-performance indicator cache in one clean pass.
+1. **Migrations first:** Sets up the schema (`stock_master`, `symbol_alias`, `daily_prices`, `adj_factors`) with all necessary indexes.
+2. **Universe import second:** Establishes the ~1,800 active universe symbols in `stock_master`, including overrides.
+3. **Symbol aliases third:** Unifies ticker renames (e.g. `ICICIPRULI` -> `ICICILIFE`, `PEL` -> `PIRAMALFIN`) so old history is merged under active symbols before filling missing dates.
+4. **Fill missing fourth:** Scans any existing Bhavcopy Parquet files in `data/raw/bhavcopy_cache/` so already-downloaded sessions are ingested immediately without hitting the network, respecting renamed symbols.
+5. **Backfill fifth:** Downloads historical sessions backwards in bounded 100-day chunks, storing data only for active universe symbols.
+6. **Benchmarks sixth:** Provides the broader market benchmark history required for Relative Strength (RS) calculations.
+7. **Rebuild adjusted seventh:** Processes full price history to detect all stock splits and bonuses chronologically, calculates adjusted prices, and generates the high-performance indicator cache in one clean pass.
 
 ### 5. Launch the Dashboard
 Start the web dashboard:
