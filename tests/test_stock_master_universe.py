@@ -112,8 +112,8 @@ def test_alembic_upgrade_and_downgrade(tmp_path: Path):
     tables = insp.get_table_names()
     assert "stock_master" in tables
 
-    # Downgrade 1 revision
-    command.downgrade(alembic_cfg, "-1")
+    # Downgrade to 005 (before stock_master was created)
+    command.downgrade(alembic_cfg, "d4cfae65f184")
     insp = inspect(engine)
     tables = insp.get_table_names()
     assert "stock_master" not in tables

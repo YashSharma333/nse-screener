@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 
 from config.settings import PROJECT_ROOT, setup_logging
 from src.db.data_service import get_universe_cap_buckets
-from src.db.models import BenchmarkPrice, DailyPrice, StockMaster
+from src.db.models import BenchmarkPrice, DailyPrice, StockMaster, SymbolAlias
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
@@ -65,6 +65,49 @@ RAW_DIR = PROJECT_ROOT / "data" / "raw"
 INITIAL_DAYS_BACK = 1100  # ~3 year lookback on the very first run
 DOWNLOAD_DELAY = 0.8  # polite gap between daily downloads
 DB_BATCH_SIZE = 1000  # rows per INSERT batch
+
+
+def create_github_issue(title: str, body: str, label: str = "needs-user-input") -> bool:
+    """Create a GitHub issue via `gh issue create`.
+
+    If `gh` CLI is unauthenticated or fails, writes to reports/issues_draft.md as fallback.
+    """
+    import shutil
+    import subprocess
+
+    gh_bin = shutil.which("gh")
+    if gh_bin:
+        try:
+            # Check for existing issue with the same title
+            search_proc = subprocess.run(
+                [gh_bin, "issue", "list", "--state", "all", "--search", title],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if title in search_proc.stdout:
+                logger.info("GitHub issue already exists: %s", title)
+                return True
+
+            proc = subprocess.run(
+                [gh_bin, "issue", "create", "--title", title, "--label", label, "--body", body],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode == 0:
+                logger.info("Created GitHub issue: %s", proc.stdout.strip())
+                return True
+            logger.warning("gh issue create returned %d: %s", proc.returncode, proc.stderr)
+        except Exception as exc:
+            logger.warning("Failed to invoke gh CLI: %s", exc)
+
+    draft_file = PROJECT_ROOT / "reports" / "issues_draft.md"
+    draft_file.parent.mkdir(parents=True, exist_ok=True)
+    with draft_file.open("a", encoding="utf-8") as f:
+        f.write(f"\n\n# {title} [Label: {label}]\n\n{body}\n")
+    logger.info("Drafted issue to %s", draft_file)
+    return False
 
 
 class BhavcopyETL:
@@ -133,6 +176,41 @@ class BhavcopyETL:
             return {date.fromisoformat(d) for d in raw}
         except Exception as exc:
             logger.warning("Could not read non_trading_days.json: %s", exc)
+            return set()
+
+    def _get_renamed_symbols(self, session: Session | None = None) -> set[str]:
+        """Return set of symbols that have been renamed to prevent recreating old history."""
+
+        def _query(s: Session) -> set[str]:
+            renamed: set[str] = set()
+            try:
+                stmt1 = select(StockMaster.symbol).where(
+                    (StockMaster.status == "renamed") | (StockMaster.renamed_to.is_not(None))
+                )
+                for sym in s.scalars(stmt1).all():
+                    if sym:
+                        renamed.add(str(sym).strip().upper())
+            except Exception:
+                pass
+            try:
+                stmt2 = select(SymbolAlias.old_symbol).where(
+                    SymbolAlias.status.in_(["applied", "verified_exact", "verified_close"])
+                )
+                for sym in s.scalars(stmt2).all():
+                    if sym:
+                        renamed.add(str(sym).strip().upper())
+            except Exception:
+                pass
+            return renamed
+
+        if session is not None:
+            return _query(session)
+        try:
+            if not check_connection():
+                return set()
+            with get_db() as s:
+                return _query(s)
+        except Exception:
             return set()
 
     def record_non_trading_days(self, dates: set[date] | list[date]) -> None:
@@ -416,6 +494,11 @@ class BhavcopyETL:
                         continue
 
             trading_days += 1
+
+            # Exclude symbols marked 'renamed' to prevent recreating old history
+            renamed_symbols = self._get_renamed_symbols()
+            if renamed_symbols and "Symbol" in df.columns:
+                df = df[~df["Symbol"].astype(str).str.strip().str.upper().isin(renamed_symbols)]
 
             # Optionally filter to a known symbol universe
             if symbol_filter is not None:
@@ -828,6 +911,11 @@ class BhavcopyETL:
                     continue
 
                 all_loaded_dates.add(d)
+
+                # Exclude symbols marked 'renamed' to prevent recreating old history
+                renamed_symbols = self._get_renamed_symbols()
+                if renamed_symbols and "Symbol" in df.columns:
+                    df = df[~df["Symbol"].astype(str).str.strip().str.upper().isin(renamed_symbols)]
 
                 if symbol_filter is not None:
                     df = df[df["Symbol"].isin(symbol_filter)]
@@ -1416,6 +1504,7 @@ class BhavcopyETL:
         dry_run: bool = True,
         session: Session | None = None,
         reports_dir: Path | None = None,
+        overrides_path: Path | str | None = None,
     ) -> dict[str, Any]:
         """Import stock master and universe from an Excel file with hysteresis.
 
@@ -1605,6 +1694,104 @@ class BhavcopyETL:
                         "source": prev.source,
                     }
 
+            # Apply Universe Overrides (force_include / force_exclude)
+            applied_overrides: list[dict[str, str]] = []
+            target_overrides_path = Path(overrides_path) if overrides_path else None
+            if target_overrides_path and target_overrides_path.exists():
+                try:
+                    df_overrides = pd.read_csv(target_overrides_path)
+                    ov_cols = {str(c).lower().strip(): c for c in df_overrides.columns}
+                    ov_sym_col = ov_cols.get("symbol")
+                    ov_act_col = ov_cols.get("action")
+                    ov_reason_col = ov_cols.get("reason")
+                    ov_added_col = ov_cols.get("added_on")
+
+                    if ov_sym_col and ov_act_col:
+                        for _, ov_row in df_overrides.iterrows():
+                            raw_osym = ov_row[ov_sym_col]
+                            if pd.isna(raw_osym):
+                                continue
+                            osym = str(raw_osym).strip().upper()
+                            action = str(ov_row[ov_act_col]).strip().lower()
+                            reason = (
+                                str(ov_row[ov_reason_col]).strip()
+                                if ov_reason_col and pd.notna(ov_row[ov_reason_col])
+                                else ""
+                            )
+                            ov_added_raw = (
+                                str(ov_row[ov_added_col]).strip()
+                                if ov_added_col and pd.notna(ov_row[ov_added_col])
+                                else None
+                            )
+                            ov_added_date = today
+                            if ov_added_raw:
+                                try:
+                                    ov_added_date = date.fromisoformat(ov_added_raw)
+                                except ValueError:
+                                    ov_added_date = today
+
+                            if action == "force_include":
+                                if osym not in planned_records:
+                                    prev = existing_stocks.get(osym)
+                                    planned_records[osym] = {
+                                        "symbol": osym,
+                                        "company_name": prev.company_name if prev else osym,
+                                        "sector": prev.sector if prev else None,
+                                        "industry": prev.industry if prev else None,
+                                        "cap_bucket": (
+                                            prev.cap_bucket
+                                            if prev and prev.cap_bucket
+                                            else "Unknown"
+                                        ),
+                                        "market_cap_cr": (
+                                            float(prev.market_cap_cr)
+                                            if prev and prev.market_cap_cr is not None
+                                            else None
+                                        ),
+                                        "market_cap_asof": prev.market_cap_asof if prev else None,
+                                        "in_universe": True,
+                                        "status": "active",
+                                        "added_on": prev.added_on if prev else ov_added_date,
+                                        "flagged_on": None,
+                                        "benchmark_index": prev.benchmark_index if prev else None,
+                                        "source": "override",
+                                    }
+                                else:
+                                    planned_records[osym]["in_universe"] = True
+                                    planned_records[osym]["status"] = "active"
+                                    planned_records[osym]["source"] = "override"
+                                    if not planned_records[osym].get("cap_bucket"):
+                                        planned_records[osym]["cap_bucket"] = "Unknown"
+                                    planned_records[osym]["flagged_on"] = None
+                                applied_overrides.append(
+                                    {
+                                        "symbol": osym,
+                                        "action": action,
+                                        "reason": reason,
+                                    }
+                                )
+                            elif action == "force_exclude":
+                                if osym in planned_records:
+                                    planned_records[osym]["in_universe"] = False
+                                    if planned_records[osym].get("status") == "active":
+                                        planned_records[osym]["status"] = "below_threshold"
+                                        planned_records[osym]["flagged_on"] = (
+                                            planned_records[osym].get("flagged_on") or today
+                                        )
+                                    applied_overrides.append(
+                                        {
+                                            "symbol": osym,
+                                            "action": action,
+                                            "reason": reason,
+                                        }
+                                    )
+                except Exception as ov_exc:
+                    logger.warning(
+                        "Error reading universe overrides from %s: %s",
+                        target_overrides_path,
+                        ov_exc,
+                    )
+
             # Report data
             status_counts: dict[str, int] = {}
             for r in planned_records.values():
@@ -1639,7 +1826,11 @@ class BhavcopyETL:
                         pass
 
             excel_not_in_bhav = sorted(excel_symbols - bhav_symbols) if bhav_symbols else []
-            stored_not_in_file = sorted(missing_stored)
+            stored_not_in_file = sorted(
+                sym
+                for sym in missing_stored
+                if planned_records.get(sym, {}).get("status") == "not_in_file"
+            )
 
             r_dir = reports_dir or (PROJECT_ROOT / "reports")
             r_dir.mkdir(parents=True, exist_ok=True)
@@ -1674,6 +1865,16 @@ class BhavcopyETL:
                         "name": sec,
                         "count_or_value": str(cnt),
                         "notes": "",
+                    }
+                )
+            for ov in applied_overrides:
+                report_rows.append(
+                    {
+                        "section": "applied_overrides",
+                        "category": ov["action"],
+                        "name": ov["symbol"],
+                        "count_or_value": ov["action"],
+                        "notes": ov.get("reason", ""),
                     }
                 )
             for sym in excel_not_in_bhav:
@@ -1738,6 +1939,8 @@ class BhavcopyETL:
                 "cap_bucket_counts": cap_bucket_counts,
                 "excel_not_in_bhav_count": len(excel_not_in_bhav),
                 "stored_not_in_file_count": len(stored_not_in_file),
+                "applied_overrides_count": len(applied_overrides),
+                "applied_overrides": applied_overrides,
             }
 
         if session is not None:
@@ -1769,13 +1972,45 @@ class BhavcopyETL:
         def _get_universe(s: Session) -> dict[str, str]:
             return get_universe_cap_buckets(session=s)
 
+        def _get_alias_maps(s: Session) -> tuple[dict[str, list[str]], set[str]]:
+            rev_map: dict[str, list[str]] = {}
+            renamed_set: set[str] = set()
+            try:
+                stmt1 = select(StockMaster.symbol, StockMaster.renamed_to).where(
+                    StockMaster.renamed_to.is_not(None)
+                )
+                for old_s, new_s in s.execute(stmt1).all():
+                    if old_s and new_s:
+                        old_str = str(old_s).strip().upper()
+                        new_str = str(new_s).strip().upper()
+                        rev_map.setdefault(new_str, []).append(old_str)
+                        renamed_set.add(old_str)
+            except Exception:
+                pass
+            try:
+                stmt2 = select(SymbolAlias.old_symbol, SymbolAlias.new_symbol).where(
+                    SymbolAlias.status.in_(["applied", "verified_exact", "verified_close"])
+                )
+                for old_s, new_s in s.execute(stmt2).all():
+                    if old_s and new_s:
+                        old_str = str(old_s).strip().upper()
+                        new_str = str(new_s).strip().upper()
+                        if old_str not in rev_map.get(new_str, []):
+                            rev_map.setdefault(new_str, []).append(old_str)
+                        renamed_set.add(old_str)
+            except Exception:
+                pass
+            return rev_map, renamed_set
+
         if session is not None:
             universe_map = _get_universe(session)
+            rev_alias_map, renamed_symbols = _get_alias_maps(session)
         else:
             with get_db() as s:
                 universe_map = _get_universe(s)
+                rev_alias_map, renamed_symbols = _get_alias_maps(s)
 
-        universe_symbols = set(universe_map.keys())
+        universe_symbols = {s for s in universe_map if s not in renamed_symbols}
 
         if not universe_symbols:
             logger.warning(
@@ -1864,34 +2099,51 @@ class BhavcopyETL:
                 logger.warning("No Symbol column in cache file %s", cache_file)
                 continue
 
-            sym_series = df_bhav[sym_col].astype(str).str.strip().str.upper()
-            df_missing = df_bhav[sym_series.isin(missing_on_d)]
-            if df_missing.empty:
-                continue
+            open_col = cols_lower.get("open")
+            high_col = cols_lower.get("high")
+            low_col = cols_lower.get("low")
+            close_col = cols_lower.get("close")
+            vol_col = cols_lower.get("volume")
+            prev_col = cols_lower.get("prevclose") or cols_lower.get("prev_close")
+
+            # Map symbols in bhavcopy file to their row dict
+            bhav_by_sym: dict[str, Any] = {}
+            for _, r in df_bhav.iterrows():
+                s_val = r.get(sym_col)
+                if pd.notna(s_val):
+                    bhav_by_sym[str(s_val).strip().upper()] = r
 
             stock_rows: dict[str, list[dict]] = {}
-            for _, r in df_missing.iterrows():
-                sym = str(r[sym_col]).strip().upper()
-                open_val = r.get(cols_lower.get("open"))
-                high_val = r.get(cols_lower.get("high"))
-                low_val = r.get(cols_lower.get("low"))
-                close_val = r.get(cols_lower.get("close"))
-                vol_val = r.get(cols_lower.get("volume"))
-                prev_close_val = r.get(cols_lower.get("prevclose"))
+            for sym in missing_on_d:
+                target_row = bhav_by_sym.get(sym)
+                if target_row is None:
+                    # Check if symbol has an old alias in bhavcopy
+                    for old_s in rev_alias_map.get(sym, []):
+                        if old_s in bhav_by_sym:
+                            target_row = bhav_by_sym[old_s]
+                            break
 
-                row_dict = {
-                    "symbol": sym,
-                    "date": d,
-                    "open": float(open_val) if pd.notna(open_val) else None,
-                    "high": float(high_val) if pd.notna(high_val) else None,
-                    "low": float(low_val) if pd.notna(low_val) else None,
-                    "close": float(close_val) if pd.notna(close_val) else None,
-                    "volume": int(vol_val) if pd.notna(vol_val) else None,
-                    "prev_close": (float(prev_close_val) if pd.notna(prev_close_val) else None),
-                    "index_name": universe_map.get(sym, "Unknown"),
-                }
-                stock_rows[sym] = [row_dict]
-                all_added_symbols.add(sym)
+                if target_row is not None:
+                    open_val = target_row.get(open_col)
+                    high_val = target_row.get(high_col)
+                    low_val = target_row.get(low_col)
+                    close_val = target_row.get(close_col)
+                    vol_val = target_row.get(vol_col)
+                    prev_close_val = target_row.get(prev_col)
+
+                    row_dict = {
+                        "symbol": sym,
+                        "date": d,
+                        "open": float(open_val) if pd.notna(open_val) else None,
+                        "high": float(high_val) if pd.notna(high_val) else None,
+                        "low": float(low_val) if pd.notna(low_val) else None,
+                        "close": float(close_val) if pd.notna(close_val) else None,
+                        "volume": int(vol_val) if pd.notna(vol_val) else None,
+                        "prev_close": (float(prev_close_val) if pd.notna(prev_close_val) else None),
+                        "index_name": universe_map.get(sym, "Unknown"),
+                    }
+                    stock_rows[sym] = [row_dict]
+                    all_added_symbols.add(sym)
 
             if stock_rows:
                 if session is not None:
@@ -1933,4 +2185,925 @@ class BhavcopyETL:
             "dates_with_additions": dates_with_additions,
             "rows_added": total_rows_added,
             "symbols_added": len(all_added_symbols),
+        }
+
+    # ------------------------------------------------------------------
+    # Step 8 — Import Symbol Aliases
+    # ------------------------------------------------------------------
+    def import_symbol_aliases(
+        self,
+        file_path: Path | str | None = None,
+        session: Session | None = None,
+    ) -> dict[str, Any]:
+        """Import symbol aliases from CSV file into symbol_alias table.
+
+        Expected columns: old_symbol, new_symbol, effective_date, status, implied_ratio, note.
+        """
+        target_path = (
+            Path(file_path) if file_path else (PROJECT_ROOT / "config" / "symbol_aliases.csv")
+        )
+        if not target_path.exists():
+            raise FileNotFoundError(f"Symbol aliases file not found: {target_path}")
+
+        df = pd.read_csv(target_path)
+        if df.empty:
+            logger.warning("Symbol aliases file is empty: %s", target_path)
+            return {"status": "success", "imported": 0, "records": []}
+
+        cols_lower = {str(c).lower().strip(): c for c in df.columns}
+        old_col = cols_lower.get("old_symbol") or cols_lower.get("old")
+        new_col = cols_lower.get("new_symbol") or cols_lower.get("new")
+        if not old_col or not new_col:
+            raise ValueError(
+                f"CSV must contain 'old_symbol' and 'new_symbol' columns: {list(df.columns)}"
+            )
+
+        eff_col = cols_lower.get("effective_date")
+        st_col = cols_lower.get("status")
+        ratio_col = cols_lower.get("implied_ratio")
+        note_col = cols_lower.get("note")
+
+        records: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            raw_old = row[old_col]
+            raw_new = row[new_col]
+            if pd.isna(raw_old) or pd.isna(raw_new):
+                continue
+            old_sym = str(raw_old).strip().upper()
+            new_sym = str(raw_new).strip().upper()
+            if not old_sym or not new_sym:
+                continue
+
+            eff_date = None
+            if eff_col and pd.notna(row[eff_col]):
+                try:
+                    eff_date = date.fromisoformat(str(row[eff_col]).strip())
+                except ValueError:
+                    eff_date = None
+
+            status_val = (
+                str(row[st_col]).strip().lower()
+                if st_col and pd.notna(row[st_col]) and str(row[st_col]).strip()
+                else "candidate"
+            )
+
+            ratio_val = None
+            if ratio_col and pd.notna(row[ratio_col]):
+                try:
+                    ratio_val = round(float(row[ratio_col]), 4)
+                except (ValueError, TypeError):
+                    ratio_val = None
+
+            note_val = str(row[note_col]).strip() if note_col and pd.notna(row[note_col]) else None
+
+            records.append(
+                {
+                    "old_symbol": old_sym,
+                    "new_symbol": new_sym,
+                    "effective_date": eff_date,
+                    "status": status_val,
+                    "implied_ratio": ratio_val,
+                    "note": note_val,
+                }
+            )
+
+        def _execute(s: Session) -> dict[str, Any]:
+            if records:
+                upsert_rows(s, SymbolAlias, records, index_elements=["old_symbol", "new_symbol"])
+                s.commit()
+            logger.info(
+                "Imported %d symbol alias candidate records from %s", len(records), target_path
+            )
+            return {"status": "success", "imported": len(records), "records": records}
+
+        if session is not None:
+            return _execute(session)
+        with get_db() as s:
+            return _execute(s)
+
+    # ------------------------------------------------------------------
+    # Step 9 — Continuity Check for Symbol Aliases
+    # ------------------------------------------------------------------
+    def check_alias_continuity(
+        self,
+        old_symbol: str,
+        new_symbol: str,
+        cache_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        """Verify continuity for a symbol alias using RAW cache values (read-only).
+
+        Continuity rules:
+        - overlap: both symbols have volume > 0 on same date with different prices (>0.05).
+        - date_gap: OLD has no row on last trading day before NEW's first date.
+        - verified_exact: |NEW.first_prev_close - OLD.close_that_day| <= 0.05.
+        - verified_close: within 1% of unity.
+        - ratio_mismatch: otherwise.
+        """
+        target_cache = (
+            Path(cache_dir)
+            if cache_dir is not None
+            else Path(self.cache_dir if self.cache_dir is not None else RAW_DIR / "bhavcopy_cache")
+        )
+        cache_files = sorted(target_cache.glob("*.parquet"))
+        if not cache_files:
+            return {
+                "classification": "date_gap",
+                "status": "date_gap",
+                "implied_ratio": None,
+                "old_symbol": old_symbol,
+                "new_symbol": new_symbol,
+                "reason": "No cache files found",
+            }
+
+        all_trading_dates = [date.fromisoformat(f.stem) for f in cache_files]
+        symbols_to_find = {old_symbol.strip().upper(), new_symbol.strip().upper()}
+        old_sym = old_symbol.strip().upper()
+        new_sym = new_symbol.strip().upper()
+
+        old_hist: dict[date, dict[str, Any]] = {}
+        new_hist: dict[date, dict[str, Any]] = {}
+
+        import pyarrow.parquet as pq
+
+        for f in cache_files:
+            d = date.fromisoformat(f.stem)
+            try:
+                tbl = pq.read_table(f)
+                df_bhav = tbl.to_pandas()
+            except Exception:
+                continue
+
+            cols_lower = {str(c).lower().strip(): c for c in df_bhav.columns}
+            sym_col = cols_lower.get("symbol") or cols_lower.get("tckrsymb")
+            if not sym_col:
+                continue
+
+            sym_series = df_bhav[sym_col].astype(str).str.strip().str.upper()
+            matching = df_bhav[sym_series.isin(symbols_to_find)]
+            if matching.empty:
+                continue
+
+            close_col = cols_lower.get("close") or cols_lower.get("clgprc")
+            vol_col = cols_lower.get("volume") or cols_lower.get("ttltrdqty")
+            prev_col = (
+                cols_lower.get("prevclose")
+                or cols_lower.get("prev_close")
+                or cols_lower.get("pvsclgprc")
+            )
+            open_col = cols_lower.get("open") or cols_lower.get("opnprc")
+            high_col = cols_lower.get("high") or cols_lower.get("hghprc")
+            low_col = cols_lower.get("low") or cols_lower.get("lwprc")
+
+            for _, r in matching.iterrows():
+                s_name = str(r[sym_col]).strip().upper()
+                c_val = r.get(close_col)
+                v_val = r.get(vol_col)
+                p_val = r.get(prev_col)
+                o_val = r.get(open_col)
+                h_val = r.get(high_col)
+                l_val = r.get(low_col)
+
+                row_dict = {
+                    "open": float(o_val) if pd.notna(o_val) else None,
+                    "high": float(h_val) if pd.notna(h_val) else None,
+                    "low": float(l_val) if pd.notna(l_val) else None,
+                    "close": float(c_val) if pd.notna(c_val) else None,
+                    "prev_close": float(p_val) if pd.notna(p_val) else None,
+                    "volume": int(v_val) if pd.notna(v_val) else 0,
+                }
+                if s_name == old_sym:
+                    old_hist[d] = row_dict
+                elif s_name == new_sym:
+                    new_hist[d] = row_dict
+
+        # 1. Overlap check: both symbols have volume > 0 on same date with different prices
+        common_dates = set(old_hist.keys()) & set(new_hist.keys())
+        for cd in common_dates:
+            old_vol = old_hist[cd].get("volume") or 0
+            new_vol = new_hist[cd].get("volume") or 0
+            old_close = old_hist[cd].get("close")
+            new_close = new_hist[cd].get("close")
+            if (
+                old_vol > 0
+                and new_vol > 0
+                and old_close is not None
+                and new_close is not None
+                and abs(float(old_close) - float(new_close)) > 0.05
+            ):
+                return {
+                    "classification": "overlap",
+                    "status": "overlap",
+                    "implied_ratio": None,
+                    "old_symbol": old_sym,
+                    "new_symbol": new_sym,
+                    "overlap_date": cd,
+                    "reason": (
+                        f"Both symbols trade on {cd} with volume > 0 and different "
+                        f"prices: {old_sym}={old_close}, {new_sym}={new_close}"
+                    ),
+                    "old_hist": old_hist,
+                    "new_hist": new_hist,
+                }
+
+        # 2. Check new symbol exists in cache
+        if not new_hist:
+            return {
+                "classification": "date_gap",
+                "status": "date_gap",
+                "implied_ratio": None,
+                "old_symbol": old_sym,
+                "new_symbol": new_sym,
+                "reason": f"New symbol {new_sym} has no rows in cache",
+                "old_hist": old_hist,
+                "new_hist": new_hist,
+            }
+
+        new_dates = sorted(new_hist.keys())
+        new_first_date = new_dates[0]
+        new_first_row = new_hist[new_first_date]
+        first_prev_close = new_first_row.get("prev_close")
+
+        # Trading days before new_first_date across cache
+        trading_dates_before = [d for d in all_trading_dates if d < new_first_date]
+        if not trading_dates_before:
+            return {
+                "classification": "date_gap",
+                "status": "date_gap",
+                "implied_ratio": None,
+                "old_symbol": old_sym,
+                "new_symbol": new_sym,
+                "reason": f"No trading day found before {new_first_date}",
+                "old_hist": old_hist,
+                "new_hist": new_hist,
+            }
+        prev_trading_day = trading_dates_before[-1]
+
+        # 3. Check old symbol has a row on that trading day
+        if prev_trading_day not in old_hist:
+            return {
+                "classification": "date_gap",
+                "status": "date_gap",
+                "implied_ratio": None,
+                "old_symbol": old_sym,
+                "new_symbol": new_sym,
+                "prev_trading_day": prev_trading_day,
+                "new_first_date": new_first_date,
+                "reason": (
+                    f"Old symbol {old_sym} has no row on trading day {prev_trading_day} "
+                    f"before {new_first_date}"
+                ),
+                "old_hist": old_hist,
+                "new_hist": new_hist,
+            }
+
+        # 4. Compare prices
+        old_close = old_hist[prev_trading_day].get("close")
+        if first_prev_close is None or old_close is None or float(old_close) <= 0:
+            return {
+                "classification": "ratio_mismatch",
+                "status": "ratio_mismatch",
+                "implied_ratio": None,
+                "old_symbol": old_sym,
+                "new_symbol": new_sym,
+                "prev_trading_day": prev_trading_day,
+                "new_first_date": new_first_date,
+                "old_close": old_close,
+                "new_prev_close": first_prev_close,
+                "reason": "Missing or non-positive close/prev_close price",
+                "old_hist": old_hist,
+                "new_hist": new_hist,
+            }
+
+        old_close_f = float(old_close)
+        first_prev_close_f = float(first_prev_close)
+        diff = abs(first_prev_close_f - old_close_f)
+        implied_ratio = round(first_prev_close_f / old_close_f, 4)
+
+        if diff <= 0.05:
+            classification = "verified_exact"
+        elif abs(implied_ratio - 1.0) <= 0.01:
+            classification = "verified_close"
+        else:
+            classification = "ratio_mismatch"
+
+        return {
+            "classification": classification,
+            "status": classification,
+            "implied_ratio": implied_ratio,
+            "old_symbol": old_sym,
+            "new_symbol": new_sym,
+            "old_close": old_close_f,
+            "new_prev_close": first_prev_close_f,
+            "diff": diff,
+            "prev_trading_day": prev_trading_day,
+            "new_first_date": new_first_date,
+            "old_hist": old_hist,
+            "new_hist": new_hist,
+        }
+
+    # ------------------------------------------------------------------
+    # Step 10 — Apply Symbol Aliases
+    # ------------------------------------------------------------------
+    def apply_symbol_aliases(
+        self,
+        dry_run: bool = True,
+        session: Session | None = None,
+        reports_dir: Path | None = None,
+        alias_filter: list[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Apply verified symbol renames in one transaction.
+
+        For each alias:
+        1. Continuity check (read-only from raw cache).
+        2. If verified (exact or close):
+           - Back up moved rows to reports/
+           - Move daily_prices rows from OLD to NEW
+           - Insert cached OLD rows under NEW if not in DB
+           - Fill NEW's own missing dates from cache
+           - Copy sector/industry/cap_bucket to NEW if missing
+           - Set stock_master OLD to status 'renamed' with renamed_to=NEW, in_universe=False
+           - Run rebuild_adjusted for NEW
+           - Refresh indicator cache
+        3. If ratio_mismatch: do not merge; print ratio and file issue labelled needs-user-input.
+        """
+        r_dir = reports_dir or (PROJECT_ROOT / "reports")
+        r_dir.mkdir(parents=True, exist_ok=True)
+
+        def _execute(s: Session) -> dict[str, Any]:
+            if alias_filter is not None:
+                aliases_to_check = alias_filter
+            else:
+                stmt = select(SymbolAlias.old_symbol, SymbolAlias.new_symbol).order_by(
+                    SymbolAlias.old_symbol.asc()
+                )
+                aliases_to_check = [(str(r[0]), str(r[1])) for r in s.execute(stmt).all()]
+
+            if not aliases_to_check:
+                logger.info("No symbol aliases to apply.")
+                return {
+                    "status": "noop",
+                    "dry_run": dry_run,
+                    "applied_count": 0,
+                    "summaries": [],
+                }
+
+            logger.info(
+                "Checking and applying %d symbol aliases (dry_run=%s)...",
+                len(aliases_to_check),
+                dry_run,
+            )
+
+            summaries = []
+            applied_count = 0
+
+            for old_sym, new_sym in aliases_to_check:
+                old_sym = old_sym.strip().upper()
+                new_sym = new_sym.strip().upper()
+
+                cont = self.check_alias_continuity(old_sym, new_sym)
+                classification = cont["classification"]
+                implied_ratio = cont.get("implied_ratio")
+
+                # Update status in symbol_alias table
+                alias_row = s.get(SymbolAlias, (old_sym, new_sym))
+                if alias_row is not None:
+                    alias_row.status = classification
+                    alias_row.implied_ratio = implied_ratio
+                    if cont.get("new_first_date"):
+                        alias_row.effective_date = cont["new_first_date"]
+
+                if classification == "ratio_mismatch":
+                    logger.warning(
+                        "Alias %s -> %s: RATIO MISMATCH detected (implied_ratio=%s, old_close=%s, "
+                        "new_prev_close=%s). Merge rejected.",
+                        old_sym,
+                        new_sym,
+                        implied_ratio,
+                        cont.get("old_close"),
+                        cont.get("new_prev_close"),
+                    )
+                    issue_title = (
+                        f"Symbol alias ratio mismatch for {old_sym} -> {new_sym} "
+                        f"(ratio {implied_ratio})"
+                    )
+                    issue_body = (
+                        "## Context\n"
+                        "Command: run_pipeline.py --apply-symbol-aliases\n"
+                        f"Alias: {old_sym} -> {new_sym}\n\n"
+                        "## What happened\n"
+                        "The continuity check failed with ratio_mismatch:\n"
+                        f"- Old close on {cont.get('prev_trading_day')}: {cont.get('old_close')}\n"
+                        f"- New first prev_close on {cont.get('new_first_date')}: "
+                        f"{cont.get('new_prev_close')}\n"
+                        f"- Implied ratio: {implied_ratio}\n\n"
+                        "## Expected\n"
+                        "Owner decision on corporate action ratio before merging.\n\n"
+                        "## Impact\n"
+                        f"Symbols {old_sym} and {new_sym} remain unmerged to avoid distortion.\n\n"
+                        "## Suggested fix\n"
+                        f"Verify corporate action adjustment factor for {old_sym} -> {new_sym}."
+                    )
+                    create_github_issue(issue_title, issue_body, label="needs-user-input")
+
+                if classification not in ("verified_exact", "verified_close"):
+                    logger.info(
+                        "Skipping alias %s -> %s (classification=%s, implied_ratio=%s)",
+                        old_sym,
+                        new_sym,
+                        classification,
+                        implied_ratio,
+                    )
+                    summaries.append(
+                        {
+                            "old_symbol": old_sym,
+                            "new_symbol": new_sym,
+                            "classification": classification,
+                            "implied_ratio": implied_ratio,
+                            "rows_moved": 0,
+                            "rows_added": 0,
+                            "status": "rejected",
+                        }
+                    )
+                    continue
+
+                # Verified: collect old rows from DB and cache
+                old_db_rows = s.scalars(
+                    select(DailyPrice)
+                    .where(DailyPrice.symbol == old_sym)
+                    .order_by(DailyPrice.date.asc())
+                ).all()
+
+                old_hist = cont.get("old_hist", {})
+                new_hist = cont.get("new_hist", {})
+
+                old_dates = sorted({r.date for r in old_db_rows} | set(old_hist.keys()))
+                old_range = f"{old_dates[0]} to {old_dates[-1]}" if old_dates else "None"
+
+                new_db_dates = set(
+                    s.scalars(select(DailyPrice.date).where(DailyPrice.symbol == new_sym)).all()
+                )
+                all_new_dates = sorted(new_db_dates | set(new_hist.keys()) | set(old_dates))
+                new_range = (
+                    f"{all_new_dates[0]} to {all_new_dates[-1]}" if all_new_dates else "None"
+                )
+
+                if dry_run:
+                    rows_moved = len(old_db_rows)
+                    rows_to_add = len(
+                        set(old_hist.keys()) - {r.date for r in old_db_rows} - new_db_dates
+                    )
+                    rows_to_fill = len(set(new_hist.keys()) - new_db_dates)
+                    total_added = rows_to_add + rows_to_fill
+                    logger.info(
+                        "[DRY RUN] Alias %s -> %s verified (%s, ratio=%s). "
+                        "Would move %d DB rows, add %d cached rows (old range: %s, new range: %s).",
+                        old_sym,
+                        new_sym,
+                        classification,
+                        implied_ratio,
+                        rows_moved,
+                        total_added,
+                        old_range,
+                        new_range,
+                    )
+                    summaries.append(
+                        {
+                            "old_symbol": old_sym,
+                            "new_symbol": new_sym,
+                            "classification": classification,
+                            "implied_ratio": implied_ratio,
+                            "old_range": old_range,
+                            "new_range": new_range,
+                            "rows_moved": rows_moved,
+                            "rows_added": total_added,
+                            "status": "dry_run",
+                        }
+                    )
+                    continue
+
+                # --- Write mode: execute in one transaction ---
+                # 1. Back up moved rows
+                backup_file = r_dir / f"alias_backup_{old_sym}_to_{new_sym}.csv"
+                if old_db_rows:
+                    backup_data = [
+                        {
+                            "symbol": r.symbol,
+                            "date": r.date.isoformat(),
+                            "open": float(r.open) if r.open is not None else None,
+                            "high": float(r.high) if r.high is not None else None,
+                            "low": float(r.low) if r.low is not None else None,
+                            "close": float(r.close) if r.close is not None else None,
+                            "volume": int(r.volume) if r.volume is not None else None,
+                            "prev_close": (
+                                float(r.prev_close) if r.prev_close is not None else None
+                            ),
+                            "index_name": r.index_name,
+                        }
+                        for r in old_db_rows
+                    ]
+                    pd.DataFrame(backup_data).to_csv(backup_file, index=False)
+                    logger.info(
+                        "Backed up %d rows for %s to %s",
+                        len(old_db_rows),
+                        old_sym,
+                        backup_file,
+                    )
+
+                # 2. Move existing daily_prices rows from OLD to NEW
+                rows_moved = 0
+                if old_db_rows:
+                    for old_row in old_db_rows:
+                        if old_row.date not in new_db_dates:
+                            old_row.symbol = new_sym
+                            new_db_dates.add(old_row.date)
+                            rows_moved += 1
+                        else:
+                            # Already present in NEW, remove duplicate row from OLD
+                            s.delete(old_row)
+                    s.flush()
+
+                # 3. Retrieve stock_master records to copy metadata
+                old_stock = s.get(StockMaster, old_sym)
+                new_stock = s.get(StockMaster, new_sym)
+                cap_bucket_val = (
+                    new_stock.cap_bucket
+                    if new_stock and new_stock.cap_bucket and new_stock.cap_bucket != "Unknown"
+                    else (old_stock.cap_bucket if old_stock and old_stock.cap_bucket else "Unknown")
+                )
+
+                # 4. Insert cached OLD rows under NEW for dates missing in DB
+                # and fill NEW's own missing dates from cache
+                rows_to_insert = []
+                for d_val, r_data in sorted(old_hist.items()):
+                    if d_val not in new_db_dates:
+                        rows_to_insert.append(
+                            {
+                                "symbol": new_sym,
+                                "date": d_val,
+                                "open": r_data.get("open"),
+                                "high": r_data.get("high"),
+                                "low": r_data.get("low"),
+                                "close": r_data.get("close"),
+                                "volume": r_data.get("volume"),
+                                "prev_close": r_data.get("prev_close"),
+                                "index_name": cap_bucket_val,
+                            }
+                        )
+                        new_db_dates.add(d_val)
+
+                for d_val, r_data in sorted(new_hist.items()):
+                    if d_val not in new_db_dates:
+                        rows_to_insert.append(
+                            {
+                                "symbol": new_sym,
+                                "date": d_val,
+                                "open": r_data.get("open"),
+                                "high": r_data.get("high"),
+                                "low": r_data.get("low"),
+                                "close": r_data.get("close"),
+                                "volume": r_data.get("volume"),
+                                "prev_close": r_data.get("prev_close"),
+                                "index_name": cap_bucket_val,
+                            }
+                        )
+                        new_db_dates.add(d_val)
+
+                if rows_to_insert:
+                    upsert_rows(s, DailyPrice, rows_to_insert, index_elements=["symbol", "date"])
+                rows_added = len(rows_to_insert)
+
+                # 5. Copy sector/industry/cap_bucket to NEW if missing
+                if new_stock is not None and old_stock is not None:
+                    if not new_stock.sector and old_stock.sector:
+                        new_stock.sector = old_stock.sector
+                    if not new_stock.industry and old_stock.industry:
+                        new_stock.industry = old_stock.industry
+                    if (
+                        not new_stock.cap_bucket or new_stock.cap_bucket == "Unknown"
+                    ) and old_stock.cap_bucket:
+                        new_stock.cap_bucket = old_stock.cap_bucket
+                elif old_stock is not None and new_stock is None:
+                    new_stock = StockMaster(
+                        symbol=new_sym,
+                        company_name=old_stock.company_name,
+                        sector=old_stock.sector,
+                        industry=old_stock.industry,
+                        cap_bucket=old_stock.cap_bucket or "Unknown",
+                        market_cap_cr=old_stock.market_cap_cr,
+                        market_cap_asof=old_stock.market_cap_asof,
+                        in_universe=old_stock.in_universe,
+                        status="active" if old_stock.in_universe else "below_threshold",
+                        added_on=old_stock.added_on,
+                        benchmark_index=old_stock.benchmark_index,
+                        source="alias",
+                    )
+                    s.add(new_stock)
+
+                # 6. Set stock_master OLD to status 'renamed', renamed_to=NEW, in_universe=False
+                if old_stock is not None:
+                    old_stock.status = "renamed"
+                    old_stock.renamed_to = new_sym
+                    old_stock.in_universe = False
+                    old_stock.flagged_on = old_stock.flagged_on or date.today()
+
+                # 7. Update symbol_alias status to applied
+                if alias_row is not None:
+                    alias_row.status = "applied"
+
+                s.commit()
+                applied_count += 1
+
+                # 8. Rebuild adjusted prices and refresh indicator cache for NEW
+                logger.info("Rebuilding adjusted prices for %s after alias merge...", new_sym)
+                self.rebuild_adjusted_prices(symbols=[new_sym])
+
+                logger.info("Refreshing indicator cache...")
+                from src.db.data_service import load_indicator_snapshot
+
+                load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+
+                logger.info(
+                    "✓ Alias %s -> %s successfully applied: moved %d rows, added %d rows "
+                    "(old range: %s, new range: %s, classification: %s, ratio: %s).",
+                    old_sym,
+                    new_sym,
+                    rows_moved,
+                    rows_added,
+                    old_range,
+                    new_range,
+                    classification,
+                    implied_ratio,
+                )
+
+                summaries.append(
+                    {
+                        "old_symbol": old_sym,
+                        "new_symbol": new_sym,
+                        "classification": classification,
+                        "implied_ratio": implied_ratio,
+                        "old_range": old_range,
+                        "new_range": new_range,
+                        "rows_moved": rows_moved,
+                        "rows_added": rows_added,
+                        "status": "applied",
+                    }
+                )
+
+            return {
+                "status": "success",
+                "dry_run": dry_run,
+                "applied_count": applied_count,
+                "summaries": summaries,
+            }
+
+        if session is not None:
+            return _execute(session)
+        with get_db() as s:
+            return _execute(s)
+
+    # ------------------------------------------------------------------
+    # Step 11 — Detect Symbol Renames from Cache (Read-Only)
+    # ------------------------------------------------------------------
+    def detect_renames(
+        self,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        reports_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        """Scan raw bhavcopy cache to detect symbol rename candidates.
+
+        Pairs where OLD stops on a date, NEW first appears within 5 trading days,
+        no overlap, and continuity check passes.
+        Writes reports/rename_candidates.csv. Never modifies the database.
+        """
+        target_cache = (
+            Path(self.cache_dir) if self.cache_dir is not None else Path(RAW_DIR / "bhavcopy_cache")
+        )
+        cache_files = sorted(target_cache.glob("*.parquet"))
+        start_d = date.fromisoformat(str(start)) if start else None
+        end_d = date.fromisoformat(str(end)) if end else None
+        if start_d:
+            cache_files = [f for f in cache_files if date.fromisoformat(f.stem) >= start_d]
+        if end_d:
+            cache_files = [f for f in cache_files if date.fromisoformat(f.stem) <= end_d]
+
+        if not cache_files:
+            logger.info("No cache files found in date range %s -> %s", start, end)
+            return {"candidates": [], "ambiguous": [], "report_path": ""}
+
+        all_trading_dates = [date.fromisoformat(f.stem) for f in cache_files]
+        date_to_idx = {d: idx for idx, d in enumerate(all_trading_dates)}
+        latest_date = all_trading_dates[-1]
+
+        logger.info(
+            "Scanning %d cache files (%s -> %s) for rename candidates...",
+            len(cache_files),
+            all_trading_dates[0],
+            all_trading_dates[-1],
+        )
+
+        import pyarrow.parquet as pq
+
+        sym_summary: dict[str, dict[str, Any]] = {}
+
+        for f in cache_files:
+            d = date.fromisoformat(f.stem)
+            try:
+                tbl = pq.read_table(f)
+                df = tbl.to_pandas()
+            except Exception:
+                continue
+
+            cols_lower = {str(c).lower().strip(): c for c in df.columns}
+            sym_col = cols_lower.get("symbol") or cols_lower.get("tckrsymb")
+            if not sym_col:
+                continue
+            close_col = cols_lower.get("close") or cols_lower.get("clgprc")
+            prev_col = (
+                cols_lower.get("prevclose")
+                or cols_lower.get("prev_close")
+                or cols_lower.get("pvsclgprc")
+            )
+            vol_col = cols_lower.get("volume") or cols_lower.get("ttltrdqty")
+
+            sym_idx = df.columns.get_loc(sym_col)
+            close_idx = df.columns.get_loc(close_col) if close_col in df.columns else None
+            prev_idx = df.columns.get_loc(prev_col) if prev_col and prev_col in df.columns else None
+            vol_idx = df.columns.get_loc(vol_col) if vol_col in df.columns else None
+
+            for row in df.itertuples(index=False):
+                raw_sym = row[sym_idx]
+                if pd.isna(raw_sym):
+                    continue
+                sym = str(raw_sym).strip().upper()
+                c = (
+                    float(row[close_idx])
+                    if close_idx is not None and pd.notna(row[close_idx])
+                    else 0.0
+                )
+                v = int(row[vol_idx]) if vol_idx is not None and pd.notna(row[vol_idx]) else 0
+                p = (
+                    float(row[prev_idx])
+                    if prev_idx is not None and pd.notna(row[prev_idx])
+                    else None
+                )
+
+                data = sym_summary.get(sym)
+                if data is None:
+                    sym_summary[sym] = {
+                        "first_date": d,
+                        "last_date": d,
+                        "first_prev_close": p,
+                        "last_close": c,
+                        "dates": {d: (c, v)},
+                    }
+                else:
+                    data["last_date"] = d
+                    data["last_close"] = c
+                    data["dates"][d] = (c, v)
+                    if data["first_prev_close"] is None and p is not None:
+                        data["first_prev_close"] = p
+
+        logger.info(
+            "Indexed %d symbols across cache files. Analyzing candidate pairs...",
+            len(sym_summary),
+        )
+
+        raw_pairs: list[dict[str, Any]] = []
+        for old_sym, old_data in sym_summary.items():
+            old_last = old_data["last_date"]
+            if old_last >= latest_date:
+                continue
+            old_last_idx = date_to_idx[old_last]
+
+            for new_sym, new_data in sym_summary.items():
+                if old_sym == new_sym:
+                    continue
+                new_first = new_data["first_date"]
+                new_first_idx = date_to_idx[new_first]
+                days_apart = new_first_idx - old_last_idx
+                if not (1 <= days_apart <= 5):
+                    continue
+
+                # Check overlap: both have volume > 0 on same date with different prices
+                common_dates = set(old_data["dates"].keys()) & set(new_data["dates"].keys())
+                overlap = False
+                for cd in common_dates:
+                    oc, ov = old_data["dates"][cd]
+                    nc, nv = new_data["dates"][cd]
+                    if ov > 0 and nv > 0 and abs(oc - nc) > 0.05:
+                        overlap = True
+                        break
+                if overlap:
+                    continue
+
+                # Continuity check
+                prev_trading_day = all_trading_dates[new_first_idx - 1]
+                if prev_trading_day not in old_data["dates"]:
+                    continue
+
+                old_close, _ = old_data["dates"][prev_trading_day]
+                new_prev_close = new_data["first_prev_close"]
+                if new_prev_close is None or old_close is None or old_close <= 0:
+                    continue
+
+                diff = abs(new_prev_close - old_close)
+                implied_ratio = round(new_prev_close / old_close, 4)
+
+                if diff <= 0.05:
+                    classification = "verified_exact"
+                elif abs(implied_ratio - 1.0) <= 0.01:
+                    classification = "verified_close"
+                else:
+                    continue
+
+                score = (
+                    0 if classification == "verified_exact" else 1,
+                    abs(implied_ratio - 1.0),
+                    days_apart,
+                )
+
+                raw_pairs.append(
+                    {
+                        "old_symbol": old_sym,
+                        "new_symbol": new_sym,
+                        "old_last_date": old_last,
+                        "new_first_date": new_first,
+                        "trading_days_apart": days_apart,
+                        "old_close": old_close,
+                        "new_prev_close": new_prev_close,
+                        "implied_ratio": implied_ratio,
+                        "classification": classification,
+                        "score": score,
+                    }
+                )
+
+        # Disambiguate:
+        old_groups: dict[str, list[dict]] = {}
+        for p in raw_pairs:
+            old_groups.setdefault(p["old_symbol"], []).append(p)
+
+        new_groups: dict[str, list[dict]] = {}
+        for p in raw_pairs:
+            new_groups.setdefault(p["new_symbol"], []).append(p)
+
+        final_rows: list[dict[str, Any]] = []
+        for p in raw_pairs:
+            old_s = p["old_symbol"]
+            new_s = p["new_symbol"]
+            old_cands = sorted(old_groups[old_s], key=lambda x: x["score"])
+            new_cands = sorted(new_groups[new_s], key=lambda x: x["score"])
+
+            is_best_old = (len(old_cands) == 1) or (
+                old_cands[0] == p and old_cands[0]["score"] < old_cands[1]["score"]
+            )
+            is_best_new = (len(new_cands) == 1) or (
+                new_cands[0] == p and new_cands[0]["score"] < new_cands[1]["score"]
+            )
+
+            status = "candidate" if (is_best_old and is_best_new) else "ambiguous"
+            final_rows.append(
+                {
+                    "old_symbol": p["old_symbol"],
+                    "new_symbol": p["new_symbol"],
+                    "old_last_date": p["old_last_date"].isoformat(),
+                    "new_first_date": p["new_first_date"].isoformat(),
+                    "trading_days_apart": p["trading_days_apart"],
+                    "old_close": p["old_close"],
+                    "new_prev_close": p["new_prev_close"],
+                    "implied_ratio": p["implied_ratio"],
+                    "classification": p["classification"],
+                    "status": status,
+                }
+            )
+
+        r_dir = reports_dir or (PROJECT_ROOT / "reports")
+        r_dir.mkdir(parents=True, exist_ok=True)
+        report_csv = r_dir / "rename_candidates.csv"
+
+        df_out = pd.DataFrame(
+            final_rows,
+            columns=[
+                "old_symbol",
+                "new_symbol",
+                "old_last_date",
+                "new_first_date",
+                "trading_days_apart",
+                "old_close",
+                "new_prev_close",
+                "implied_ratio",
+                "classification",
+                "status",
+            ],
+        )
+        df_out.to_csv(report_csv, index=False)
+        logger.info("Wrote %d rename candidate rows to %s", len(final_rows), report_csv)
+
+        return {
+            "status": "success",
+            "total_pairs": len(final_rows),
+            "candidates_count": sum(1 for r in final_rows if r["status"] == "candidate"),
+            "ambiguous_count": sum(1 for r in final_rows if r["status"] == "ambiguous"),
+            "report_path": str(report_csv),
+            "rows": final_rows,
         }

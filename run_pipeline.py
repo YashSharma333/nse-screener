@@ -100,6 +100,37 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--universe-overrides",
+        type=str,
+        default="config/universe_overrides.csv",
+        metavar="PATH",
+        help="Path to universe overrides CSV file (default: config/universe_overrides.csv)",
+    )
+    parser.add_argument(
+        "--import-symbol-aliases",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help="Import symbol aliases from CSV file (default: config/symbol_aliases.csv)",
+    )
+    parser.add_argument(
+        "--apply-symbol-aliases",
+        action="store_true",
+        help=(
+            "Check continuity and apply verified symbol aliases "
+            "(dry-run by default; use --yes to write)"
+        ),
+    )
+    parser.add_argument(
+        "--detect-renames",
+        action="store_true",
+        help=(
+            "Scan raw bhavcopy cache to detect symbol rename candidates and write "
+            "reports/rename_candidates.csv (read-only)"
+        ),
+    )
+    parser.add_argument(
         "--add-threshold",
         type=float,
         default=500.0,
@@ -131,7 +162,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Confirm writing changes to database "
-            "(used with --purge-bogus-sessions and --import-universe)"
+            "(used with --purge-bogus-sessions, --import-universe, and --apply-symbol-aliases)"
         ),
     )
     parser.add_argument(
@@ -140,7 +171,7 @@ def main() -> None:
         default=None,
         help=(
             "Start date in YYYY-MM-DD format (used with --recheck-non-trading, "
-            "--benchmarks, --purge-bogus-sessions, or --fill-missing-symbols)"
+            "--benchmarks, --purge-bogus-sessions, --fill-missing-symbols, or --detect-renames)"
         ),
     )
     parser.add_argument(
@@ -149,7 +180,7 @@ def main() -> None:
         default=None,
         help=(
             "End date in YYYY-MM-DD format (used with --recheck-non-trading, "
-            "--benchmarks, --purge-bogus-sessions, or --fill-missing-symbols)"
+            "--benchmarks, --purge-bogus-sessions, --fill-missing-symbols, or --detect-renames)"
         ),
     )
 
@@ -185,6 +216,7 @@ def main() -> None:
                 add_threshold=args.add_threshold,
                 keep_threshold=args.keep_threshold,
                 dry_run=dry_run,
+                overrides_path=args.universe_overrides,
             )
             logger.info(
                 "Universe import [%s] complete: %d active, %d below threshold, %d not in file.",
@@ -192,6 +224,59 @@ def main() -> None:
                 res.get("active_count", 0),
                 res.get("below_threshold_count", 0),
                 res.get("not_in_file_count", 0),
+            )
+        elif args.import_symbol_aliases is not None:
+            alias_path = Path(args.import_symbol_aliases) if args.import_symbol_aliases else None
+            res = etl.import_symbol_aliases(file_path=alias_path)
+            logger.info(
+                "Import symbol aliases complete: %d candidate records imported.",
+                res.get("imported", 0),
+            )
+        elif args.apply_symbol_aliases:
+            dry_run = args.dry_run or (not args.yes)
+            if dry_run and not args.dry_run:
+                logger.info(
+                    "--apply-symbol-aliases invoked without --yes: defaulting to --dry-run mode."
+                )
+            logger.info("Executing apply symbol aliases (dry_run=%s)...", dry_run)
+            res = etl.apply_symbol_aliases(dry_run=dry_run)
+            logger.info(
+                "Apply symbol aliases [%s] complete: %d applied.",
+                "DRY RUN" if dry_run else "APPLIED",
+                res.get("applied_count", 0),
+            )
+        elif args.detect_renames:
+            start_date = None
+            end_date = None
+            if args.start:
+                try:
+                    start_date = date.fromisoformat(args.start)
+                except ValueError as val_err:
+                    logger.error("Invalid date format for --start: %s", val_err)
+                    sys.exit(1)
+            if args.end:
+                try:
+                    end_date = date.fromisoformat(args.end)
+                except ValueError as val_err:
+                    logger.error("Invalid date format for --end: %s", val_err)
+                    sys.exit(1)
+            if start_date and end_date and start_date > end_date:
+                logger.error(
+                    "--start date (%s) cannot be after --end date (%s)", start_date, end_date
+                )
+                sys.exit(1)
+
+            logger.info(
+                "Executing detect symbol renames (start=%s, end=%s)...",
+                start_date,
+                end_date,
+            )
+            res = etl.detect_renames(start=start_date, end=end_date)
+            logger.info(
+                "Detect renames complete: %d candidates, %d ambiguous. Report saved to %s",
+                res.get("candidates_count", 0),
+                res.get("ambiguous_count", 0),
+                res.get("report_path", ""),
             )
         elif args.fill_missing_symbols:
             start_date = None

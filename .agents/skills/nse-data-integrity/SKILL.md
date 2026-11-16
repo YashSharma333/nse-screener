@@ -32,10 +32,23 @@ Read this before changing anything in `src/etl/`, `src/ingestion/`,
    cap bucket from `stock_master`.
 7. **Never delete price history** when a stock leaves the universe; change its
    status. Universe rule: enter at 500 cr or more, stay while 490 cr or more.
-8. **Symbols change.** Example: ICICI Prudential Life became `ICICILIFE`
-   (old name `ICICIPRULI`). History under the old symbol must be linked to the
-   new one by an explicit, tested rename, never by guessing. If you see a
-   symbol that stops and a new one that starts on the same date, file an issue.
+8. **Symbols change (renames & aliases).** Example: ICICI Prudential Life became
+   `ICICILIFE` (old name `ICICIPRULI`), Piramal Enterprises became `PIRAMALFIN`
+   (old name `PEL`). Renaming rules:
+   - History under the old symbol must be linked to the new one by an explicit,
+     tested rename recorded in `symbol_alias`, never by guessing.
+   - Always evaluate continuity against RAW Bhavcopy cache values (never unverified
+     or adjusted DB prices): compare NEW's first `PREV_CLOSE` with OLD's raw
+     `CLOSE` on the last trading day before NEW began trading.
+   - Classifications: `verified_exact` (|diff| <= 0.05) and `verified_close`
+     (within 1%) may merge; `ratio_mismatch` (split/bonus/merger ratio), `date_gap`,
+     and `overlap` must NOT merge and require an issue.
+   - When verified, move price history atomically, write a JSON backup to `reports/`,
+     copy metadata, set OLD in `stock_master` to `status='renamed'`, `renamed_to=NEW`,
+     and `in_universe=False`, and run `rebuild_adjusted` for NEW.
+   - Ingestion (`collect_new_rows`, `_load_chunk`) and `--fill-missing-symbols` must
+     never recreate rows under a symbol marked `'renamed'`. A renamed stock keeps
+     its full history mapped to NEW.
 9. **Do not call IndianAPI** (small monthly request limit) from tests, loops or
    jobs unless the task says so.
 
