@@ -532,10 +532,39 @@ The Parquet cache at `data/processed/indicators.parquet` is paired with a metada
 
 ---
 
+## 🤖 Working with AI Agents
+
+This repository is designed to be developed collaboratively by human contributors and autonomous AI coding agents (such as Google Antigravity). To keep the codebase stable, maintainable, and beginner-friendly, all agents and contributors follow structured rules, specialized skills, and standardized workflows.
+
+### 1. The Agent Rulebook (`AGENTS.md`)
+The [AGENTS.md](AGENTS.md) file is the central source of truth for development standards:
+* **The Golden Rules:** Never merge pull requests directly (all work is submitted as a PR for review and manual merge), always open PRs via `gh pr create`, never modify production data or run commands against the owner's database, keep changes strictly in scope, and never commit secrets or proprietary data files.
+* **Beginner-Friendly Code:** Code is written with plain, descriptive variable and function names, short functions, explicit type annotations, and helpful comments explaining *why* (not just what) whenever logic is subtle.
+* **Testing & Offline Verification:** Every change must pass offline unit tests (`pytest`), code formatting (`ruff format`), and linting (`ruff check`) without requiring a live MySQL database or internet access.
+
+### 2. Specialized Agent Skills (`.agents/skills/`)
+Skills are modular, on-demand instruction packs loaded by agents whenever a relevant task is executed:
+* **`branch-guard`:** Keeps git branches safe. Ensures work happens on dedicated task branches, prevents accidental commits to `main`, verifies working tree status before switching branches, and safely deletes branches only after their pull request is verified merged.
+* **`repo-hygiene`:** Keeps the repository clean and tidy. Defines a quick checklist run at the end of every task (removing stray files, verifying tracked files, and checking diff sizes) and a weekly audit covering CI health, open issues, and dependencies.
+* **`nse-data-integrity`:** Contains hard-won rules for handling National Stock Exchange market data, including weekend/special session detection, rejection of duplicate non-trading Bhavcopy files, corporate action split/bonus rebuild safeguards, and market cap universe boundaries.
+* **`db-migration`:** Standardizes database schema migrations using Alembic. Ensures every migration has both an `upgrade()` and a working `downgrade()` compatible with both MySQL (production) and SQLite (offline tests).
+* **`github-issue`:** Standardizes how bugs, data anomalies, out-of-scope issues, and questions requiring owner decisions are filed as structured GitHub issues using the `gh` CLI.
+
+### 3. Standard Workflows (`.agents/workflows/`)
+Workflows are repeatable, step-by-step procedures triggered by slash commands:
+* **`/start-task`:** Initializes every task safely. Checks the current git branch, ensures uncommitted deliverable files are preserved, safely cleans merged local branches, reviews open issues, and clarifies task scope before writing code.
+* **`/pr-ready`:** Prepares a completed task for review. Re-verifies branch safety, runs all lint and test suites offline, reviews the git diff for unintended edits, commits staged files, and opens a GitHub pull request with a complete summary.
+* **`/cleanup`:** Performs routine repository maintenance. Audits local and remote branches against pull request statuses, deletes merged branches that pass all safety gates, inspects open issues and PRs, and cleans temporary caches.
+
+---
+
 ## 📂 Project Structure
 
 ```
 nse-screener/
+├── .agents/                      # AI agent skills and slash-command workflows
+│   ├── skills/                   # Modular domain skills (branch-guard, repo-hygiene, etc.)
+│   └── workflows/                # Standardized workflows (/start-task, /pr-ready, /cleanup)
 ├── config/
 │   └── settings.py               # Central configuration (paths, INDICATOR_HISTORY_YEARS)
 ├── data/
