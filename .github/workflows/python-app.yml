@@ -92,4 +92,4 @@ jobs:
           MYSQL_PASSWORD: ci_test_password
           MYSQL_DB: nse_screener_ci
         run: |
-          pytest -q -m mysql
+          pytest -q -m mysql --no-cov
