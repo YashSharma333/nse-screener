@@ -4,7 +4,7 @@ description: Start every task safely. Runs the branch guard, cleans merged branc
 
 # /start-task
 
-1. Read `AGENTS.md` fully.
+1. Read `CLAUDE.md` fully.
 2. Follow `branch-guard` Steps A to C: check the current branch and working tree,
    decide the task branch, then switch to it or create it. If the tree is dirty on
    the wrong branch, STOP and report.

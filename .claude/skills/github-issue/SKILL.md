@@ -47,4 +47,7 @@ say plainly that the issue was NOT filed.
 ## Reminders
 
 - File issues for problems you work around too, not only for blockers.
-- Do not fix out-of-scope bugs in the current PR; file the issue instead.
+- Do not fix out-of-scope bugs in the current PR; file the issue instead. The only
+  exception is a tiny, obviously safe fix (typo, lint warning, stale comment) in a
+  file the PR already touches: make it a separate commit and mention it in the PR
+  (CLAUDE.md rule 4).
