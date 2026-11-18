@@ -5,7 +5,7 @@
 `CLAUDE.md` says HOW to work. This file says WHAT we are building, WHY, what exists today,
 and in what order the rest gets built.
 
-**Last updated:** 18 Nov 2026 (after PR #42). If something here disagrees with the code,
+**Last updated:** 18 Nov 2026 (after PR #51 and the split/bonus verification). If something here disagrees with the code,
 the code wins. Say so in your PR and fix this file.
 
 ---
@@ -60,9 +60,8 @@ the code wins. Say so in your PR and fix this file.
 - On 18 Nov 2026 the real universe import ran: 1,811 active, 489 below threshold, 1 not in
   file.
 
-**What is left (in order):** move the agent kit to Claude Code (P0); apply the rename
-aliases, fill missing symbols and run the 10-year backfill (owner runs these); audit the
-data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
+**What is left (in order):** exact split and bonus ratios from an official NSE
+corporate-actions file (see section 13); audit the data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
 pre-computed indicators and the dynamic-rule base (P3); history backend, run recording and
 reconciliation with Chartink (P4); backtest engine (P5); experiment lab (P6); analytics
 (P7); UI rebuild (P8); Docker and nightly automation with a private server (P9);
@@ -166,7 +165,7 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
 |---|---|
 | `run_pipeline.py` | The CLI. Every data operation is a flag here. |
 | `src/etl/pipeline.py` (about 3,100 lines) | Ingestion, universe import, aliases, rename detection, purge, fill-missing. Big: split it when touched for a task, never as a side effect. |
-| `src/etl/adjust.py` | Corporate-action detection from PREV_CLOSE and adjusted prices. |
+| `src/etl/adjust.py` | Corporate-action detection (price jumps plus the unreliable PREV_CLOSE method), owner overrides, adjusted prices. |
 | `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`. |
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
@@ -369,9 +368,26 @@ servers (PR #42).
 **Done by the owner on 18 Nov:** real universe import, 2,301 `stock_master` rows (1,811
 active, 489 below threshold, 1 not in file).
 
-**Immediately next:** migrate repo to Claude Code (DOCS-2, prompt P0); import and apply
-symbol aliases (ICICIPRULI to ICICILIFE first; PEL to PIRAMALFIN only after the cache
-check); `--fill-missing-symbols`; 10-year backfill with a `mysqldump` backup first.
+**Done on 18 Nov (after the owner's go-ahead, each with a backup first):** repo moved to
+Claude Code (PR #45); `ICICIPRULI -> ICICILIFE` alias applied (`verified_exact`; `PEL ->
+PIRAMALFIN` skipped, `date_gap`, issue #43); `--fill-missing-symbols` run (728,261 rows; it
+ignored `--dry-run`, fixed in PR #47, issue #46); 10-year backfill finished: 2,683,688 rows,
+1,805 symbols, 2,478 trading dates from 2016-11-21 to 2026-11-17, 10 genuine weekend
+sessions, no duplicates; split and bonus detection rebuilt from price jumps (PR #50, issue
+#48) with owner-approved overrides in `config/adjustment_overrides.csv` (PR #51).
+
+**Known problem (blocks trustworthy adjusted prices):** a 30-event sample checked against
+internet sources found 21 of 24 applied events exactly right, 2 with the wrong factor (for
+example COCHINSHIP 2024-01-10 was 2:1 but got 0.6) and 1 false event (IDEA 2020-03-18 was a
+real crash). Real splits were also missed (PREMEXPLN 2024, MARATHON 2018, HARDWYN 2023).
+Price alone cannot tell some ratios apart, so exact ratios must come from the official NSE
+corporate-actions file, which the owner downloads and places under `data/` (never
+committed). The importer is the next task. Open data issues: #43 (PEL), #49 (stale `SPLIT`
+row in `adj_factors`).
+
+**Immediately next:** build the corporate-actions importer (match by symbol and ex-date,
+exact factors, combined events on one date multiplied, unmatched jumps go to review), then
+re-run `--rebuild-adjusted` after a backup, then the data audit (P1).
 
 ## 14. Roadmap (in order)
 
