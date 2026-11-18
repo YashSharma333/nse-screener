@@ -16,8 +16,8 @@ CI runs a MySQL upgrade, downgrade, upgrade job. A migration must work in both.
    style of existing files) and write `upgrade()` and a real `downgrade()`.
 4. Add a test that upgrades and downgrades on SQLite.
 5. Update the "Database Migrations" section of `README.md`.
-6. In the PR "Commands" tell the owner to: back up MySQL (`mysqldump`), then run
-   `alembic upgrade head`.
+6. Back up with `bash scripts/backup_db.sh`, then run `alembic upgrade head`. In
+   the PR "Commands" give the owner the same two commands for their own machine.
 
 ## MySQL compatibility checklist
 
@@ -32,6 +32,7 @@ CI runs a MySQL upgrade, downgrade, upgrade job. A migration must work in both.
 
 ## Never
 
-- Never run a migration against the owner's real database yourself. The agent's
-  MySQL user cannot change the schema; the owner runs `alembic upgrade head`.
+- Never run a migration against the real database without a backup first
+  (`bash scripts/backup_db.sh`, CLAUDE.md section 7a). The agent may run
+  `alembic upgrade head` after that backup, and reports the result.
 - Never edit a migration that is already merged; add a new one.

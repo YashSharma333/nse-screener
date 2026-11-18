@@ -26,8 +26,7 @@ the code wins. Say so in your PR and fix this file.
   still to do.
 - **How work is done:** the owner works with a Lead Architect (a separate chat) who writes
   prompts, reviews PRs and verifies claims, and with Claude Code, which implements. Claude
-  Code never merges a PR. It reads the database freely and writes only through a limited
-  write user, after a backup (`CLAUDE.md` section 7a).
+  Code never merges a PR. It works on the database after a backup (`CLAUDE.md` section 7a).
 - **Rules live in `CLAUDE.md`.** This file explains the project. `CLAUDE.md` explains how
   to behave in it.
 
@@ -130,12 +129,11 @@ React possibly much later. Private use only for now.
 | Server | Use | Rule |
 |---|---|---|
 | `mysql` | Read-only SQL on `nse_screener` through a `SELECT`-only user (`nse_readonly`) | Use it to check data and verify claims. Never try to write. Never use the owner's root account or read `.env`. |
-| `mysql_write` | Limited data fixes (INSERT, UPDATE, DELETE only, no schema changes) through user `nse_agent` | Only by `CLAUDE.md` section 7a: backup (`scripts/backup_db.sh`), preview with SELECT, owner OK for deletes, big or history changes. The owner approves each call. |
+| `mysql_write` | Data fixes (INSERT, UPDATE, DELETE only, no schema changes) through user `nse_agent` | Backup first (`scripts/backup_db.sh`), preview with SELECT, owner OK only for price-history deletes, DROP/TRUNCATE and changes over 10,000 rows (`CLAUDE.md` section 7a). |
 | `github` | Issues and pull requests | Open PRs and issues. **Never merge** (the merge tool is blocked in `.claude/settings.json`). |
 
-Schema changes and the pipeline commands that import, purge, backfill or apply aliases are
-written for the **owner** to run in their own terminal. Small data fixes can go through
-`mysql_write` under section 7a.
+The agent may run migrations, pipeline commands and small data fixes on the real database
+after a backup, following section 7a of `CLAUDE.md`.
 
 ## 5. Architecture at a glance
 
@@ -432,4 +430,4 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 5. File a GitHub issue for every problem outside scope. Never silently work around one.
 6. End with `/pr-ready`: the PR link, a plain-English summary, exact commands for the owner,
    verification results, what was not verified, issues filed, and questions for the owner.
-7. Never merge. Write to the database only by `CLAUDE.md` section 7a. Never print secrets.
+7. Never merge. Work on the database only by `CLAUDE.md` section 7a (backup first). Never print secrets.

@@ -644,7 +644,7 @@ This repo ships three, configured in [.mcp.json](.mcp.json):
 | Server | What it does | Package |
 |---|---|---|
 | `mysql` | Read-only SQL queries on the `nse_screener` database | `@benborla29/mcp-server-mysql@2.0.9` |
-| `mysql_write` | Limited data fixes (INSERT, UPDATE, DELETE; no schema changes), only by the safe-write steps in `CLAUDE.md` section 7a | same package |
+| `mysql_write` | Data fixes (INSERT, UPDATE, DELETE; no schema changes), by the backup-first steps in `CLAUDE.md` section 7a | same package |
 | `github` | Read and create issues and pull requests | GitHub's official remote server |
 
 Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
@@ -664,14 +664,13 @@ Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
    Repository access: only `YashSharma333/nse-screener`. Permissions:
    Issues (Read and write), Pull requests (Read and write),
    Contents (Read-only), Metadata (Read-only). Use a short expiry.
-3. **(Optional) Create the limited write user** used by `mysql_write`. It can change
-   data but cannot `ALTER` or `DROP` anything. Choose your own password:
+3. **The limited write user** used by `mysql_write` (`nse_agent`: INSERT, UPDATE,
+   DELETE only) is created by the agent or by you with:
    ```sql
    CREATE USER 'nse_agent'@'localhost' IDENTIFIED BY 'choose-another-password';
    GRANT SELECT, INSERT, UPDATE, DELETE ON nse_screener.* TO 'nse_agent'@'localhost';
    ```
-   Then add `MYSQL_AGENT_USER=nse_agent` and `MYSQL_AGENT_PASSWORD=...` to `.env`.
-   Without them the `mysql_write` server simply shows as not connected, which is fine.
+   Its login goes in `.env` as `MYSQL_AGENT_USER` and `MYSQL_AGENT_PASSWORD`.
 4. **Add three lines to your `.env`** (see `.env.example`):
    ```
    MYSQL_READONLY_USER=nse_readonly
@@ -683,7 +682,7 @@ Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
    step 3) should show as connected.
 
 **Backups:** `bash scripts/backup_db.sh` writes a compressed dump of the database to
-`~/Documents/backups` (outside the repo). The agent runs it before any data write.
+`~/Documents/backups` (outside the repo). The agent runs it before any database change.
 
 ### Adding another MCP server later
 
@@ -699,7 +698,7 @@ put the secret in `.env` and load it through a small script like
 ```
 nse-screener/
 ├── .claude/                      # Claude Code settings, skills and slash commands
-│   ├── settings.json             # Permission rules (blocks merging, force-push, reading .env)
+│   ├── settings.json             # Permission rules (blocks merging, force-push and pushes to main)
 │   ├── skills/                   # Modular domain skills (branch-guard, repo-hygiene, etc.)
 │   └── commands/                 # Slash commands (/start-task, /pr-ready, /cleanup)
 ├── config/
