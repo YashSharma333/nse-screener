@@ -19,9 +19,14 @@ learn from: plain names, short functions, and a short comment explaining WHY
 ## MCP servers (configured in `.mcp.json`)
 
 - **`mysql`:** read-only (a `SELECT`-only database user). Use it to check data
-  and verify claims. Never try to write, and never use the owner's root account.
+  and verify claims. Never try to write with it.
+- **`mysql_write`:** limited write access (INSERT, UPDATE, DELETE only, no schema
+  changes) for fixing data. Only use it by the steps in section 7a. Never use the
+  owner's root account.
 - **`github`:** for issues and pull requests. The merge tool is blocked in
   `.claude/settings.json`, and rule 1 below still applies: never merge.
+- Passwords live only in `.env`, which the MCP scripts load. Never read, print or
+  copy `.env`; `.claude/settings.json` blocks the Read tool on it.
 
 ---
 
@@ -54,12 +59,17 @@ learn from: plain names, short functions, and a short comment explaining WHY
    paste them. The final message must contain the PR number or link.
 3. **ALWAYS file a GitHub issue** for any problem you meet (see section 8).
    Never silently work around a problem and never silently fix an out-of-scope
-   bug.
+   bug (the tiny-fix exception in rule 4 must be mentioned in the PR).
 4. **Stay in scope.** Do exactly what the task asks. Anything else you notice
-   becomes an issue, not an edit.
-5. **Never write to the owner's real data.** Read-only checks through the
-   `mysql` MCP are allowed. Do not delete files in `data/`. Destructive and
-   writing commands are written for the owner to run, never run by you.
+   becomes an issue, not an edit. One exception: a tiny, obviously safe fix
+   (a typo, a lint warning, a stale comment) in a file the PR already touches may
+   go in the same PR, as its own commit, and the PR must mention it. Anything
+   bigger, or in a file the PR does not touch, is an issue.
+5. **Writing to the owner's real database follows section 7a.** Reading is always
+   allowed (`mysql` MCP). Writing is allowed only through the `mysql_write` MCP
+   after a backup, a preview and the steps in 7a. Schema changes (DDL), dropping
+   tables and deleting files in `data/` are never done by the agent; they are
+   written for the owner to run.
 6. **This repository is public.** No secrets, no `.env`, no data exports
    (`.xlsx`, `.csv`), no personal data, no account details in commits, issues or
    PR text.
@@ -114,7 +124,7 @@ Stop and report instead of pushing on when:
 - the same test or command still fails after three honest attempts,
 - the fix would need a decision from the owner (file an issue labelled
   `needs-user-input` and say what you need),
-- the change would delete or rewrite data,
+- a data change would go beyond what section 7a allows without the owner's OK,
 - you are about to touch files outside the task scope.
 
 ---
@@ -193,6 +203,24 @@ ruff format --check .
 - **Destructive commands** (purge, rebuild, reset) default to dry-run and need an
   explicit `--yes`. They write a backup of what they remove and print a summary
   first.
+- **7a. Safe writes to the owner's real database (agents)**
+  - Diagnose first with the read-only `mysql` MCP. In date queries use
+    `CAST(date AS CHAR)`, because the MCP shows dates one day early (issue #44).
+  - Writes go only through the `mysql_write` MCP. Its user can INSERT, UPDATE and
+    DELETE but cannot ALTER or DROP. The owner approves each write call.
+  - Before the first write of a task, make a backup with
+    `bash scripts/backup_db.sh` (writes a compressed dump to
+    `~/Documents/backups`, outside the repository) and say where it is.
+  - Before every UPDATE or DELETE, run the same condition as a `SELECT` and show
+    the row count and a few sample rows. Every UPDATE and DELETE has a `WHERE`.
+    Work in small, named batches.
+  - Ask the owner in chat before: any DELETE, any change that touches more than
+    1,000 rows, or any change to `daily_prices` history. State the rows affected
+    and how to undo it (the backup).
+  - After writing, run a `SELECT` that proves the result and report it in the PR
+    or issue. Never run `TRUNCATE`, `DROP`, or `DELETE` without `WHERE`.
+  - Prefer the project's own commands (`run_pipeline.py`) for ingestion and
+    rebuilds. Those are run by the owner and stay dry-run by default.
 - **NSE data facts (hard-won, do not undo):**
   - Every calendar day is probed, because NSE holds weekend and holiday special
     sessions (for example Diwali Muhurat).

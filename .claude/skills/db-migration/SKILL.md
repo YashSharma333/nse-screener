@@ -32,5 +32,6 @@ CI runs a MySQL upgrade, downgrade, upgrade job. A migration must work in both.
 
 ## Never
 
-- Never run a migration against the owner's real database yourself.
+- Never run a migration against the owner's real database yourself. The agent's
+  MySQL user cannot change the schema; the owner runs `alembic upgrade head`.
 - Never edit a migration that is already merged; add a new one.

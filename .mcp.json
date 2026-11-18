@@ -4,6 +4,10 @@
       "command": "bash",
       "args": ["scripts/mcp_mysql.sh"]
     },
+    "mysql_write": {
+      "command": "bash",
+      "args": ["scripts/mcp_mysql_write.sh"]
+    },
     "github": {
       "type": "http",
       "url": "https://api.githubcopilot.com/mcp/",
