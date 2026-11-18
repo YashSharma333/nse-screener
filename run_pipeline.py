@@ -18,6 +18,35 @@ setup_logging()
 logger = logging.getLogger("run_pipeline")
 
 
+def run_corporate_actions_command(args: argparse.Namespace) -> None:
+    """Run --download-corporate-actions and print a short summary for the owner."""
+    from src.ingestion.corporate_actions import NSEDownloadError, NSEFormatChangedError
+    from src.ingestion.corporate_actions_store import run_corporate_actions_download
+
+    start_date = date.fromisoformat(args.start) if args.start else None
+    end_date = date.fromisoformat(args.end) if args.end else None
+    try:
+        summary = run_corporate_actions_download(start=start_date, end=end_date)
+    except (NSEDownloadError, NSEFormatChangedError) as exc:
+        # These are expected failures with a clear message, so no traceback.
+        logger.error("Corporate actions download stopped: %s", exc)
+        sys.exit(1)
+
+    logger.info(
+        "Corporate actions: %d API rows -> %d stored (%d exact-factor events, %d to review).",
+        summary["api_rows"],
+        summary["rows_stored"],
+        summary["exact_factor_events"],
+        summary["needs_review"],
+    )
+    logger.info(
+        "Symbol changes stored: %d (%d touch our stock_master). Listing master rows: %d.",
+        summary["symbol_changes_stored"],
+        summary["symbol_changes_touching_universe"],
+        summary["listing_rows"],
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run NSE Bhavcopy historical ingestion and ETL pipeline."
@@ -132,6 +161,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--download-corporate-actions",
+        action="store_true",
+        help=(
+            "Download NSE's official corporate actions (splits, bonuses ...), symbol changes "
+            "and listing master, keep the raw files in data/corporate_actions/ and upsert "
+            "the parsed rows into MySQL. Default window: 10 years back to 90 days ahead; "
+            "use --start / --end to change it. Writes to the database (no --dry-run)"
+        ),
+    )
+    parser.add_argument(
         "--add-threshold",
         type=float,
         default=500.0,
@@ -176,7 +215,8 @@ def main() -> None:
         default=None,
         help=(
             "Start date in YYYY-MM-DD format (used with --recheck-non-trading, "
-            "--benchmarks, --purge-bogus-sessions, --fill-missing-symbols, or --detect-renames)"
+            "--benchmarks, --purge-bogus-sessions, --fill-missing-symbols, --detect-renames, "
+            "or --download-corporate-actions)"
         ),
     )
     parser.add_argument(
@@ -185,7 +225,8 @@ def main() -> None:
         default=None,
         help=(
             "End date in YYYY-MM-DD format (used with --recheck-non-trading, "
-            "--benchmarks, --purge-bogus-sessions, --fill-missing-symbols, or --detect-renames)"
+            "--benchmarks, --purge-bogus-sessions, --fill-missing-symbols, --detect-renames, "
+            "or --download-corporate-actions)"
         ),
     )
 
@@ -198,6 +239,11 @@ def main() -> None:
             "Remove --dry-run, or use it with --import-universe, --apply-symbol-aliases, "
             "--purge-bogus-sessions, --fill-missing-symbols or --detect-renames."
         )
+
+    # Official corporate actions do not need the Bhavcopy ETL object, so handle them first.
+    if args.download_corporate_actions:
+        run_corporate_actions_command(args)
+        return
 
     logger.info("Initializing Bhavcopy ETL pipeline...")
     etl = BhavcopyETL(

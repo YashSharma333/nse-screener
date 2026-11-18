@@ -93,5 +93,28 @@ SPLIT_GUARD_FRACTION: float = 0.15
 SPLIT_GUARD_MIN_SYMBOLS: int = 5
 # The review report compares ex-date volume with the median of this many earlier days.
 SPLIT_VOLUME_LOOKBACK_DAYS: int = 20
+# ---------------------------------------------------------------------------
+# Official NSE corporate-actions reports (task CA1)
+# ---------------------------------------------------------------------------
+# Raw NSE responses and parsed snapshots are kept here (git-ignored, see .gitignore).
+CORP_ACTIONS_DIR: Path = PROJECT_ROOT / "data" / "corporate_actions"
+# NSE's website API. NSE also mirrors the site on nseindia.in, so the host can be switched
+# with an environment variable if nseindia.com ever stops answering.
+NSE_API_BASE: str = os.getenv("NSE_API_BASE", "https://www.nseindia.com")
+NSE_CORP_ACTIONS_API_PATH: str = "/api/corporates-corporateActions"
+# Static report files live on the same archive host as the Bhavcopy files.
+NSE_ARCHIVES_BASE: str = "https://nsearchives.nseindia.com"
+NSE_SYMBOL_CHANGE_PATH: str = "/content/equities/symbolchange.csv"
+NSE_LISTING_MASTER_PATH: str = "/content/equities/EQUITY_L.csv"
+# NSE's API returned the full 10 years in one call (verified 18 Nov 2026). We still ask one
+# calendar year at a time so a failed call only repeats one small piece.
+CORP_ACTIONS_HISTORY_YEARS: int = 10
+# Include actions NSE has already announced for the coming weeks (future ex-dates).
+CORP_ACTIONS_FORWARD_DAYS: int = 90
+# Stop before writing to the database when more than this share of split, bonus and
+# consolidation actions cannot be turned into an exact factor. Real data today: about 0.3
+# percent, so a jump means NSE changed its wording.
+CORP_ACTIONS_MAX_UNPARSED_SHARE: float = 0.05
+
 # Owner-approved corrections to the detected events (see load_adjustment_overrides).
 ADJUSTMENT_OVERRIDES_FILE: Path = PROJECT_ROOT / "config" / "adjustment_overrides.csv"
