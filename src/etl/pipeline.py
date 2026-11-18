@@ -1956,6 +1956,7 @@ class BhavcopyETL:
         start: date | None = None,
         end: date | None = None,
         session: Session | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Fill missing universe symbols across stored trading dates from Bhavcopy cache.
 
@@ -1967,6 +1968,10 @@ class BhavcopyETL:
         Symbols listed later (IPOs) simply have fewer rows.
         After all dates: rebuilds adjusted prices for the added symbols once, then refreshes
         the indicator cache.
+
+        With dry_run=True nothing is written or downloaded: it only counts the rows that
+        would be added, and the dates whose cache file is missing (those would need a
+        download). Why: a preview must be safe to run on the real database (issue #46).
         """
 
         def _get_universe(s: Session) -> dict[str, str]:
@@ -2050,6 +2055,7 @@ class BhavcopyETL:
         all_added_symbols: set[str] = set()
         total_rows_added = 0
         dates_with_additions = 0
+        dates_needing_download = 0
 
         target_cache = (
             self.cache_dir
@@ -2074,6 +2080,11 @@ class BhavcopyETL:
                 continue
 
             cache_file = target_cache / f"{d.isoformat()}.parquet"
+            if not cache_file.exists() and dry_run:
+                # A dry run must not download (that would also write cache files).
+                dates_needing_download += 1
+                logger.info("[DRY RUN] Cache file missing for %s; a real run would download it.", d)
+                continue
             if not cache_file.exists():
                 logger.info(
                     "Cache file missing for stored date %s; downloading via downloader...",
@@ -2145,7 +2156,17 @@ class BhavcopyETL:
                     stock_rows[sym] = [row_dict]
                     all_added_symbols.add(sym)
 
-            if stock_rows:
+            if stock_rows and dry_run:
+                total_rows_added += len(stock_rows)
+                dates_with_additions += 1
+                logger.info(
+                    "  [%3d/%d]  %s  [DRY RUN] would fill %d symbols",
+                    idx,
+                    len(stored_dates),
+                    d,
+                    len(stock_rows),
+                )
+            elif stock_rows:
                 if session is not None:
                     all_rows = [r for rows in stock_rows.values() for r in rows]
                     upsert_rows(session, DailyPrice, all_rows, index_elements=["symbol", "date"])
@@ -2164,6 +2185,24 @@ class BhavcopyETL:
                     d,
                     success_count,
                 )
+
+        if dry_run:
+            logger.info(
+                "[DRY RUN] Nothing was written: %d rows would be added across %d symbols; "
+                "%d dates would need a download.",
+                total_rows_added,
+                len(all_added_symbols),
+                dates_needing_download,
+            )
+            return {
+                "status": "dry_run",
+                "dry_run": True,
+                "dates_processed": len(stored_dates),
+                "dates_with_additions": dates_with_additions,
+                "dates_needing_download": dates_needing_download,
+                "rows_added": total_rows_added,
+                "symbols_added": len(all_added_symbols),
+            }
 
         if all_added_symbols:
             logger.info(

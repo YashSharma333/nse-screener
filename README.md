@@ -272,7 +272,11 @@ python run_pipeline.py --fill-missing-symbols
 
 # Target a specific historical date range
 python run_pipeline.py --fill-missing-symbols --start 2024-01-01 --end 2024-12-31
+
+# Preview only: counts the rows it would add, writes and downloads nothing
+python run_pipeline.py --fill-missing-symbols --dry-run
 ```
+* **About `--dry-run`:** it works with `--import-universe`, `--apply-symbol-aliases`, `--purge-bogus-sessions`, `--fill-missing-symbols` and `--detect-renames`. Any other command refuses it with an error, so a "preview" can never silently write. Expected last log line of a preview: `[DRY RUN] Nothing was written: N rows would be added across M symbols; K dates would need a download.`
 * **Why it exists:** When you add new symbols to `stock_master`, prior historical sessions in your database might only contain rows for previously tracked stocks. This command iterates date-by-date through every trading session in `daily_prices`, identifies any active universe symbol that lacks a row, and populates it directly from `data/raw/bhavcopy_cache/<date>.parquet` (or downloads the session if the cache file is missing). Stocks listed more recently (IPOs) naturally have fewer rows and are handled cleanly.
 * **Alias-aware ingestion:** When filling missing history for renamed stocks, any cached rows under old ticker symbols registered in `symbol_alias` are automatically mapped to the new symbol. Ingestion never recreates rows under symbols marked with `status='renamed'`.
 * **What it changes:** Bulk upserts missing price rows into `daily_prices`, runs `rebuild_adjusted` for added symbols, and refreshes the indicator cache.
