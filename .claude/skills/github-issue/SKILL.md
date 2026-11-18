@@ -1,6 +1,6 @@
 ---
 name: github-issue
-description: Use whenever you must file a GitHub issue (a bug outside scope, test or CI failure, data anomaly, assumption, deviation, failed command, or a decision needed from the owner). Gives the exact gh commands, labels, body template and fallback.
+description: Use whenever you must file a GitHub issue (a bug outside scope, test or CI failure, data anomaly, assumption, deviation, failed command). Gives the exact gh commands, labels, body template and fallback.
 ---
 
 # Filing a GitHub issue

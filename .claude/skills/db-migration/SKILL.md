@@ -35,4 +35,4 @@ CI runs a MySQL upgrade, downgrade, upgrade job. A migration must work in both.
 - Never run a migration against the real database without a backup first
   (`bash scripts/backup_db.sh`, CLAUDE.md section 7a). The agent may run
   `alembic upgrade head` after that backup, and reports the result.
-- Never edit a migration that is already merged; add a new one.
+
