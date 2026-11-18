@@ -5,7 +5,7 @@
 `CLAUDE.md` says HOW to work. This file says WHAT we are building, WHY, what exists today,
 and in what order the rest gets built.
 
-**Last updated:** 19 Nov 2026 (after task CA2, prices adjusted from the official corporate actions). If something here disagrees with the code,
+**Last updated:** 19 Nov 2026 (after task P1, the read-only data audit). If something here disagrees with the code,
 the code wins. Say so in your PR and fix this file.
 
 ---
@@ -60,7 +60,7 @@ the code wins. Say so in your PR and fix this file.
 - On 18 Nov 2026 the real universe import ran: 1,811 active, 489 below threshold, 1 not in
   file.
 
-**What is left (in order):** review the unexplained price jumps (section 13); audit the data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
+**What is left (in order):** review the unexplained price jumps (section 13); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
 pre-computed indicators and the dynamic-rule base (P3); history backend, run recording and
 reconciliation with Chartink (P4); backtest engine (P5); experiment lab (P6); analytics
 (P7); UI rebuild (P8); Docker and nightly automation with a private server (P9);
@@ -219,8 +219,9 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
   which the Chartink file misses) are applied after hysteresis.
 - Result of the real import on 18 Nov 2026: **1,811 active, 489 below threshold, 1 not in
   file** (ICICIPRULI, waiting for the rename alias).
-- Survivorship bias: membership history only exists from 20 Mar 2026. For older dates,
-  backtests apply today's membership backward. **Every backtest result must carry a
+- Survivorship bias: `index_membership` holds one snapshot (2 Nov 2026, audit P1, #65) and
+  only today's active stocks have prices (#63). For older dates, backtests apply today's
+  membership backward. **Every backtest result must carry a
   `survivorship_biased` flag.**
 
 ### Symbol renames
@@ -411,9 +412,21 @@ owner overrides that disagreed with the official factor were removed, and four s
 from NSE's list (Nov 2016 to Jan 2017) were added as overrides. Still open: the stale `SPLIT`
 row in `adj_factors` (issue #49).
 
-**Immediately next:** review the 190 unexplained jumps, then the data audit (P1). Run
-`--rebuild-adjusted` after every `--download-corporate-actions`. Symbol changes are evidence
-for `symbol_alias` (the continuity check stays), not auto-applied.
+**Done on 19 Nov (task P1, read-only audit, no data changed):** full report and re-runnable
+SQL in `docs/data_audit_P1.md`. Clean: prices (no duplicates, no broken OHLC, no fake
+sessions), the calendar, the official-action adjustment (all 529 in-history events applied,
+504 continuity checks, one suspect: DVL, #55) and the raw cache versus the database. Found
+(HIGH): 124 renamed stocks have no history before the rename (#60), ICICILIFE misses 1,699
+days (#61), and EQ-only ingestion leaves gaps in 566 symbols with 55 active symbols stale
+(#62). Found (MEDIUM): only today's active stocks have prices, so backtests are survivor-only
+(#63); benchmarks miss 3 dates in April 2023 (#64); `index_name` mixes two meanings and
+`index_membership` is a single 2026-11-02 snapshot, not "from 2026-03-20" (#65); running the
+tests overwrites the real indicator cache and `reports/adj_events_uncertain.csv` (#66).
+
+**Immediately next:** decide the owner questions in #60, #62 and #63, review the 190
+unexplained jumps (#58; regenerate the list first, #66), then P2. Run `--rebuild-adjusted`
+after every `--download-corporate-actions`. Symbol changes are evidence for `symbol_alias`
+(the continuity check stays), not auto-applied.
 
 ## 14. Roadmap (in order)
 
@@ -421,8 +434,8 @@ for `symbol_alias` (the continuity check stays), not auto-applied.
 |---|---|---|---|
 | P0 | DOCS-2: move rules, skills, commands to Claude Code | none | docs PR |
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
-| P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | issues only, no data changes |
-| P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | refactor, no behaviour change |
+| P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
+| P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
 | P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
