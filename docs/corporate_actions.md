@@ -117,8 +117,25 @@ print(events[events.symbol == "HARDWYN"])
 Expected: HARDWYN on 2023-06-05 has `factor` 0.075 (split 10 to 1 = 0.1, bonus 1:3 = 0.75) and
 `kinds` `BONUS+SPLIT`.
 
-This reader does **not** change adjusted prices yet. Using it inside `detect_all_events` and
-re-running `--rebuild-adjusted` is the next task.
+## How the adjustment uses it
+
+`python run_pipeline.py --rebuild-adjusted` (`src/etl/adjust.py`) works in four steps:
+
+1. `read_official_events` reads the exact events above. An empty table stops the command
+   ("run --download-corporate-actions").
+2. `build_events` keeps an event only if the stock has prices **before** it and a price **on or
+   after** it. This drops future ex-dates (the table runs about 3 months ahead) and actions
+   from before the stock's first stored price.
+3. The owner's `config/adjustment_overrides.csv` is applied last and always wins
+   (`apply` an exact factor, `ignore` an official event).
+4. `cumulative_factors` multiplies every older price by the factors after it.
+
+Prices are never used to guess a ratio. `find_unexplained_jumps` only writes a review list
+(`reports/adj_events_uncertain.csv`): big overnight moves that no applied event explains, with
+a `reason` and an `implied_factor` hint. If a real split is on that list, NSE's data lacks it:
+add an `apply` row to the overrides file and rebuild.
+
+Run `--rebuild-adjusted` after every `--download-corporate-actions`.
 
 ## NSE changes formats: how we stay safe
 

@@ -5,7 +5,7 @@
 `CLAUDE.md` says HOW to work. This file says WHAT we are building, WHY, what exists today,
 and in what order the rest gets built.
 
-**Last updated:** 18 Nov 2026 (after PR #51, the split/bonus verification and task CA1, the official corporate-actions downloader). If something here disagrees with the code,
+**Last updated:** 19 Nov 2026 (after task CA2, prices adjusted from the official corporate actions). If something here disagrees with the code,
 the code wins. Say so in your PR and fix this file.
 
 ---
@@ -60,8 +60,7 @@ the code wins. Say so in your PR and fix this file.
 - On 18 Nov 2026 the real universe import ran: 1,811 active, 489 below threshold, 1 not in
   file.
 
-**What is left (in order):** use the official corporate actions (already downloaded, task CA1)
-inside the adjustment (see section 13); audit the data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
+**What is left (in order):** review the unexplained price jumps (section 13); audit the data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
 pre-computed indicators and the dynamic-rule base (P3); history backend, run recording and
 reconciliation with Chartink (P4); backtest engine (P5); experiment lab (P6); analytics
 (P7); UI rebuild (P8); Docker and nightly automation with a private server (P9);
@@ -165,7 +164,7 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
 |---|---|
 | `run_pipeline.py` | The CLI. Every data operation is a flag here. |
 | `src/etl/pipeline.py` (about 3,100 lines) | Ingestion, universe import, aliases, rename detection, purge, fill-missing. Big: split it when touched for a task, never as a side effect. |
-| `src/etl/adjust.py` | Corporate-action detection (price jumps plus the unreliable PREV_CLOSE method), owner overrides, adjusted prices. |
+| `src/etl/adjust.py` | Adjusted prices from the OFFICIAL corporate actions (`build_events`), owner overrides, and a report-only list of unexplained price jumps. No price-based guessing. |
 | `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`, `corporate_actions.py` (official NSE reports downloader), `corporate_actions_parser.py` (action text to exact price factors), `corporate_actions_store.py` (storage and the adjustment-ready reader). |
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
@@ -400,10 +399,21 @@ ex-date are missing. Reader for the adjustment: `get_price_adjustment_events` in
 the shape and stops before writing; `python scripts/check_nse_reports.py` is the live health
 check.
 
-**Immediately next:** use the official events in `detect_all_events` (official exact factor
-first, price-jump detection only for what the official data cannot explain, unmatched jumps
-to review), then re-run `--rebuild-adjusted` after a backup, then the data audit (P1). Symbol
-changes are evidence for `symbol_alias` (the continuity check stays), not auto-applied.
+**Done on 19 Nov (task CA2, with a backup first):** prices are now adjusted ONLY from the
+official corporate actions. The PREV_CLOSE method and the price-jump ratio guessing were
+deleted from `src/etl/adjust.py`. `build_events` keeps official events inside each stock's
+price history (195 future or pre-listing events skipped), the owner's
+`config/adjustment_overrides.csv` wins, and `find_unexplained_jumps` only reports. Real run:
+534 events applied (was 363), 187,832 `daily_prices` rows re-adjusted, 190 unexplained jumps
+listed in `reports/adj_events_uncertain.csv` for review, a second run updates 0 rows. Checked:
+COCHINSHIP 0.5, AHCL 0.1, MARATHON 0.5, PREMEXPLN 0.2, NYKAA 1/6, no IDEA 2020 event. Eight
+owner overrides that disagreed with the official factor were removed, and four splits missing
+from NSE's list (Nov 2016 to Jan 2017) were added as overrides. Still open: the stale `SPLIT`
+row in `adj_factors` (issue #49).
+
+**Immediately next:** review the 190 unexplained jumps, then the data audit (P1). Run
+`--rebuild-adjusted` after every `--download-corporate-actions`. Symbol changes are evidence
+for `symbol_alias` (the continuity check stays), not auto-applied.
 
 ## 14. Roadmap (in order)
 
