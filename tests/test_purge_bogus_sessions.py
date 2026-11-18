@@ -42,6 +42,7 @@ from src.ingestion.benchmark import (
     load_non_trading_days as load_benchmark_non_trading_days,
 )
 from src.ingestion.downloader import NSEBhavcopyDownloader
+from tests.official_actions import add_placeholder_action
 
 
 @pytest.fixture
@@ -309,6 +310,7 @@ def test_purge_with_yes_deletes_rows_backs_up_cleans_caches_and_rebuilds(sqlite_
 
     with session_factory() as session:
         _seed_daily_prices(session, [(d_fri, fri_map), (d_sun, sun_map)])
+        add_placeholder_action(session)  # the purge rebuilds adjusted prices, which needs this
 
         # Also add a benchmark price row for Sunday
         session.add(

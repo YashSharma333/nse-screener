@@ -1,7 +1,8 @@
 """Tests for the owner-approved adjustment overrides (config/adjustment_overrides.csv).
 
-The price-jump detector only applies big, clean drops. The owner can approve more events
-(action "apply" with an exact factor) or cancel a wrong one (action "ignore") in a CSV file.
+Official NSE corporate actions adjust prices. The owner can add an event NSE's list lacks, or
+replace its factor (action "apply" with an exact factor), or cancel a wrong one (action
+"ignore"), in a CSV file. The owner's row always wins.
 """
 
 from __future__ import annotations
@@ -16,10 +17,11 @@ from sqlalchemy.orm import Session
 
 from src.db.models import AdjFactor, Base, DailyPrice
 from src.etl.adjust import (
-    detect_all_events,
+    build_events,
     load_adjustment_overrides,
     rebuild_adjusted,
 )
+from tests.official_actions import add_placeholder_action, add_prices
 
 HEADER = "symbol,date,action,factor,reason\n"
 
@@ -72,62 +74,64 @@ def test_load_rejects_bad_rows_with_a_clear_message(tmp_path, bad_row):
         load_adjustment_overrides(_write(tmp_path, bad_row + "\n"))
 
 
-def test_apply_override_adds_the_exact_factor_and_clears_the_review_row(tmp_path):
-    """A 45% crash is only 'review'. Once the owner approves it, it is applied exactly."""
+def _official(symbol: str, day: date, factor: float) -> pd.DataFrame:
+    """One official event row, in the shape read_official_events returns."""
+    return pd.DataFrame(
+        [{"symbol": symbol, "date": day, "factor": factor, "kinds": "BONUS", "n_parts": 1}]
+    )
+
+
+def test_apply_override_replaces_the_official_factor_and_names_its_source(tmp_path):
+    """The owner's factor beats the official one for the same symbol and date."""
     df = _series("CRASHY", [100.0, 100.0, 55.0, 56.0])
-    applied, review = detect_all_events(df)
-    assert applied.empty
-    assert len(review) == 1
+    official = _official("CRASHY", date(2024, 1, 3), 0.6)
+    assert build_events(official, df).iloc[0]["factor"] == 0.6
 
     overrides = load_adjustment_overrides(
         _write(tmp_path, "CRASHY,2024-01-03,apply,0.5,owner approved 2:1\n")
     )
-    applied, review = detect_all_events(df, overrides=overrides)
-    assert len(applied) == 1
-    row = applied.iloc[0]
+    events = build_events(official, df, overrides=overrides)
+    assert len(events) == 1
+    row = events.iloc[0]
     assert row["factor"] == 0.5
     assert row["source"] == "override"
     assert row["ratio_kind"] == "material"
-    assert review.empty  # no longer an open question
 
 
-def test_ignore_override_cancels_an_automatic_event(tmp_path):
+def test_apply_override_adds_an_event_the_official_list_lacks(tmp_path):
+    df = _series("CRASHY", [100.0, 100.0, 55.0, 56.0])
+    overrides = load_adjustment_overrides(
+        _write(tmp_path, "CRASHY,2024-01-03,apply,0.5,owner approved\n")
+    )
+    events = build_events(_official("OTHER", date(2024, 1, 3), 0.5), df, overrides=overrides)
+    assert list(events["symbol"]) == ["CRASHY"]
+
+
+def test_ignore_override_cancels_an_official_event(tmp_path):
     df = _series("GLITCH", [100.0, 100.0, 50.0, 51.0])
-    assert len(detect_all_events(df)[0]) == 1
+    official = _official("GLITCH", date(2024, 1, 3), 0.5)
+    assert len(build_events(official, df)) == 1
 
     overrides = load_adjustment_overrides(_write(tmp_path, "GLITCH,2024-01-03,ignore,,bad print\n"))
-    applied, _review = detect_all_events(df, overrides=overrides)
-    assert applied.empty
+    assert build_events(official, df, overrides=overrides).empty
 
 
 def test_override_for_a_date_without_prices_is_skipped(tmp_path):
     df = _series("ABC", [100.0, 101.0, 102.0])
     overrides = load_adjustment_overrides(_write(tmp_path, "ABC,2030-01-01,apply,0.5,wrong date\n"))
-    applied, _review = detect_all_events(df, overrides=overrides)
-    assert applied.empty
+    assert build_events(_official("OTHER", date(2024, 1, 3), 0.5), df, overrides=overrides).empty
 
 
 def test_rebuild_uses_the_overrides_file(tmp_path):
-    """End to end: an approved 'review' event smooths the adjusted history."""
+    """End to end: an approved override smooths the adjusted history."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     closes = [100.0, 100.0, 55.0, 56.0]
     start = date(2024, 1, 1)
     path = _write(tmp_path, "CRASHY,2024-01-03,apply,0.5,owner approved\n")
     with Session(engine) as session:
-        for i, close in enumerate(closes):
-            session.add(
-                DailyPrice(
-                    symbol="CRASHY",
-                    date=start + timedelta(days=i),
-                    open=close,
-                    high=close,
-                    low=close,
-                    close=close,
-                    prev_close=closes[max(i - 1, 0)],
-                    volume=1000,
-                )
-            )
+        add_placeholder_action(session)  # official table is filled, but nothing for CRASHY
+        add_prices(session, "CRASHY", closes, start)
         session.commit()
 
         rebuild_adjusted(session=session, overrides_path=path)

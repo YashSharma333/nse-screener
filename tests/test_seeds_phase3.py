@@ -1,7 +1,7 @@
 """Reproduction seeds for Phase 3 review gaps (Seeds D, E, F, G).
 
 These tests reproduce bugs and gaps identified from Phase 2:
-- Seed D: detect_events fails in incremental mode when new_df holds only 1 row per symbol.
+- Seed D: incremental adjustment must see a new official event when new_df holds 1 row per symbol.
 - Seed E: cross-sectional guard in rebuild_adjusted suppresses genuine splits in subsets.
 - Seed F: condition helpers using .shift() across rows in snapshot instead of
   raising MissingIndicatorError.
@@ -25,14 +25,15 @@ from src.screeners.base import MissingIndicatorError
 from src.screeners.conditions.crossover import cond_golden_cross
 from src.screeners.conditions.price import cond_sma_trending_up
 from src.screeners.registry import get_screener
+from tests.official_actions import add_official_action
 
 
 def test_seed_d_newest_day_event_missed_incremental():
-    """Seed D: adjust_new_rows with only one new row per symbol misses corporate action.
+    """Seed D: adjust_new_rows with only one new row per symbol must still apply a new split.
 
-    Example: DB has raw close=1000 on d1. New row on d2 has close=200, prev_close=200 (1:5 split).
-    Because new_df has only 1 row for the symbol, close.shift(1) is NaN and detect_events sees 0.
-    The incremental path must compare with the symbol's last stored close from the DB.
+    Example: DB has raw close=1000 on d1. The new row on d2 is the ex-date of an official
+    1:5 split. new_df holds only 1 row for the symbol, so the symbol's last stored row (d1)
+    must be read from the DB to know there are prices before the event.
     """
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -58,6 +59,7 @@ def test_seed_d_newest_day_event_missed_incremental():
             adj_volume=50000,
         )
         session.add(prior_row)
+        add_official_action(session, "INFY", d2, factor=0.2)
         session.commit()
 
         # Incremental new row (only 1 day: d2)
@@ -159,6 +161,8 @@ def test_seed_e_subset_guard_cross_sectional_denominator():
                 )
             session.add(r1)
             session.add(r2)
+            if sym in target_six:
+                add_official_action(session, sym, d2, factor=0.5)
         session.commit()
 
         # Rebuild only the 6 targeted symbols
