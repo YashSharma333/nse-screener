@@ -15,6 +15,8 @@ logs/
 data/raw/*
 data/processed/*
 data/universe/*.xlsx
+data/corporate_actions/*
+!data/corporate_actions/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/universe/.gitkeep
