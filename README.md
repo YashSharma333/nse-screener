@@ -25,7 +25,7 @@ When scanning and analyzing Indian equities, traders and investors frequently ru
 **NSE Screener** automates the entire process:
 - **Filters ~1,800 Investable Equities:** Tracks liquid universe stocks using a market cap hysteresis rule (₹500 Cr add / ₹490 Cr retain threshold) via `stock_master`, with an automatic fallback to NIFTY constituents if empty.
 - **Smart & Reliable Downloader:** Downloads daily Bhavcopies with browser session handling, retries, and local file caching so you never download the same day twice.
-- **Corporate Action Split/Bonus Adjustments:** Detects splits/bonuses using official NSE previous closes and continuously computes split-adjusted prices (`adj_open`, `adj_high`, `adj_low`, `adj_close`).
+- **Corporate Action Split/Bonus Adjustments:** Detects splits/bonuses from big overnight price drops that match a clean ratio (NSE's own previous close is not adjusted) and continuously computes split-adjusted prices (`adj_open`, `adj_high`, `adj_low`, `adj_close`).
 - **Benchmark Ingestion:** Ingests official NSE index benchmarks (`NIFTY 50`, `NIFTY 500`, etc.) and aligns stock performance against the broader market.
 - **Calculates 35+ Domain-Grouped Indicators:** Computes moving averages (SMA, EMA), Bollinger Bands, RSI, MACD, Volume ratios, 52-week rolling highs, and relative strength vs NIFTY 500.
 - **Interactive Web Terminal:** Displays ready-to-trade swing setups, customizable tables, and multi-panel candlestick charts with decoupled, high-performance caching.
@@ -319,8 +319,11 @@ python run_pipeline.py --benchmarks --start 2020-01-01 --end 2024-12-31
 # Recompute split and bonus factors across the full price history
 python run_pipeline.py --rebuild-adjusted
 ```
-* **Why it exists:** Stock splits and bonus issues create artificial price drops on unadjusted charts. This command recalculates split/bonus factors chronologically from official exchange previous closes, producing smooth, continuous price series.
-* **What it changes:** Populates `adj_factors` and updates `adj_open`, `adj_high`, `adj_low`, `adj_close` in `daily_prices`.
+* **Why it exists:** Stock splits and bonus issues create artificial price drops on unadjusted charts (RELIANCE's 1:1 bonus in 2017 looks like a 50% crash). This command finds those events and recalculates adjusted prices, producing smooth, continuous price series.
+* **How events are found:** NSE's `PREV_CLOSE` is *not* adjusted on the ex-date, so the engine looks at the overnight price change instead: previous close divided by the new close. An event is applied automatically only when the price **fell** by about 31% or more **and** the ratio is within 6% of a clean split ratio (1.5, 1.67, 2, 2.5, 3, 4, 5, 6, 8, 10 or 20). The exact factor is that clean ratio. All numbers live in `config/settings.py` (`SPLIT_*`). A day where many symbols move at once is treated as bad data and skipped.
+* **What is NOT applied (listed for you to review):** smaller drops (20% and more), drops that are not a clean ratio (the market also moved that day), and every price *rise*. They are written to `reports/adj_events_uncertain.csv` with the volume multiple and a `suggested_factor` column. Applied events go to `reports/adj_events_review.csv`.
+* **What it changes:** Populates `adj_factors` and updates `adj_open`, `adj_high`, `adj_low`, `adj_close` in `daily_prices` (about 2.7 million rows on a 10-year database, a few minutes). Take a backup first: `bash scripts/backup_db.sh`.
+* **Expected output:** `Saved N detected events to reports/adj_events_review.csv` and `Saved M unclear price jumps (NOT applied) ...`.
 
 ##### 7. Recheck Non-Trading Days (`--recheck-non-trading`)
 ```bash

@@ -70,3 +70,26 @@ def setup_logging() -> None:
 
     root_logger.addHandler(file_handler)
     root_logger.addHandler(stream_handler)
+
+
+# ---------------------------------------------------------------------------
+# Corporate-action detection from price jumps (issue #48)
+# ---------------------------------------------------------------------------
+# NSE's PREV_CLOSE is NOT adjusted for splits and bonuses, so the engine looks for a
+# big overnight price change instead. "Jump ratio" = previous close / new close.
+# Clean ratios that real corporate actions produce: 2.0 = 1:1 bonus or 2:1 split,
+# 10.0 = e.g. face value 10 to 1, 1.5 = 1:2 bonus, and so on.
+SPLIT_CLEAN_RATIOS: tuple[float, ...] = (1.5, 5 / 3, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 20.0)
+# A jump counts as a clean ratio when it is within this fraction of one (the market also
+# moves on the ex-date, so the observed ratio is never exact).
+SPLIT_SNAP_TOLERANCE: float = 0.06
+# Only jumps at least this big are applied automatically. Daily price limits are 20 percent
+# or less for most stocks, so a drop of about 31 percent or more is almost surely a split.
+SPLIT_MIN_AUTO_RATIO: float = 1.45
+# Smaller but still unusual jumps (down 20 percent and more) are only listed for review.
+SPLIT_REVIEW_MIN_RATIO: float = 1.25
+# If more than this share of symbols jump on one date, it is a data problem, not splits.
+SPLIT_GUARD_FRACTION: float = 0.15
+SPLIT_GUARD_MIN_SYMBOLS: int = 5
+# The review report compares ex-date volume with the median of this many earlier days.
+SPLIT_VOLUME_LOOKBACK_DAYS: int = 20
