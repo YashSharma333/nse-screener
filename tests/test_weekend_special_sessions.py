@@ -30,7 +30,7 @@ from sqlalchemy.orm import sessionmaker
 from run_pipeline import main as run_pipeline_main
 from src.computation.indicators.calculator import calculate_sma
 from src.db.models import Base, BenchmarkPrice, DailyPrice
-from src.etl.adjust import cumulative_factors, detect_events
+from src.etl.adjust import cumulative_factors
 from src.etl.pipeline import BhavcopyETL
 from src.ingestion.benchmark import (
     NSEIndexSource,
@@ -38,6 +38,7 @@ from src.ingestion.benchmark import (
 from src.ingestion.benchmark import (
     load_non_trading_days as load_benchmark_non_trading_days,
 )
+from tests.official_actions import add_official_action
 
 
 @pytest.fixture
@@ -364,15 +365,8 @@ def test_fri_sun_mon_price_sequence_no_false_split_and_normal_bar_indicators():
     date_field = arrow_table.schema.field("date")
     assert pa.types.is_date32(date_field.type), f"Expected date32, got {date_field.type}"
 
-    # 1. Corporate action event detection: Fri -> Sun -> Mon
-    events = detect_events(df, global_trading_days=[fri_date, sun_date, mon_date])
-    assert events.empty, f"Unexpected corporate action events detected: {events}"
-
-    # Also test fallback path without global_trading_days (uses np.busday_count)
-    events_fallback = detect_events(df, global_trading_days=None)
-    assert events_fallback.empty, (
-        f"Unexpected corporate action events in fallback: {events_fallback}"
-    )
+    # 1. No official corporate action: Fri -> Sun -> Mon is an ordinary run of bars
+    events = pd.DataFrame(columns=["symbol", "date", "factor", "ratio_kind"])
 
     # 2. Adjust series: prices must remain unchanged
     factors = cumulative_factors(df["date"], events)
@@ -623,6 +617,8 @@ def test_recheck_historical_session_rebuilds_adjustments_for_subsequent_split(
                 adj_close=50.0,
             )
         )
+        # The official list: SPLIT_STOCK had a 2:1 split with ex-date Tuesday
+        add_official_action(session, "SPLIT_STOCK", tue_date, factor=0.5)
         session.commit()
 
     etl = BhavcopyETL(cache_dir=cache_dir)

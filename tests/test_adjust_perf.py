@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
+from tests.official_actions import add_official_action
 
 
 def test_adjust_benchmark_sqlite_timing():
@@ -84,6 +85,11 @@ def test_adjust_benchmark_sqlite_timing():
     conn.commit()
 
     with Session(engine) as session:
+        # The official list holds the 5 splits (ex-date = day 1000)
+        for sym in sorted(split_symbols):
+            add_official_action(session, sym, dates[1000], factor=0.5)
+        session.commit()
+
         # Measure full rebuild time
         t0 = time.perf_counter()
         updated_count = rebuild_adjusted(session=session, engine=engine)

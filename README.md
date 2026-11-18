@@ -321,12 +321,13 @@ python run_pipeline.py --benchmarks --start 2020-01-01 --end 2024-12-31
 # Recompute split and bonus factors across the full price history
 python run_pipeline.py --rebuild-adjusted
 ```
-* **Why it exists:** Stock splits and bonus issues create artificial price drops on unadjusted charts (RELIANCE's 1:1 bonus in 2017 looks like a 50% crash). This command finds those events and recalculates adjusted prices, producing smooth, continuous price series.
-* **How events are found:** NSE's `PREV_CLOSE` is *not* adjusted on the ex-date, so the engine looks at the overnight price change instead: previous close divided by the new close. An event is applied automatically only when the price **fell** by about 31% or more **and** the ratio is within 6% of a clean split ratio (1.5, 1.67, 2, 2.5, 3, 4, 5, 6, 8, 10 or 20). The exact factor is that clean ratio. All numbers live in `config/settings.py` (`SPLIT_*`). A day where many symbols move at once is treated as bad data and skipped.
-* **What is NOT applied (listed for you to review):** smaller drops (20% and more), drops that are not a clean ratio (the market also moved that day), and every price *rise*. They are written to `reports/adj_events_uncertain.csv` with the volume multiple and a `suggested_factor` column. Applied events go to `reports/adj_events_review.csv`.
-* **Your corrections: `config/adjustment_overrides.csv`.** Columns `symbol,date,action,factor,reason`. Use `apply` with an exact `factor` (0.5 for a 1:1 bonus, 0.2 for a 5:1 split) to approve an unclear jump from `reports/adj_events_uncertain.csv`, or `ignore` to cancel an event that was applied by mistake. A typo stops the rebuild with a clear error; a row whose date has no price is skipped with a warning. After editing, run `--rebuild-adjusted` again (it is safe to repeat).
-* **What it changes:** Populates `adj_factors` and updates `adj_open`, `adj_high`, `adj_low`, `adj_close` in `daily_prices` (about 2.7 million rows on a 10-year database, a few minutes). Take a backup first: `bash scripts/backup_db.sh`.
-* **Expected output:** `Saved N detected events to reports/adj_events_review.csv` and `Saved M unclear price jumps (NOT applied) ...`.
+* **Why it exists:** Stock splits and bonus issues create artificial price drops on unadjusted charts (RELIANCE's 1:1 bonus in 2017 looks like a 50% crash). This command recalculates adjusted prices, producing smooth, continuous price series.
+* **Where the factors come from:** only NSE's **official** corporate actions (the `corporate_actions` table, filled by `--download-corporate-actions`, see step 13). Prices are never used to guess a ratio. If the table is empty the command stops and tells you to download first. Same-day actions are multiplied (split 5:1 and bonus 1:1 on one day = 0.1). Events with an ex-date in the future, or before a stock's first stored price, are skipped.
+* **Report of unexplained price jumps (nothing is changed by it):** a big overnight move (a drop of 20% or more, or the matching rise) that no applied event explains is written to `reports/adj_events_uncertain.csv` with a `reason` (`no official action`, or `official action needs review: <type>` for rights, demergers and similar) and an `implied_factor` hint. Applied events go to `reports/adj_events_review.csv`. A day where many symbols move at once is treated as bad data and left out.
+* **Your corrections: `config/adjustment_overrides.csv`.** Columns `symbol,date,action,factor,reason`. Use `apply` with an exact `factor` (0.5 for a 1:1 bonus, 0.2 for a 5:1 split) to add an event NSE's list lacks or to replace an official factor you know is wrong, or `ignore` to cancel an official event. Your row always wins; if your factor differs from the official one a warning is logged. A typo stops the rebuild with a clear error; a row whose date has no price is skipped with a warning. After editing, run `--rebuild-adjusted` again (it is safe to repeat).
+* **When to run it:** after every `--download-corporate-actions` (the daily incremental update only notices actions whose ex-date is in the new days).
+* **What it changes:** Populates `adj_factors` and updates `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_volume` in `daily_prices` (about 2.7 million rows on a 10-year database, a few minutes). Take a backup first: `bash scripts/backup_db.sh`.
+* **Expected output:** `Saved N applied events to reports/adj_events_review.csv` and `Saved M unexplained price jumps (NOT applied) ...`.
 
 ##### 7. Recheck Non-Trading Days (`--recheck-non-trading`)
 ```bash
@@ -415,9 +416,9 @@ python run_pipeline.py --download-corporate-actions --start 2024-01-01 --end 202
 # Health check of NSE's report formats (read-only, talks to the real NSE site)
 python scripts/check_nse_reports.py
 ```
-* **Why it exists:** Guessing split and bonus ratios from price jumps is sometimes wrong (a 2:1 split got factor 0.6 instead of 0.5). NSE publishes the exact ratios, so we download them and keep them for the price adjustment.
+* **Why it exists:** Guessing split and bonus ratios from price jumps is sometimes wrong (a 2:1 split got factor 0.6 instead of 0.5). NSE publishes the exact ratios, so we download them and `--rebuild-adjusted` uses them for the price adjustment.
 * **What it downloads:** the corporate-actions API (splits, bonuses, rights, mergers, dividends ...), `symbolchange.csv` and `EQUITY_L.csv`. Details, the factor maths and the format-change protections are in [docs/corporate_actions.md](docs/corporate_actions.md).
-* **What it changes:** Upserts into `corporate_actions` and `symbol_changes` (safe to repeat) and writes raw files to `data/corporate_actions/` (git-ignored). It does not change any price or adjusted price. `--dry-run` is refused because it writes.
+* **What it changes:** Upserts into `corporate_actions` and `symbol_changes` (safe to repeat) and writes raw files to `data/corporate_actions/` (git-ignored). It does not change any price or adjusted price by itself: run `--rebuild-adjusted` afterwards. `--dry-run` is refused because it writes.
 * **Expected output:** `Corporate actions: 22545 API rows -> 22537 stored (724 exact-factor events, 413 to review).` then `Symbol changes stored: 1080 (361 touch our stock_master). Listing master rows: 2632.`
 
 ---
@@ -450,7 +451,8 @@ python run_pipeline.py --backfill --days-back 3650 --chunk-size 100
 # Step 7: Ingest benchmark indices (NIFTY 500, NIFTY 50)
 python run_pipeline.py --benchmarks --start 2014-01-01
 
-# Step 8: Detect corporate actions (splits/bonuses) and compute indicators
+# Step 8: Download NSE's official corporate actions, then adjust prices from them
+python run_pipeline.py --download-corporate-actions
 python run_pipeline.py --rebuild-adjusted
 ```
 
