@@ -93,3 +93,5 @@ SPLIT_GUARD_FRACTION: float = 0.15
 SPLIT_GUARD_MIN_SYMBOLS: int = 5
 # The review report compares ex-date volume with the median of this many earlier days.
 SPLIT_VOLUME_LOOKBACK_DAYS: int = 20
+# Owner-approved corrections to the detected events (see load_adjustment_overrides).
+ADJUSTMENT_OVERRIDES_FILE: Path = PROJECT_ROOT / "config" / "adjustment_overrides.csv"

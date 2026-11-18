@@ -25,6 +25,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from config.settings import (
+    ADJUSTMENT_OVERRIDES_FILE,
     SPLIT_CLEAN_RATIOS,
     SPLIT_GUARD_FRACTION,
     SPLIT_GUARD_MIN_SYMBOLS,
@@ -347,17 +348,131 @@ def detect_price_jump_events(
     return pd.DataFrame(records, columns=JUMP_COLUMNS).reset_index(drop=True)
 
 
+OVERRIDE_ACTIONS = ("apply", "ignore")
+
+
+def load_adjustment_overrides(path: Path | None = None) -> pd.DataFrame:
+    """Read the owner-approved corrections from a CSV file (default: settings path).
+
+    Columns: ``symbol, date, action, factor, reason``.
+    - ``apply``: use exactly this ``factor`` for the event on that date (for example
+      0.5 for a 1:1 bonus). Use it to approve an unclear jump from the review report.
+    - ``ignore``: cancel an event the detector applied by mistake.
+
+    A missing file means "no overrides". A bad row raises ``ValueError`` that names the
+    file and the row, so a typo can never silently change adjusted prices.
+    """
+    target = path or ADJUSTMENT_OVERRIDES_FILE
+    columns = ["symbol", "date", "action", "factor", "reason"]
+    if not Path(target).exists():
+        return pd.DataFrame(columns=columns)
+
+    raw = pd.read_csv(target, dtype=str, keep_default_na=False)
+    missing = [col for col in columns if col not in raw.columns]
+    if missing:
+        raise ValueError(f"adjustment_overrides {target}: missing columns {missing}")
+
+    records = []
+    for position, row in raw.iterrows():
+        label = f"adjustment_overrides {target} row {position + 2}"
+        action = row["action"].strip().lower()
+        if action not in OVERRIDE_ACTIONS:
+            raise ValueError(f"{label}: action must be one of {OVERRIDE_ACTIONS}, got '{action}'")
+        try:
+            event_date = date.fromisoformat(row["date"].strip())
+        except ValueError as exc:
+            raise ValueError(f"{label}: bad date '{row['date']}' (use YYYY-MM-DD)") from exc
+        factor = np.nan
+        if action == "apply":
+            try:
+                factor = float(row["factor"])
+            except ValueError as exc:
+                raise ValueError(f"{label}: 'apply' needs a numeric factor") from exc
+            if not factor > 0:
+                raise ValueError(f"{label}: factor must be above 0, got {factor}")
+        records.append(
+            {
+                "symbol": row["symbol"].strip().upper(),
+                "date": event_date,
+                "action": action,
+                "factor": factor,
+                "reason": row["reason"].strip(),
+            }
+        )
+    return pd.DataFrame(records, columns=columns)
+
+
+def _apply_overrides(
+    applied: pd.DataFrame,
+    review: pd.DataFrame,
+    overrides: pd.DataFrame,
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Apply the owner's ``apply`` and ``ignore`` rows to the detected events."""
+    if overrides.empty:
+        return applied, review
+
+    # Only look at the symbols named in the overrides: the full table has millions of rows.
+    subset = df[df["symbol"].isin(overrides["symbol"])]
+    close_by_key = {
+        (row.symbol, pd.Timestamp(row.date).date()): row.close
+        for row in subset[["symbol", "date", "close"]].itertuples()
+    }
+    price_rows = set(close_by_key)
+
+    def _key(frame: pd.DataFrame) -> pd.Series:
+        return pd.Series(list(zip(frame["symbol"], frame["date"], strict=True)), index=frame.index)
+
+    handled = set()
+    new_rows = []
+    for ov in overrides.to_dict("records"):
+        key = (ov["symbol"], ov["date"])
+        if key not in price_rows:
+            logger.warning("Override for %s on %s ignored: no price row for that date.", *key)
+            continue
+        handled.add(key)
+        if ov["action"] == "apply":
+            new_rows.append(
+                {
+                    "symbol": ov["symbol"],
+                    "date": ov["date"],
+                    "ratio": 1.0 / ov["factor"],
+                    "factor": ov["factor"],
+                    "ratio_kind": "material",
+                    "close_prev": np.nan,
+                    "prev_close": close_by_key.get(key, np.nan),
+                    "source": "override",
+                    "volume_multiple": np.nan,
+                    "status": "confirmed",
+                    "suggested_factor": np.nan,
+                }
+            )
+
+    if not applied.empty:
+        applied = applied[~_key(applied).isin(handled)]
+    if not review.empty:
+        review = review[~_key(review).isin(handled)]
+    if new_rows:
+        applied = pd.concat([applied, pd.DataFrame(new_rows, columns=JUMP_COLUMNS)])
+    applied = applied.sort_values(["symbol", "date"]).reset_index(drop=True)
+    if not applied.empty:
+        applied["factor"] = applied["factor"].astype(float)
+    return applied, review.reset_index(drop=True)
+
+
 def detect_all_events(
     df: pd.DataFrame,
     global_trading_days: Sequence[date] | None = None,
     non_trading_days: set[date] | None = None,
     total_db_symbols: int | None = None,
+    overrides: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run both detectors. Returns ``(applied_events, review_events)``.
 
     ``applied_events`` feed the adjustment. If NSE's PREV_CLOSE already shows the same
     split on the same date, the exact PREV_CLOSE event wins and the price-jump event is
-    dropped, so one action is never applied twice.
+    dropped, so one action is never applied twice. ``overrides`` (from
+    ``load_adjustment_overrides``) are the owner's final word and are applied last.
     """
     prev_close_events = detect_events(
         df,
@@ -392,12 +507,16 @@ def detect_all_events(
     confirmed = confirmed[keep]
 
     parts = [part[JUMP_COLUMNS] for part in (prev_close_events, confirmed) if not part.empty]
-    if not parts:
-        return pd.DataFrame(columns=JUMP_COLUMNS), review
-    applied = pd.concat(parts, ignore_index=True)
-    # Plain floats: cumulative_factors does math on this column and needs a numeric dtype.
-    applied["factor"] = applied["factor"].astype(float)
-    applied = applied.sort_values(["symbol", "date"]).reset_index(drop=True)
+    if parts:
+        applied = pd.concat(parts, ignore_index=True)
+        # Plain floats: cumulative_factors does math on this column and needs a numeric dtype.
+        applied["factor"] = applied["factor"].astype(float)
+        applied = applied.sort_values(["symbol", "date"]).reset_index(drop=True)
+    else:
+        applied = pd.DataFrame(columns=JUMP_COLUMNS)
+
+    if overrides is not None:
+        applied, review = _apply_overrides(applied, review, overrides, df)
     return applied, review
 
 
@@ -449,11 +568,14 @@ def rebuild_adjusted(
     symbols: list[str] | None = None,
     session: Session | None = None,
     engine: Any = None,
+    overrides_path: Path | None = None,
 ) -> int:
     """Recompute corporate action adjustment factors and update daily_prices.
 
     Idempotent: updates adj_open, adj_high, adj_low, adj_close, adj_volume.
     Updates only rows whose adjusted values changed or are NULL.
+    The owner's corrections in config/adjustment_overrides.csv are applied on top of the
+    detected events (``overrides_path`` replaces that file, mainly for tests).
     """
     target_engine = engine or default_engine
     if target_engine is None and session is None:
@@ -518,6 +640,7 @@ def rebuild_adjusted(
         df,
         global_trading_days=global_trading_days,
         total_db_symbols=total_db_symbols,
+        overrides=load_adjustment_overrides(overrides_path),
     )
 
     def _sync_db(active_session: Session) -> None:
