@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from config.settings import setup_logging
+from src.etl.dry_run import dry_run_is_supported
 from src.etl.pipeline import BhavcopyETL
 
 setup_logging()
@@ -155,7 +156,11 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Perform a dry-run detection/import without modifying the database",
+        help=(
+            "Preview only, without modifying the database. Supported by --import-universe, "
+            "--apply-symbol-aliases, --purge-bogus-sessions, --fill-missing-symbols and "
+            "--detect-renames; any other command refuses it"
+        ),
     )
     parser.add_argument(
         "--yes",
@@ -185,6 +190,14 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Refuse --dry-run for commands that would ignore it and write anyway (issue #46).
+    if not dry_run_is_supported(args):
+        parser.error(
+            "--dry-run is not supported by this command and would write to the database. "
+            "Remove --dry-run, or use it with --import-universe, --apply-symbol-aliases, "
+            "--purge-bogus-sessions, --fill-missing-symbols or --detect-renames."
+        )
 
     logger.info("Initializing Bhavcopy ETL pipeline...")
     etl = BhavcopyETL(
@@ -304,11 +317,13 @@ def main() -> None:
                 start_date,
                 end_date,
             )
-            res = etl.fill_missing_symbols(start=start_date, end=end_date)
+            res = etl.fill_missing_symbols(start=start_date, end=end_date, dry_run=args.dry_run)
             logger.info(
-                "Fill missing symbols complete: %d dates, %d rows added across %d symbols.",
+                "Fill missing symbols %s: %d dates, %d rows %s across %d symbols.",
+                "[DRY RUN] complete" if args.dry_run else "complete",
                 res.get("dates_processed", 0),
                 res.get("rows_added", 0),
+                "would be added" if args.dry_run else "added",
                 res.get("symbols_added", 0),
             )
         elif args.refresh_cache:
