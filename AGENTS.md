@@ -163,6 +163,8 @@ ruff format --check .
   must not check for a live MySQL connection.
 - Never weaken or delete a test to make it pass. If a test is wrong, explain why
   in the PR.
+- SQLite is not MySQL. Any SQL written for MySQL must also be covered by a
+  compile test or the MySQL CI job.
 
 ---
 

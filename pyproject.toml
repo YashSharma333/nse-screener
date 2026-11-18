@@ -21,6 +21,9 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q --cov=src --cov-report=term-missing --cov-fail-under=70"
+markers = [
+    "mysql: tests that require a live MySQL server",
+]
 
 [tool.coverage.report]
 fail_under = 70

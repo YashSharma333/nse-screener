@@ -84,3 +84,12 @@ jobs:
           else
             echo "Alembic not yet initialized"
           fi
+      - name: Run MySQL integration tests
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: 3306
+          MYSQL_USER: root
+          MYSQL_PASSWORD: ci_test_password
+          MYSQL_DB: nse_screener_ci
+        run: |
+          pytest -q -m mysql --no-cov

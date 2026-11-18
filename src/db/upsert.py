@@ -38,12 +38,118 @@ def _infer_index_elements(model: Any) -> list[str]:
     return [col.name for col in table.primary_key.columns]
 
 
+def _build_upsert_statement(
+    model: Any,
+    update_columns: Sequence[str] | None,
+    index_elements: Sequence[str],
+    coalesce_columns: Sequence[str] | None,
+    dialect_name: str,
+) -> Any:
+    """Build a dialect-specific upsert statement for SQLite, MySQL, or Postgres.
+
+    Parameters
+    ----------
+    model : Any
+        SQLAlchemy ORM model or Table.
+    update_columns : Sequence[str] | None
+        Columns to update on collision. If empty, conflict is ignored.
+    index_elements : Sequence[str]
+        Unique constraint columns for conflict detection.
+    coalesce_columns : Sequence[str] | None
+        Columns that should retain existing DB values if incoming value is NULL.
+    dialect_name : str
+        Name of dialect (e.g. 'sqlite', 'mysql').
+
+    Returns
+    -------
+    Any
+        Constructed SQLAlchemy dialect-specific Insert statement.
+    """
+    coalesce_set = set(coalesce_columns or ())
+    update_cols = list(update_columns or [])
+
+    if "sqlite" in dialect_name:
+        stmt = sqlite_insert(model)
+        if update_cols:
+            set_dict = {
+                col: (
+                    func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
+                    if col in coalesce_set and hasattr(model, col)
+                    else getattr(stmt.excluded, col)
+                )
+                for col in update_cols
+            }
+            return stmt.on_conflict_do_update(
+                index_elements=list(index_elements),
+                set_=set_dict,
+            )
+        return stmt.on_conflict_do_nothing(index_elements=list(index_elements))
+
+    elif "mysql" in dialect_name:
+        stmt = mysql_insert(model)
+        if update_cols:
+            set_dict = {
+                col: (
+                    func.coalesce(getattr(stmt.inserted, col), getattr(model, col))
+                    if col in coalesce_set and hasattr(model, col)
+                    else getattr(stmt.inserted, col)
+                )
+                for col in update_cols
+            }
+            return stmt.on_duplicate_key_update(set_dict)
+        return stmt.prefix_with("IGNORE")
+
+    else:
+        # Generic fallback (e.g. Postgres or others)
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = pg_insert(model)
+        if update_cols:
+            set_dict = {
+                col: (
+                    func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
+                    if col in coalesce_set and hasattr(model, col)
+                    else getattr(stmt.excluded, col)
+                )
+                for col in update_cols
+            }
+            return stmt.on_conflict_do_update(
+                index_elements=list(index_elements),
+                set_=set_dict,
+            )
+        return stmt.on_conflict_do_nothing(index_elements=list(index_elements))
+
+
+def _execute_upsert_chunk(
+    session: Session,
+    model: Any,
+    chunk: list[dict[str, Any]],
+    update_columns: Sequence[str] | None,
+    index_elements: Sequence[str],
+    coalesce_columns: Sequence[str] | None,
+    dialect_name: str,
+) -> None:
+    """Build and execute a dialect upsert statement for a single chunk of rows.
+
+    Always passes execution_options={"render_nulls": True} so that None values
+    are preserved in the INSERT projection list instead of being omitted by SQLAlchemy.
+    """
+    stmt = _build_upsert_statement(
+        model=model,
+        update_columns=update_columns,
+        index_elements=index_elements,
+        coalesce_columns=coalesce_columns,
+        dialect_name=dialect_name,
+    )
+    session.execute(stmt, chunk, execution_options={"render_nulls": True})
+
+
 def upsert_rows(
     session: Session,
     model: Any,
     rows: list[dict[str, Any]],
-    update_columns: list[str] | None = None,
-    index_elements: list[str] | None = None,
+    update_columns: Sequence[str] | None = None,
+    index_elements: Sequence[str] | None = None,
     batch_size: int = UPSERT_BATCH_SIZE,
     coalesce_columns: Sequence[str] | None = ("index_name",),
 ) -> int:
@@ -57,10 +163,10 @@ def upsert_rows(
         SQLAlchemy ORM model class.
     rows : list[dict[str, Any]]
         List of row dicts matching model column attributes.
-    update_columns : list[str] | None
+    update_columns : Sequence[str] | None
         Columns to update when a unique key collision occurs. If None,
-        all keys in rows[0] except index_elements and 'id' are updated.
-    index_elements : list[str] | None
+        all keys in the row group except index_elements and 'id' are updated.
+    index_elements : Sequence[str] | None
         Unique constraint columns for conflict detection (required by SQLite).
         Inferred automatically from table unique constraints if None.
     batch_size : int
@@ -83,73 +189,36 @@ def upsert_rows(
     if index_elements is None:
         index_elements = _infer_index_elements(model)
 
-    first_row = rows[0]
-    if update_columns is None:
-        index_set = set(index_elements) | {"id"}
-        update_columns = [col for col in first_row if col not in index_set]
+    index_set = set(index_elements) | {"id"}
 
-    coalesce_set = set(coalesce_columns or ())
+    # Group rows by their exact key set so that every row in a chunk carries
+    # the same columns. This prevents MySQL error 1054 ("Unknown column 'new.col'
+    # in 'field list'") when rows have different sets of keys.
+    groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        key_set = tuple(sorted(row))
+        groups.setdefault(key_set, []).append(row)
+
     total_rows = len(rows)
 
-    for start_idx in range(0, total_rows, batch_size):
-        chunk = rows[start_idx : start_idx + batch_size]
-
-        if "sqlite" in dialect_name:
-            stmt = sqlite_insert(model)
-            if update_columns:
-                set_dict = {
-                    col: (
-                        func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
-                        if col in coalesce_set and hasattr(model, col)
-                        else getattr(stmt.excluded, col)
-                    )
-                    for col in update_columns
-                }
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=index_elements,
-                    set_=set_dict,
-                )
-            else:
-                stmt = stmt.on_conflict_do_nothing(index_elements=index_elements)
-            session.execute(stmt, chunk)
-
-        elif "mysql" in dialect_name:
-            stmt = mysql_insert(model)
-            if update_columns:
-                set_dict = {
-                    col: (
-                        func.coalesce(getattr(stmt.inserted, col), getattr(model, col))
-                        if col in coalesce_set and hasattr(model, col)
-                        else getattr(stmt.inserted, col)
-                    )
-                    for col in update_columns
-                }
-                stmt = stmt.on_duplicate_key_update(set_dict)
-            else:
-                stmt = stmt.prefix_with("IGNORE")
-            session.execute(stmt, chunk)
-
+    # For each group, update only columns that the group carries.
+    # Columns that a row does not carry stay untouched in the database.
+    for key_set, group_rows in groups.items():
+        if update_columns is not None:
+            group_update_cols = [c for c in update_columns if c in key_set and c not in index_set]
         else:
-            # Generic fallback (e.g. Postgres or others)
-            # Default to standard on_conflict_do_update pattern
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            group_update_cols = [c for c in key_set if c not in index_set]
 
-            stmt = pg_insert(model)
-            if update_columns:
-                set_dict = {
-                    col: (
-                        func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
-                        if col in coalesce_set and hasattr(model, col)
-                        else getattr(stmt.excluded, col)
-                    )
-                    for col in update_columns
-                }
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=index_elements,
-                    set_=set_dict,
-                )
-            else:
-                stmt = stmt.on_conflict_do_nothing(index_elements=index_elements)
-            session.execute(stmt, chunk)
+        for start_idx in range(0, len(group_rows), batch_size):
+            chunk = group_rows[start_idx : start_idx + batch_size]
+            _execute_upsert_chunk(
+                session=session,
+                model=model,
+                chunk=chunk,
+                update_columns=group_update_cols,
+                index_elements=index_elements,
+                coalesce_columns=coalesce_columns,
+                dialect_name=dialect_name,
+            )
 
     return total_rows

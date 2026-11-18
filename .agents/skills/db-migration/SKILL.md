@@ -26,6 +26,7 @@ CI runs a MySQL upgrade, downgrade, upgrade job. A migration must work in both.
 - [ ] `Numeric` precision is large enough (market caps reach six figures in crore).
 - [ ] Index and constraint names are 64 characters or shorter and unique.
 - [ ] No SQLite-only or MySQL-only SQL without a dialect check.
+- [ ] SQLite is not MySQL. Any SQL written for MySQL must also be covered by a compile test or the MySQL CI job.
 - [ ] `downgrade()` removes everything `upgrade()` created, in reverse order.
 - [ ] Nothing in `upgrade()` deletes or rewrites existing price rows.
 
