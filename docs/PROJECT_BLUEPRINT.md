@@ -5,7 +5,7 @@
 `CLAUDE.md` says HOW to work. This file says WHAT we are building, WHY, what exists today,
 and in what order the rest gets built.
 
-**Last updated:** 18 Nov 2026 (after PR #51 and the split/bonus verification). If something here disagrees with the code,
+**Last updated:** 18 Nov 2026 (after PR #51, the split/bonus verification and task CA1, the official corporate-actions downloader). If something here disagrees with the code,
 the code wins. Say so in your PR and fix this file.
 
 ---
@@ -60,8 +60,8 @@ the code wins. Say so in your PR and fix this file.
 - On 18 Nov 2026 the real universe import ran: 1,811 active, 489 below threshold, 1 not in
   file.
 
-**What is left (in order):** exact split and bonus ratios from an official NSE
-corporate-actions file (see section 13); audit the data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
+**What is left (in order):** use the official corporate actions (already downloaded, task CA1)
+inside the adjustment (see section 13); audit the data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
 pre-computed indicators and the dynamic-rule base (P3); history backend, run recording and
 reconciliation with Chartink (P4); backtest engine (P5); experiment lab (P6); analytics
 (P7); UI rebuild (P8); Docker and nightly automation with a private server (P9);
@@ -166,13 +166,13 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
 | `run_pipeline.py` | The CLI. Every data operation is a flag here. |
 | `src/etl/pipeline.py` (about 3,100 lines) | Ingestion, universe import, aliases, rename detection, purge, fill-missing. Big: split it when touched for a task, never as a side effect. |
 | `src/etl/adjust.py` | Corporate-action detection (price jumps plus the unreliable PREV_CLOSE method), owner overrides, adjusted prices. |
-| `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`. |
+| `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`, `corporate_actions.py` (official NSE reports downloader), `corporate_actions_parser.py` (action text to exact price factors), `corporate_actions_store.py` (storage and the adjustment-ready reader). |
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
 | `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners, about 1,000 lines), `declarative.py` (JSON screeners), `scaffold.py` (to be deleted), `conditions/` (to be deleted). |
 | `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
 | `config/` | `settings.py`, `costs.json`, `universe_overrides.csv`, `symbol_aliases.csv`. |
-| `migrations/versions/` | Alembic 001 to 007. |
+| `migrations/versions/` | Alembic 001 to 008. |
 | `ui/` | Streamlit pages and components. |
 | `tests/` | About 250 offline tests. |
 
@@ -204,6 +204,8 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
 | `index_membership` | Constituent lists of NSE indices. |
 | `stock_master` | One row per symbol: company name, sector, industry, cap bucket, market cap (cr), status, `in_universe`, `renamed_to`, benchmark, source. About 2,301 rows. |
 | `symbol_alias` | Renames: old_symbol, new_symbol, effective_date, status, implied_ratio, note. |
+| `corporate_actions` | Official NSE corporate actions, one row per action part, with exact `price_factor` for splits, bonuses and consolidations (`parse_status` exact / needs_review / info). About 22,500 rows, 2016-11 to 2027-02. See `docs/corporate_actions.md`. |
+| `symbol_changes` | Official NSE symbol changes (evidence only; renames still go through `symbol_alias`). 1,080 rows. |
 | `technical_indicators` | Older DB indicator table; the Parquet cache is what the UI reads. |
 
 ### Universe (decided)
@@ -240,6 +242,7 @@ needs a name check; GATI, GET&D, SUNDARMHLD, RAMBHAJO look like IPO false positi
 --start --end`, `--recheck-non-trading --start --end`, `--purge-bogus-sessions [--yes]`,
 `--import-universe PATH [--yes]`, `--universe-overrides`, `--import-symbol-aliases [--yes]`,
 `--apply-symbol-aliases [--yes]`, `--detect-renames`, `--fill-missing-symbols`,
+`--download-corporate-actions [--start --end]` (no `--dry-run`),
 `--add-threshold`, `--keep-threshold`, `--dry-run`. Check `--help` for the truth.
 
 ## 7. Indicators and cache design
@@ -380,14 +383,27 @@ sessions, no duplicates; split and bonus detection rebuilt from price jumps (PR 
 internet sources found 21 of 24 applied events exactly right, 2 with the wrong factor (for
 example COCHINSHIP 2024-01-10 was 2:1 but got 0.6) and 1 false event (IDEA 2020-03-18 was a
 real crash). Real splits were also missed (PREMEXPLN 2024, MARATHON 2018, HARDWYN 2023).
-Price alone cannot tell some ratios apart, so exact ratios must come from the official NSE
-corporate-actions file, which the owner downloads and places under `data/` (never
-committed). The importer is the next task. Open data issues: #43 (PEL), #49 (stale `SPLIT`
-row in `adj_factors`).
+Price alone cannot tell some ratios apart, so exact ratios come from NSE's official
+corporate-actions data. Open data issues: #43 (PEL), #49 (stale `SPLIT` row in `adj_factors`).
 
-**Immediately next:** build the corporate-actions importer (match by symbol and ex-date,
-exact factors, combined events on one date multiplied, unmatched jumps go to review), then
-re-run `--rebuild-adjusted` after a backup, then the data audit (P1).
+**Done on 18 Nov (task CA1, with a backup first):** `--download-corporate-actions` downloads
+the official corporate actions (NSE website JSON API; the API returns the full 10 years in one
+call, the "1 year" limit is only in the website dropdown), `symbolchange.csv` and
+`EQUITY_L.csv`. Migration 008 created `corporate_actions` (22,537 rows, 724 ex-dates with an
+exact split/bonus/consolidation factor, 413 rows needing review) and `symbol_changes`
+(1,080 rows). Verified against the database: COCHINSHIP 0.5, AHCL 0.1, HARDWYN 0.075,
+PREMEXPLN 0.2, MARATHON 0.5, no IDEA 2020 event, a second run adds no rows. Comparison with
+the current `adj_factors` (363 applied events): 321 match the official factor, 19 have the
+wrong factor, 23 have no official event, and 159 official events that have a price row on the
+ex-date are missing. Reader for the adjustment: `get_price_adjustment_events` in
+`src/ingestion/corporate_actions_store.py`. NSE can change formats, so every download checks
+the shape and stops before writing; `python scripts/check_nse_reports.py` is the live health
+check.
+
+**Immediately next:** use the official events in `detect_all_events` (official exact factor
+first, price-jump detection only for what the official data cannot explain, unmatched jumps
+to review), then re-run `--rebuild-adjusted` after a backup, then the data audit (P1). Symbol
+changes are evidence for `symbol_alias` (the continuity check stays), not auto-applied.
 
 ## 14. Roadmap (in order)
 

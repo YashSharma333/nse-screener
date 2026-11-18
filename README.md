@@ -51,6 +51,7 @@ flowchart LR
 - **Smart Downloader (`src/ingestion/downloader.py`):** Connects to the NSE portal using browser-like headers, handles session cookies, and falls back across new and historical archive formats. Detailed column specifications are documented in [docs/bhavcopy_columns.md](docs/bhavcopy_columns.md).
 - **Benchmark Indices (`src/ingestion/benchmark.py`):** Downloads and normalizes official NSE index files with canonical codes detailed in [docs/index_files.md](docs/index_files.md).
 - **Safe Database Loader (`src/etl/pipeline.py`):** Loads rows in bounded chunks using dialect-agnostic upserts (`INSERT ... ON DUPLICATE KEY UPDATE` on MySQL, `ON CONFLICT DO UPDATE` on SQLite).
+- **Official Corporate Actions (`src/ingestion/corporate_actions.py`):** Downloads NSE's official corporate actions (exact split and bonus ratios), symbol changes and the listing master with one session and one retry method, keeps the raw responses and fails loudly if NSE changes a format. Beginner guide: [docs/corporate_actions.md](docs/corporate_actions.md).
 - **Corporate Action Adjustments (`src/etl/adjust.py`):** Detects splits and bonus issues, enforces cross-sectional sanity checks, and vectorizes cumulative factor adjustments.
 - **Indicators Grouped by Nature (`src/computation/indicators/`):**
   - `price.py`: SMA, EMA, WMA, Bollinger Bands, ATR, 52-week High/Low, rolling volatility.
@@ -101,6 +102,7 @@ alembic downgrade -1
 | `005` | `d4cfae65f184` | `index_membership` | Stores historical index constituent membership snapshots. |
 | `006` | `78422e33ba2d` | `stock_master` | Master stock directory: defines the active ~1,800 universe stocks with market cap, sector, industry, cap bucket, and hysteresis status. |
 | `007` | `f7c18050340f` | `symbol_alias`, `stock_master.renamed_to` | Symbol alias registry and renamed tracking: stores mappings between old and new equity ticker symbols, effective dates, verification classifications, and implied ratios; adds nullable `renamed_to` column on `stock_master`. |
+| `008` | `a3c5e1b7d902` | `corporate_actions`, `symbol_changes` | Official NSE corporate actions (one row per action part, with exact `price_factor` for splits, bonuses and consolidations) and official symbol changes. See [docs/corporate_actions.md](docs/corporate_actions.md). |
 
 #### `stock_master` Table Schema
 
@@ -399,6 +401,24 @@ python run_pipeline.py --detect-renames --start 2026-10-01 --end 2026-11-13
 * **Why it exists:** Automatically discovers ticker renames across historical Bhavcopy files where an old symbol stops trading and a new symbol appears within 5 trading days with identical or near-identical prices.
 * **Disambiguation:** If one old symbol matches multiple new symbols (or vice-versa), selects the unique best match and marks competing candidates as `'ambiguous'`.
 * **What it changes:** Read-only operation. Outputs audit findings to `reports/rename_candidates.csv` and never modifies the database.
+
+##### 13. Download Official Corporate Actions (`--download-corporate-actions`)
+```bash
+# Back up first, then create the tables (migration 008) and download everything
+bash scripts/backup_db.sh
+alembic upgrade head
+python run_pipeline.py --download-corporate-actions
+
+# Or a specific ex-date window (default: 10 years back to 90 days ahead)
+python run_pipeline.py --download-corporate-actions --start 2024-01-01 --end 2026-12-31
+
+# Health check of NSE's report formats (read-only, talks to the real NSE site)
+python scripts/check_nse_reports.py
+```
+* **Why it exists:** Guessing split and bonus ratios from price jumps is sometimes wrong (a 2:1 split got factor 0.6 instead of 0.5). NSE publishes the exact ratios, so we download them and keep them for the price adjustment.
+* **What it downloads:** the corporate-actions API (splits, bonuses, rights, mergers, dividends ...), `symbolchange.csv` and `EQUITY_L.csv`. Details, the factor maths and the format-change protections are in [docs/corporate_actions.md](docs/corporate_actions.md).
+* **What it changes:** Upserts into `corporate_actions` and `symbol_changes` (safe to repeat) and writes raw files to `data/corporate_actions/` (git-ignored). It does not change any price or adjusted price. `--dry-run` is refused because it writes.
+* **Expected output:** `Corporate actions: 22545 API rows -> 22537 stored (724 exact-factor events, 413 to review).` then `Symbol changes stored: 1080 (361 touch our stock_master). Listing master rows: 2632.`
 
 ---
 
@@ -717,6 +737,7 @@ nse-screener/
 │   └── universe/                 # Market cap universe directory (user places Excel file here manually)
 ├── docs/
 │   ├── bhavcopy_columns.md       # Raw Bhavcopy format specification & historical URL tests
+│   ├── corporate_actions.md      # Official NSE corporate actions: reports, tables, factor maths
 │   └── index_files.md            # Verified NSE benchmark index codes & URLs
 ├── migrations/                   # Alembic database migration revisions
 │   └── versions/
@@ -725,7 +746,9 @@ nse-screener/
 │       ├── da54eaf58152_003_add_adj_factors_and_adjusted_prices.py
 │       ├── b6162e8d027a_004_create_benchmark_prices.py
 │       ├── d4cfae65f184_005_create_index_membership.py
-│       └── 78422e33ba2d_006_create_stock_master.py  # Stock master universe table migration
+│       ├── 78422e33ba2d_006_create_stock_master.py  # Stock master universe table migration
+│       ├── f7c18050340f_007_create_symbol_alias_and_stock_.py  # Symbol alias registry
+│       └── a3c5e1b7d902_008_create_corporate_actions.py  # Corporate actions & symbol changes
 ├── reports/                      # Audit and diagnostic reports
 │   ├── universe_import_report.csv # Universe import audit (counts, sectors, symbol discrepancies)
 │   └── bogus_sessions.csv        # Detected bogus/duplicate weekend trading sessions
@@ -748,6 +771,9 @@ nse-screener/
 │   ├── ingestion/
 │   │   ├── benchmark.py          # Benchmark index downloader & loader
 │   │   ├── downloader.py         # NSE Bhavcopy file downloader with retries
+│   │   ├── corporate_actions.py  # Official NSE reports downloader (actions, symbol changes, listing)
+│   │   ├── corporate_actions_parser.py # Reads NSE action text into exact price factors
+│   │   ├── corporate_actions_store.py  # Stores the reports and reads adjustment-ready events
 │   │   └── index_constituents.py # NIFTY constituent fetcher & fallback snapshotter
 │   └── screeners/                # Extensible Screener Platform
 │       ├── base.py               # Screener abstract base class & explainability
@@ -771,6 +797,9 @@ nse-screener/
 │       ├── 2_swing_volume.py    # Screener page: Swing + Volume
 │       ├── 3_swing_momentum.py  # Screener page: Swing With Momentum
 │       └── 4_screener_explorer.py # Interactive Screener Explorer & Diagnostics
+├── scripts/
+│   ├── backup_db.sh             # Compressed mysqldump to ~/Documents/backups
+│   └── check_nse_reports.py     # Live, read-only health check of NSE report formats
 ├── pyproject.toml               # Project configuration, ruff & pytest-cov settings
 ├── requirements.txt             # Runtime Python dependencies (pinned openpyxl)
 ├── requirements-dev.txt         # Development & test dependencies

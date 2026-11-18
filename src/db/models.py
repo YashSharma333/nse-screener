@@ -267,3 +267,79 @@ class SymbolAlias(Base):
             f"<SymbolAlias(old={self.old_symbol!r}, new={self.new_symbol!r}, "
             f"status={self.status!r}, ratio={self.implied_ratio})>"
         )
+
+
+# ---------------------------------------------------------------------------
+# Official NSE corporate actions and symbol changes (task CA1)
+# ---------------------------------------------------------------------------
+class CorporateAction(Base):
+    """One action from NSE's corporate-actions report, one row per action part.
+
+    A subject such as "Bonus 1:1/Face Value Split ..." holds two actions, so it becomes
+    two rows (``part_no`` 0 and 1). ``price_factor`` is the number to multiply prices
+    BEFORE the ex-date by; it is only set when the ratio is exact (``parse_status`` =
+    'exact'). Rows marked 'needs_review' are never applied automatically.
+    """
+
+    __tablename__ = "corporate_actions"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    symbol = Column(String(50), nullable=False, index=True)
+    ex_date = Column(Date, nullable=False, index=True)
+    series = Column(String(10), nullable=False)
+    isin = Column(String(20), nullable=True)
+    company = Column(String(255), nullable=True)
+    face_value = Column(Numeric(14, 4), nullable=True)
+    record_date = Column(Date, nullable=True)
+    action_type = Column(String(30), nullable=False, index=True)
+    part_no = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    subject = Column(String(500), nullable=False)
+    # md5 of the normalised subject: a short, stable stand-in for the long text in the key.
+    subject_hash = Column(String(32), nullable=False)
+    old_face_value = Column(Numeric(14, 4), nullable=True)
+    new_face_value = Column(Numeric(14, 4), nullable=True)
+    bonus_new_shares = Column(Numeric(14, 4), nullable=True)
+    bonus_held_shares = Column(Numeric(14, 4), nullable=True)
+    rights_new = Column(Numeric(14, 4), nullable=True)
+    rights_held = Column(Numeric(14, 4), nullable=True)
+    price_factor = Column(Numeric(18, 8), nullable=True)
+    parse_status = Column(String(20), nullable=False)
+    fetched_at = Column(DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol",
+            "ex_date",
+            "series",
+            "subject_hash",
+            "part_no",
+            name="uq_corporate_actions_key",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CorporateAction(symbol={self.symbol!r}, ex_date={self.ex_date}, "
+            f"type={self.action_type!r}, factor={self.price_factor})>"
+        )
+
+
+class SymbolChange(Base):
+    """Official NSE symbol change (``symbolchange.csv``), e.g. ICICIPRULI -> ICICILIFE.
+
+    This is evidence only. It does not merge any price history: renames are applied
+    through ``symbol_alias`` after the price-continuity check.
+    """
+
+    __tablename__ = "symbol_changes"
+
+    old_symbol = Column(String(50), primary_key=True)
+    new_symbol = Column(String(50), primary_key=True)
+    effective_date = Column(Date, primary_key=True)
+    company = Column(String(255), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<SymbolChange(old={self.old_symbol!r}, new={self.new_symbol!r}, "
+            f"date={self.effective_date})>"
+        )
