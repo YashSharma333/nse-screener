@@ -1,0 +1,432 @@
+# NSE Screener: Project Blueprint
+
+**Purpose of this file:** the single, complete picture of the project for any AI agent
+(Claude Code) or human who joins. Read it together with `CLAUDE.md` (the rules).
+`CLAUDE.md` says HOW to work. This file says WHAT we are building, WHY, what exists today,
+and in what order the rest gets built.
+
+**Last updated:** 18 Nov 2026 (after PR #42). If something here disagrees with the code,
+the code wins. Say so in your PR and fix this file.
+
+---
+
+## 0. Read this first (one-page summary)
+
+- **What it is:** a private NSE (India) end-of-day stock screener, strategy engine and
+  backtester. Long-only, delivery, no F&O. Python, MySQL, Parquet, Streamlit.
+- **Who it is for:** one owner, a Python beginner who is learning through it and also using
+  it as a Data Analyst portfolio project. Code and docs must be easy to read and learn from.
+- **What we are building toward:** clean data for about 1,800 stocks (market cap 500 cr or
+  more), screener rules with no hard-coded numbers, an honest backtester that answers "does
+  this strategy make money and how deep is the worst drawdown", then a Chartink-style
+  no-code scanner builder.
+- **Where we are:** the data foundation is nearly finished (clean data, universe, stock
+  master, rename handling, MCP tooling). The screener refactor, RS Rating, history backend,
+  backtest engine, experiment lab, analytics, UI rebuild, automation and scanner builder are
+  still to do.
+- **How work is done:** the owner works with a Lead Architect (a separate chat) who writes
+  prompts, reviews PRs and verifies claims, and with Claude Code, which implements. Claude
+  Code never merges a PR and never writes to the owner's real database.
+- **Rules live in `CLAUDE.md`.** This file explains the project. `CLAUDE.md` explains how
+  to behave in it.
+
+## 0a. The story so far
+
+**What the project was at the start (Phases 0 to 2, built with Antigravity):**
+- A working Streamlit app that downloaded NSE Bhavcopy, stored it in MySQL, adjusted prices
+  for splits and bonuses, computed technical indicators into a Parquet cache, and ran
+  screeners.
+- About 498 symbols (the NIFTY 500 constituents), roughly 3 years of history, 5 benchmark
+  indices, 20 screeners (three core: swing_volume, swing_momentum, rsi_momentum), a strategy
+  specification, risk, cost and signal modules, and about 243 offline tests.
+- No backtest engine, no stock master, no handling of renamed symbols, and only weekday
+  data.
+
+**What we found and fixed on the way (Nov 2026):**
+- The database was missing special weekend sessions (Diwali Muhurat). Fixed (T64) by probing
+  every calendar day.
+- NSE serves the previous day's file on non-trading days, which had created 197 fake
+  sessions. Fixed by date validation inside each file, and the fakes were purged (T64b).
+  The database is now a clean 776 dates.
+- The universe was only the NIFTY 500. It was widened to every stock with market cap of 500
+  cr or more, with a 490 cr buffer, using the owner's Chartink export (T65a). A
+  `stock_master` table now holds name, sector, industry, cap bucket and status.
+- Renamed symbols split a stock's price history (ICICIPRULI to ICICILIFE, PEL to PIRAMALFIN).
+  Overrides and symbol aliases with a price-continuity check were added (T65b).
+- A bug that only appears on MySQL (not SQLite) broke the real imports. Fixed in PR #41, and
+  CI now runs a real MySQL job.
+- Agent rules, 5 skills and 3 commands were written (DOCS-1) and project MCP servers were
+  added (PR #42). The owner then moved all development from Antigravity to Claude Code.
+- On 18 Nov 2026 the real universe import ran: 1,811 active, 489 below threshold, 1 not in
+  file.
+
+**What is left (in order):** move the agent kit to Claude Code (P0); apply the rename
+aliases, fill missing symbols and run the 10-year backfill (owner runs these); audit the
+data (P1); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
+pre-computed indicators and the dynamic-rule base (P3); history backend, run recording and
+reconciliation with Chartink (P4); backtest engine (P5); experiment lab (P6); analytics
+(P7); UI rebuild (P8); Docker and nightly automation with a private server (P9);
+fundamentals via IndianAPI (P10); scanner builder (P11). Details are in section 14.
+
+**Accounts and tools in play:** GitHub repo `YashSharma333/nse-screener` (public), Claude
+Pro with Claude Code (desktop app), Zerodha as broker (costs only), IndianAPI (about 500
+calls per month, fundamentals only), Chartink (source for the universe list and the
+reference scan), a free Oracle Cloud server (later, private access only).
+
+---
+
+## 1. The goal in one paragraph
+
+A private, end-of-day research platform for Indian (NSE) equities, long-only delivery,
+no F&O. It must (1) hold clean, split-adjusted daily data for about 1,800 stocks with market
+cap of 500 cr or more, (2) screen them with rules that are never hard-coded (every period,
+source, threshold and ratio is a parameter), (3) turn a screener into a complete trading
+strategy and backtest it honestly (costs, slippage, look-ahead safe), answering "does this
+make money, and how bad does it get" (CAGR, max drawdown, expectancy), and eventually
+(4) let the owner build scanners in a Chartink-style no-code screen. Streamlit UI now,
+React possibly much later. Private use only for now.
+
+## 2. The owner (write for this person)
+
+- Beginner in Python, learning through this project, targeting Data Analyst roles. The
+  repo is also a portfolio piece, so readable code and clear docs matter as much as
+  features.
+- Plain names, short functions, a "why" comment wherever logic is not obvious. Explain
+  new concepts in the PR text in simple English. No clever one-liners.
+- Works on a MacBook Air, 16 GB RAM, Python 3.14 locally. CI runs 3.11 and 3.12. Code must
+  run on all three.
+- Was using Antigravity before; **from now on all development is done with Claude Code**.
+  The owner reviews and merges every PR. An agent never merges.
+- Trading broker: Zerodha (costs use Zerodha rates). No paid market-data feed is needed.
+
+## 3. Words with exact meanings
+
+| Word | Meaning |
+|---|---|
+| Screener | A filter list: which stocks pass today. |
+| Strategy | A complete trading plan: entry, exit, stop, sizing, costs. |
+| Signal | The entry condition is true at the close of day `t`. |
+| Trade | A signal that was actually taken (filled at `t+1` open). |
+| Universe | The stocks we screen: market cap >= 500 cr to enter, stays until < 490 cr. |
+| Benchmark | An NSE index used for relative strength (NIFTY 500, etc.). |
+
+## 4. Tech stack and environment
+
+- Python, pandas 3, numpy, SQLAlchemy 2, Alembic, PyMySQL, pyarrow (Parquet), pydantic v2,
+  plotly, Streamlit, openpyxl, requests. All pinned in `requirements.txt`. Add a library
+  only when really needed, pinned, and justified in the PR.
+- MySQL 8 is the production database. SQLite is used in offline tests. **SQLite is not
+  MySQL**: any SQL written for MySQL needs a compile test or the MySQL CI job (this already
+  caused a bug, PR #41).
+- Parquet files under `data/` hold caches. Raw NSE files are cached under
+  `data/raw/bhavcopy_cache/`.
+- CI (GitHub Actions): ruff lint and format, pytest on 3.11 and 3.12 (coverage >= 70%), and
+  a MySQL 8 job that runs Alembic upgrade, downgrade, upgrade plus `pytest -m mysql`.
+- The repo is **public**: never commit `.env`, `.xlsx`, `.csv` exports, data, tokens.
+
+### MCP servers (configured in `.mcp.json`, added in PR #42)
+
+| Server | Use | Rule |
+|---|---|---|
+| `mysql` | Read-only SQL on `nse_screener` through a `SELECT`-only user (`nse_readonly`) | Use it to check data and verify claims. Never try to write. Never use the owner's root account or read `.env`. |
+| `github` | Issues and pull requests | Open PRs and issues. **Never merge** (the merge tool is blocked in `.claude/settings.json`). |
+
+Commands that change the owner's database (imports, purges, backfills, alias applies) are
+written for the **owner** to run in their own terminal, never run by the agent.
+
+## 5. Architecture at a glance
+
+```
+NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
+        |                                   |
+        v                                   v
+  src/ingestion/  --->  src/etl/pipeline.py  (probe every calendar day, validate date,
+        |                 adjust.py (corporate actions -> adjusted prices))
+        v
+   MySQL: daily_prices, adj_factors, benchmark_prices, index_membership,
+          stock_master, symbol_alias, technical_indicators
+        |
+        v
+  src/computation/indicators/calculator.py  ->  Parquet indicator cache
+        |                                        (data/processed/indicators.parquet + meta.json)
+        v
+  src/screeners/  (Screener base + catalog + JSON screeners + rule parser)
+        |
+        v
+  src/strategies/ (StrategySpec JSON, signals, risk, costs)  ->  [backtest engine: NOT BUILT YET]
+        |
+        v
+  ui/ (Streamlit: Dashboard, Swing Volume, Swing Momentum, Screener Explorer)
+```
+
+### Key files
+
+| Path | Role |
+|---|---|
+| `run_pipeline.py` | The CLI. Every data operation is a flag here. |
+| `src/etl/pipeline.py` (about 3,100 lines) | Ingestion, universe import, aliases, rename detection, purge, fill-missing. Big: split it when touched for a task, never as a side effect. |
+| `src/etl/adjust.py` | Corporate-action detection from PREV_CLOSE and adjusted prices. |
+| `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`. |
+| `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
+| `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
+| `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners, about 1,000 lines), `declarative.py` (JSON screeners), `scaffold.py` (to be deleted), `conditions/` (to be deleted). |
+| `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
+| `config/` | `settings.py`, `costs.json`, `universe_overrides.csv`, `symbol_aliases.csv`. |
+| `migrations/versions/` | Alembic 001 to 007. |
+| `ui/` | Streamlit pages and components. |
+| `tests/` | About 250 offline tests. |
+
+## 6. The data layer (hard-won rules, never undo)
+
+1. **Every calendar day is probed**, because NSE holds weekend and holiday special sessions
+   (for example Diwali Muhurat).
+2. **NSE serves another day's file on non-trading days.** The date inside each file
+   (DATE1, TIMESTAMP, "Index Date") must equal the requested date, otherwise the file is
+   rejected. This created 197 fake sessions once; they were purged (T64b). The DB is now a
+   clean 776 dates with exactly the 7 genuine weekend sessions.
+3. **A 404 within the last 3 calendar days is never cached as a holiday** (the file may not
+   be published yet).
+4. **After inserting historical rows, rebuild adjusted prices** for those symbols
+   (`rebuild_adjusted`).
+5. **Corporate-action detection keeps its cross-sectional guard**: if 90% or more of symbols
+   have an event on one date, it is a data problem, not a market event.
+6. **Never delete price history** when a stock leaves the universe. Change its status.
+7. **Destructive commands default to dry-run**, need `--yes`, back up what they remove, and
+   print a summary first.
+
+### Tables
+
+| Table | What it holds |
+|---|---|
+| `daily_prices` | Raw and adjusted OHLCV per symbol per date, plus PREV_CLOSE and `index_name` (in universe mode this holds the cap bucket). |
+| `adj_factors` | Detected corporate actions (splits, bonuses) and factors. |
+| `benchmark_prices` | NSE index closes (NIFTY 50, 100, 500, Midcap 150, Smallcap 250 today). |
+| `index_membership` | Constituent lists of NSE indices. |
+| `stock_master` | One row per symbol: company name, sector, industry, cap bucket, market cap (cr), status, `in_universe`, `renamed_to`, benchmark, source. About 2,301 rows. |
+| `symbol_alias` | Renames: old_symbol, new_symbol, effective_date, status, implied_ratio, note. |
+| `technical_indicators` | Older DB indicator table; the Parquet cache is what the UI reads. |
+
+### Universe (decided)
+
+- Source: a manually placed Excel export of the Chartink "Market Cap >= 100 cr" scan, kept at
+  `data/universe/m-cap_1.xlsx` (git-ignored). Refreshed manually, about twice a year, aligned
+  with NSE's own market-cap list.
+- Rule: enter at >= 500 cr, stay while >= 490 cr (hysteresis). Below that the stock is
+  flagged `below_threshold`, never deleted.
+- Statuses: `active`, `below_threshold`, `not_in_file`, `renamed`.
+- Overrides in `config/universe_overrides.csv` (force_include: GESHIP, HEXT, PIRAMALFIN,
+  which the Chartink file misses) are applied after hysteresis.
+- Result of the real import on 18 Nov 2026: **1,811 active, 489 below threshold, 1 not in
+  file** (ICICIPRULI, waiting for the rename alias).
+- Survivorship bias: membership history only exists from 20 Mar 2026. For older dates,
+  backtests apply today's membership backward. **Every backtest result must carry a
+  `survivorship_biased` flag.**
+
+### Symbol renames
+
+A rename splits a stock's history (SMA200, 252-day high and RS all break). Aliases are
+applied only after a continuity check: the new symbol's first raw PREV_CLOSE vs the old
+symbol's close on the last trading day before. Classifications: `verified_exact`,
+`verified_close`, `ratio_mismatch`, `date_gap`, `overlap`. Gaps in dates do not matter.
+Splits and mergers show `ratio_mismatch` and must NOT be merged blindly. IPO listing days
+give false positives (PREV_CLOSE is the issue price). Only apply aliases confirmed by
+company name. State today: `ICICIPRULI -> ICICILIFE` verified and to be applied;
+`PEL -> PIRAMALFIN` is a candidate needing a cache check; `SASTASUNDR -> HEALTHX` plausible,
+needs a name check; GATI, GET&D, SUNDARMHLD, RAMBHAJO look like IPO false positives.
+
+### CLI (all in `run_pipeline.py`)
+
+`--backfill`, `--incremental`, `--refresh-cache`, `--rebuild-adjusted`, `--benchmarks
+--start --end`, `--recheck-non-trading --start --end`, `--purge-bogus-sessions [--yes]`,
+`--import-universe PATH [--yes]`, `--universe-overrides`, `--import-symbol-aliases [--yes]`,
+`--apply-symbol-aliases [--yes]`, `--detect-renames`, `--fill-missing-symbols`,
+`--add-threshold`, `--keep-threshold`, `--dry-run`. Check `--help` for the truth.
+
+## 7. Indicators and cache design
+
+- Cache: `data/processed/indicators.parquet` plus `indicators.meta.json` (schema version,
+  history years, DB max date, adj-factor count, benchmark max date). Whenever these change,
+  the cache rebuilds itself. **Bump `INDICATORS_SCHEMA_VERSION` whenever columns are
+  added**, or the old cache silently lacks them.
+- Window: 2 years of snapshots plus 300 warm-up bars, so every cached row is valid.
+- Memory rule (16 GB): about 1,800 stocks x 10 years is about 4.5 million rows. Design is two
+  outputs: a small **latest-snapshot** Parquet (one row per stock) that all UI pages read
+  instantly, and **full history in small per-year Parquet pieces** that backtests load
+  only when needed. Never load 10 years of all stocks into one DataFrame.
+- **Pre-compute list (approved):** SMA 10, 20, 50, 100, 150, 200; EMA 9, 10, 20, 50, 100,
+  200; RSI 9 and 14; ATR 14 and 20; Bollinger Bands; 252, 65, 20, 10-day highs and lows and
+  the previous-252-day high (`high_252d_prev`); volume averages and multiples;
+  `turnover_sma_20`; returns; RS columns per benchmark (named like `rs_252d_nifty_500`);
+  RS Rating. Prompt B prints the final list for owner approval before coding it.
+- Everything else (any period, source, offset or ratio) is computed on demand by the rule
+  parser and cached per parameter set. This is the **two-tier lookup**: if a column named
+  by pattern (e.g. `sma_close_50`) exists in the cache, read it; otherwise compute per
+  symbol with `groupby("symbol")` rolling.
+- Offsets such as "1 day ago" shift **per symbol**. The old shift-fallback bug mixed
+  symbols; guard it with a test.
+
+## 8. Screener platform
+
+- `Screener` (base.py): `rules()` returns named conditions, `explain()` shows pass or fail
+  per condition (near-miss diagnostics in the UI). T47, T54 and T56 depend on `explain()`.
+- `catalog.py` holds the conditions and the 20 screeners. Core: `swing_volume`,
+  `swing_momentum`, `rsi_momentum` (RSI(9) >= WMA(RSI,21) + 1.1, RSI between 45 and 65, plus
+  trend, near-52-week-high and volume rules). Others: `above_50_sma`, `above_200_sma`,
+  `golden_cross`, `death_cross`, `bullish_macd_cross`, `near_52w_high`, `near_52w_low`,
+  `rsi_oversold`, `rsi_overbought`, `high_volatility`, `bollinger_squeeze`,
+  `breakout_52w_volume`, `composite_trend`, `minervini_trend_template`, `rs_leaders`,
+  `rsi_pullback_uptrend`, `vcp_lite`.
+- Core screeners keep **locked default parameters**. `enforce_universe` defaults to False
+  for swing_volume and swing_momentum. Dynamic values belong in experimental screeners and
+  the builder, and every run records its parameters (T50).
+- **No hard-coded numbers inside logic.** Rule names must be neutral (not
+  `within_15pct_52wH` or `volume_gt_1_5x_avg`) because parameters change.
+- **Safe rule parser, no `eval` or `exec`.** Whitelist only: names, numbers, comparison and
+  arithmetic, and a small function set. Target: rules written as plain text such as
+  `sma(close, 50)`, `high(252) * 0.85`, `rsi(close, 9)`, via
+  `compare(df, left, op, right, ratio)` plus `require`. It lives in `src/screeners/rules.py`
+  (moving it fixes import-cycle bug H1, and Phase 10 needs it there).
+- JSON screeners (`declarative.py`) are the seed of the saved-scanner feature (T62).
+  Loading is lazy (H1 fix).
+
+### Acceptance scan (Chartink, owner's own)
+
+1. 12-month return of the stock beats NIFTY 500's 12-month return (`rs_252d_nifty_500 > 0`).
+2. EMA20 > SMA50 > SMA200.
+3. Close > SMA200 and close > SMA50.
+4. Close >= 0.85 x highest High of the last 252 days **ending yesterday** (`high_252d_prev`).
+5. Volume > 1.5 x its 20-day average.
+6. 20-day average volume > 250,000.
+
+Reconciliation (T54): compare our output with the owner's Chartink history CSV (20 Mar to
+12 Nov 2026, 160 trading days, 4,567 rows, 640 symbols) day by day, on symbols present in
+both, and explain every difference. "Not in our universe" differences are expected.
+Chartink sectors (26 names) and cap buckets (Smallcap, Midcap, Largecap) are kept as-is in
+`stock_master`. The CSV has 5 blank sectors, 3 rows with sector "Indices", and
+`dd-mm-yyyy` text dates, so clean it on import.
+
+## 9. RS and benchmarks
+
+- Benchmarks: today NIFTY 50, 100, 500, Midcap 150, Smallcap 250. To add: Bank Nifty,
+  Smallcap 50 and 150, Metal, PSU Bank, Capital Markets, Defence, Oil & Gas. First print the
+  real index names from a live NSE index file and let the owner pick. Drop any the file lacks.
+- `rs_252d = (stock return ratio / benchmark return ratio) - 1`. Name columns by benchmark.
+- **RS Rating (1 to 99):** weighted 12-month performance score, percentile-ranked across the
+  universe each day, scaled to 1 to 99. Default 63/126/189/252 days with weights 40/20/20/20
+  (IBD style). Weights and periods are configurable, with named presets for the owner's own
+  "M-Score" formulas 1, 2 and 4. Check M-Score 3 as pasted: the 0.6 and 0.4 look like they
+  multiply only the last term because of bracket placement. The rating depends on the
+  universe, so it will not match IBD's numbers. `ret_rank_252d` is the existing simple version.
+
+## 10. Strategy and backtest rules (LOCKED)
+
+- Signal on day `t` close, fill at day `t+1` open.
+- If stop and target fall in the same bar, assume the stop was hit first.
+- Gaps through a stop exit at the open.
+- Costs and slippage are always on by default: Zerodha rates, slippage 10 bps unless
+  configured (`config/costs.json`: exchange fee 0.00307% from NSE circular effective 1 Mar
+  2026, STT 0.1% each side on delivery, stamp duty 0.015% buy only, SEBI fee Rs 10 per crore,
+  GST 18% on brokerage plus exchange plus SEBI, DP charge once per scrip per sell day).
+  Show the owner the Zerodha table with sources and dates before locking it (H5).
+- Risk primitives (`risk.py`): initial stop (ATR, percent, support), position size from a 1%
+  risk budget and capital cap, trailing stop that never loosens, breakeven move, portfolio
+  heat limit.
+- `StrategySpec` (pydantic v2 JSON) lifecycle: draft, candidate, approved, retired.
+- Determinism: every random process is seeded. Results are identical on repeat runs.
+- No look-ahead: a value on day `t` uses data up to the close of `t` only. Every shifting or
+  rolling calculation gets a test.
+- What does not exist yet: the **backtest engine itself**, the experiment lab, performance
+  analytics, and the history-saving backend.
+
+## 11. UI
+
+Streamlit multipage: Dashboard, Swing Volume, Swing Momentum, Screener Explorer (near-miss
+diagnostics, export). `ui/data.py` is the cached data layer. Known smell: `screener_view.py`
+contains fallback math that hides missing-column bugs; delete it once the columns exist.
+Later: Streamlit stays for now, React maybe much later. No separate public website.
+
+## 12. Deployment plan (parked)
+
+Free Oracle Cloud server, always on, reachable **only from the owner's own devices**
+(Tailscale-style private network), no public exposure, MySQL never exposed. Needs: Docker
+with MySQL (T35), nightly job for Bhavcopy download, update and screener history (T57).
+Test NSE downloads from the server first (NSE sometimes blocks data-centre IPs). The owner
+has no server experience: the guide must be a step-by-step PDF. A static IP and Kite
+Connect are NOT needed (order placement is out of scope; data is free from Bhavcopy).
+IndianAPI plan: about 500 calls per month, one stock per call. Never use it for prices or
+industry, never in tests or loops. Intended only for fundamentals of stocks that pass scans
+(Prompt K), cached because fundamentals change quarterly.
+
+## 13. Status as of 18 Nov 2026
+
+**Done and merged:** Phases 0 to 2 (ingestion, adjustments, benchmarks, indicator cache,
+screener platform, hardening F1 to F12); T64 (special sessions); T64b (fake-session
+purge); T65a (stock master and universe import); DOCS-1 (agent rules, skills, commands,
+PR #37); T65b (overrides and aliases, PR #39) plus its MySQL upsert fix (PR #41); MCP
+servers (PR #42).
+
+**Done by the owner on 18 Nov:** real universe import, 2,301 `stock_master` rows (1,811
+active, 489 below threshold, 1 not in file).
+
+**Immediately next:** migrate repo to Claude Code (DOCS-2, prompt P0); import and apply
+symbol aliases (ICICIPRULI to ICICILIFE first; PEL to PIRAMALFIN only after the cache
+check); `--fill-missing-symbols`; 10-year backfill with a `mysqldump` backup first.
+
+## 14. Roadmap (in order)
+
+| # | Work | Depends on | Notes |
+|---|---|---|---|
+| P0 | DOCS-2: move rules, skills, commands to Claude Code | none | docs PR |
+| owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
+| P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | issues only, no data changes |
+| P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | refactor, no behaviour change |
+| P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
+| P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
+| P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
+| P6 | Experiment lab (parameter sweeps, walk-forward, run registry) | P5 | every run stores its parameters |
+| P7 | Quant analytics (CAGR, max drawdown, Sharpe and Sortino, expectancy, MAE and MFE, regime split, survivorship flag) | P5 | |
+| P8 | UI rebuild (backtest pages, results, strategy lifecycle) | P5, P7 | |
+| P9 | Docker plus MySQL (T35), nightly automation (T57), Oracle deployment guide | P4 | private access only |
+| P10 | Fundamentals via IndianAPI (Prompt K) | P9 | quota-aware, cached |
+| P11 | Chartink-style scanner builder (Phase 10, T60 to T63, Prompt L) | P3 base, P5 for backtests on saved scanners | T62 cannot come earlier than P5 |
+
+Task IDs T01 to T65 and the findings H1 to H11, F1 to F12 live in the owner's Master Tracker
+PDF. Known H items: H1 import cycle between `strategies.rules` and `screeners.base`; H4
+strategy liquidity cap (needs `turnover_sma_20`); H5 brokerage and DP charges; H6 scaffold
+tests; H8 and H9 broad `except`, `contextlib.suppress`, `TypeVar` boilerplate. If a task
+needs an H item you cannot see, ask the owner to attach the tracker. Do not guess.
+
+## 15. Decisions already made (do not reopen without a reason)
+
+- One file for conditions: `catalog.py`, with section headers (price, volume, momentum,
+  crossover, then screeners). No `conditions.py`.
+- Parser moves to `src/screeners/rules.py`; registry merges into `base.py`;
+  `declarative.py` stays; `conditions/` and `scaffold.py` are deleted.
+- Universe 500 cr enter, 490 stay; below threshold is flagged, not deleted.
+- Ingest all EQ stocks, use `stock_master` to decide what is screened.
+- Monthly Chartink market-cap refresh is dropped; twice-yearly list is enough.
+- Pre-compute only 1 to 2 years of indicators. Full history on demand.
+- Streamlit now; private deployment only; no static IP; no paid data.
+- Every prompt files GitHub issues for problems and updates the README.
+- Fixes PRs merge with "Create a merge commit"; Updates and docs PRs "Squash and merge".
+
+## 16. Open items and known risks
+
+1. Verify `index_name IS NULL` count on the first real daily MySQL update (the MySQL path
+   is not fully proven).
+2. Ruff SIM102 warning at `pipeline.py` about line 1773 (newer Ruff than CI's pinned one).
+3. `pipeline.py` is over 3,000 lines. Split in a dedicated refactor task, not by accident.
+4. PEL to PIRAMALFIN history lives only in the Bhavcopy cache. Verify, then apply the alias.
+5. Survivorship bias before 20 Mar 2026 (see section 6).
+6. Possible NSE blocking of server IPs at deployment.
+
+## 17. How an agent should work here (short)
+
+1. Read `CLAUDE.md`, this file, and the task prompt. Run `/start-task` (branch check).
+2. Verify claims with the read-only `mysql` MCP and by running code. Say what you did NOT verify.
+3. One PR per task, small, Conventional Commits, task ID in branch, commit and PR title.
+4. Offline, deterministic tests with real column types. A regression test for every bug fix.
+5. File a GitHub issue for every problem outside scope. Never silently work around one.
+6. End with `/pr-ready`: the PR link, a plain-English summary, exact commands for the owner,
+   verification results, what was not verified, issues filed, and questions for the owner.
+7. Never merge. Never touch the owner's real data. Never print secrets.
