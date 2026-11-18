@@ -24,5 +24,5 @@ description: Finish a task. Verifies the branch, runs the CI-like checks, review
 8. Print the PR URL. If `gh pr create` fails, say so and print the title and body.
 9. NEVER run `gh pr merge`, never push to main, never enable auto-merge. Do not
    delete the branch: its PR is still open.
-10. Finish with the final report from AGENTS.md section 11, including the branch
+10. Finish with the final report from CLAUDE.md section 11, including the branch
     used and which old branches were deleted or kept.

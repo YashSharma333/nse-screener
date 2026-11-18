@@ -20,18 +20,18 @@ Goal: no clutter, ever. Clean a little every task so there is never a big mess.
 - [ ] Every issue you opened is linked in the PR; issues the PR fixes use
       `Fixes #N`.
 
-## Weekly audit (run via the `/cleanup` workflow)
+## Weekly audit (run via the `/cleanup` command)
 
 | Area | What to verify | How |
 |---|---|---|
 | Branches | stale local and remote branches, merged or abandoned | `git branch -vv`, `git branch -r`, `gh pr list --state all` |
 | Pull requests | open PRs older than 7 days, PRs with failing CI | `gh pr list --state open` |
 | Issues | fixed issues still open, duplicates, missing labels | `gh issue list --state open` |
-| CI workflows | latest runs on `main` green, action versions current, Python matrix matches `AGENTS.md`, branch triggers match the naming rules (`fix/**`, `feat/**`, `docs/**`, `chore/**`), no obsolete jobs | `gh run list --branch main --limit 10`, read `.github/workflows/*.yml` |
+| CI workflows | latest runs on `main` green, action versions current, Python matrix matches `CLAUDE.md`, branch triggers match the naming rules (`fix/**`, `feat/**`, `docs/**`, `chore/**`), no obsolete jobs | `gh run list --branch main --limit 10`, read `.github/workflows/*.yml` |
 | Dependencies | unused or duplicate packages in `requirements*.txt`, unpinned versions | read the files, `pip check` |
 | Code | unused imports and functions, dead files, leftover `TODO`/`FIXME` | `ruff check .`, `grep -rn "TODO\|FIXME" src ui` |
 | Tests | duplicated or skipped tests, tests that need MySQL or the network | run with `MYSQL_HOST=127.0.0.1 MYSQL_PORT=1 pytest -q -rs` |
-| Docs | README, `docs/`, `AGENTS.md` and skills still accurate | compare with the real commands and files |
+| Docs | README, `docs/`, `CLAUDE.md` and skills still accurate | compare with the real commands and files |
 | Stray files | tracked data or generated files, large files | `git ls-files`, size check |
 | Local git | old stashes, stale worktrees | `git stash list`, `git worktree prune` |
 

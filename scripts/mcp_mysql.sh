@@ -33,5 +33,5 @@ export ALLOW_UPDATE_OPERATION=false
 export ALLOW_DELETE_OPERATION=false
 export ALLOW_DDL_OPERATION=false
 
-# Exact version pinned on purpose (AGENTS.md: pin dependencies).
+# Exact version pinned on purpose (CLAUDE.md: pin dependencies).
 exec npx -y @benborla29/mcp-server-mysql@2.0.9

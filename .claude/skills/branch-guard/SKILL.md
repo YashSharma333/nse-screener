@@ -21,7 +21,7 @@ Write down: current branch, clean or dirty, and whether it is behind its remote.
 ## Step B: decide which branch the task belongs to
 
 1. If the task prompt names a branch, that is the branch.
-2. Otherwise use the naming rule from AGENTS.md: `fix/<task>-name`,
+2. Otherwise use the naming rule from CLAUDE.md: `fix/<task>-name`,
    `feat/<task>-name`, `docs/<name>` or `chore/<name>`.
 3. **One task = one branch.** Follow-up fixes go on the same branch while its PR is
    open.

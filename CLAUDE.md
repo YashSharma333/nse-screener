@@ -9,6 +9,20 @@ The project owner is a beginner in Python. Write code and docs they can read and
 learn from: plain names, short functions, and a short comment explaining WHY
 (not only what) wherever the logic is not obvious.
 
+## Read first
+
+1. This file (the rules: HOW to work here).
+2. [docs/PROJECT_BLUEPRINT.md](docs/PROJECT_BLUEPRINT.md) (the project: WHAT we
+   build, WHY, what exists today and what comes next). If it disagrees with the
+   code, the code wins; say so in your PR and fix the blueprint.
+
+## MCP servers (configured in `.mcp.json`)
+
+- **`mysql`:** read-only (a `SELECT`-only database user). Use it to check data
+  and verify claims. Never try to write, and never use the owner's root account.
+- **`github`:** for issues and pull requests. The merge tool is blocked in
+  `.claude/settings.json`, and rule 1 below still applies: never merge.
+
 ---
 
 ## 1. Project at a glance
@@ -43,9 +57,9 @@ learn from: plain names, short functions, and a short comment explaining WHY
    bug.
 4. **Stay in scope.** Do exactly what the task asks. Anything else you notice
    becomes an issue, not an edit.
-5. **Never touch the owner's real data.** Do not run commands against the
-   owner's MySQL database or delete files in `data/`. Destructive commands are
-   written for the owner to run, never run by you.
+5. **Never write to the owner's real data.** Read-only checks through the
+   `mysql` MCP are allowed. Do not delete files in `data/`. Destructive and
+   writing commands are written for the owner to run, never run by you.
 6. **This repository is public.** No secrets, no `.env`, no data exports
    (`.xlsx`, `.csv`), no personal data, no account details in commits, issues or
    PR text.
@@ -260,12 +274,12 @@ filed, and any questions that need the owner's decision.
 
 ---
 
-## 12. Skills and workflows
+## 12. Skills and slash commands
 
-Reusable instructions live in `.agents/` and are shared by everyone who works in
+Reusable instructions live in `.claude/` and are shared by everyone who works in
 this repository:
 
-- **Skills** (`.agents/skills/<name>/SKILL.md`) are loaded when a task needs them:
+- **Skills** (`.claude/skills/<name>/SKILL.md`) are loaded when a task needs them:
   - `branch-guard`: MANDATORY at the start of every task and before every commit
     and push; also the rules for deleting merged branches.
   - `repo-hygiene`: keeps the repository tidy (branches, PRs, issues, CI, temp
@@ -274,10 +288,10 @@ this repository:
     days, adjustments, benchmarks, backfill, the universe or symbol names.
   - `db-migration`: any table or column change.
   - `github-issue`: whenever you must file an issue (section 8).
-- **Workflows** (`.agents/workflows/<name>.md`) are started with a slash command:
+- **Slash commands** (`.claude/commands/<name>.md`) are started by typing the command:
   - `/start-task`: run at the beginning of every task (includes the branch guard).
   - `/pr-ready`: run at the end of every task; opens the PR and never merges.
   - `/cleanup`: run weekly and after merges; tidies branches and the repository.
 
-Skills and workflows may not weaken any rule in this file. If one is wrong or
+Skills and commands may not weaken any rule in this file. If one is wrong or
 outdated, file an issue and propose the fix in your PR.
