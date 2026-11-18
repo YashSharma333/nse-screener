@@ -2,7 +2,7 @@ name: Python application
 
 on:
   push:
-    branches: [ "main", "fix/**", "feature/**", "feat/**" ]
+    branches: [ "main", "fix/**", "feature/**", "feat/**", "docs/**", "chore/**" ]
   pull_request:
 
 concurrency:
