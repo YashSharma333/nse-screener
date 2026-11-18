@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "bash",
+      "args": ["scripts/mcp_mysql.sh"]
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headersHelper": "bash scripts/mcp_github_headers.sh"
+    }
+  }
+}
