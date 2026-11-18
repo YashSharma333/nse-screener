@@ -636,6 +636,51 @@ Workflows are repeatable, step-by-step procedures triggered by slash commands:
 
 ---
 
+## 🔌 MCP Servers (let Claude Code query the DB and GitHub)
+
+MCP servers are small helper programs that give an AI assistant extra tools.
+This repo ships two, configured in [.mcp.json](.mcp.json):
+
+| Server | What it does | Package |
+|---|---|---|
+| `mysql` | Read-only SQL queries on the `nse_screener` database | `@benborla29/mcp-server-mysql@2.0.9` |
+| `github` | Read and create issues and pull requests | GitHub's official remote server |
+
+Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
+`scripts/` load them from your local `.env` (which is git-ignored).
+
+### One-time setup
+
+1. **Create a read-only MySQL user** (the pipeline's `root` user can write, so
+   the MCP server gets its own user that can only `SELECT`). Run in the MySQL
+   shell, choosing your own password:
+   ```sql
+   CREATE USER 'nse_readonly'@'localhost' IDENTIFIED BY 'choose-a-password';
+   GRANT SELECT ON nse_screener.* TO 'nse_readonly'@'localhost';
+   ```
+2. **Create a GitHub token:** GitHub → Settings → Developer settings →
+   Personal access tokens → *Fine-grained tokens* → Generate new token.
+   Repository access: only `YashSharma333/nse-screener`. Permissions:
+   Issues (Read and write), Pull requests (Read and write),
+   Contents (Read-only), Metadata (Read-only). Use a short expiry.
+3. **Add three lines to your `.env`** (see `.env.example`):
+   ```
+   MYSQL_READONLY_USER=nse_readonly
+   MYSQL_READONLY_PASSWORD=choose-a-password
+   GITHUB_PERSONAL_ACCESS_TOKEN=github_pat_...
+   ```
+4. **Restart Claude Code in this folder**, approve the project servers when
+   asked, then type `/mcp`. Both `mysql` and `github` should show as connected.
+
+### Adding another MCP server later
+
+Add an entry under `mcpServers` in `.mcp.json` (a `command` + `args` for a local
+program, or a `type: "http"` + `url` for a remote one). If it needs a secret,
+put the secret in `.env` and load it through a small script like
+`scripts/mcp_mysql.sh`. Never paste a secret into `.mcp.json`.
+
+---
+
 ## 📂 Project Structure
 
 ```
