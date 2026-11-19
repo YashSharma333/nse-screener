@@ -729,6 +729,19 @@ its MCP panel. Prefer to edit by hand? Copy
 [antigravity/mcp_config.template.json](antigravity/mcp_config.template.json) and
 replace `__REPO_PATH__` with this folder's full path.
 
+### Using the project skills in Antigravity
+
+The skills and slash commands live in `.claude/` (Claude Code). Antigravity reads
+workspace skills from `.agents/skills/`, so a script copies them across
+(commands become skills too):
+
+```bash
+bash scripts/sync_antigravity_skills.sh
+```
+
+Edit only in `.claude/`, then re-run the script and commit the result; never edit
+`.agents/skills/` by hand.
+
 ### Adding another MCP server later
 
 Add an entry under `mcpServers` in `.mcp.json` (a `command` + `args` for a local
