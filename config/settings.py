@@ -6,6 +6,7 @@ import logging
 import logging.handlers
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -107,3 +108,19 @@ CORP_ACTIONS_MAX_UNPARSED_SHARE: float = 0.05
 
 # Owner-approved corrections to the detected events (see load_adjustment_overrides).
 ADJUSTMENT_OVERRIDES_FILE: Path = PROJECT_ROOT / "config" / "adjustment_overrides.csv"
+
+# ---------------------------------------------------------------------------
+# Official NSE file download settings (task D2)
+# ---------------------------------------------------------------------------
+# Official NSE hosts
+NSE_WWW_HOST: str = "www.nseindia.com"
+NSE_ARCHIVES_HOST: str = "nsearchives.nseindia.com"
+NSE_WWW_BASE: str = f"https://{NSE_WWW_HOST}"
+
+# Official file start dates:
+# • 2016-11-21: earliest daily price history in scope
+# • 2024-01-01: cut-over date to the new UDiFF Bhavcopy format
+# • 2024-02-01: earliest PR bundle containing usable market cap files
+NSE_HISTORY_START: date = date(2016, 11, 21)
+NSE_UDIFF_START: date = date(2024, 1, 1)
+NSE_MCAP_START: date = date(2024, 2, 1)
