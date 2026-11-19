@@ -423,14 +423,18 @@ days (#61), and EQ-only ingestion leaves gaps in 566 symbols with 55 active symb
 `index_membership` is a single 2026-11-02 snapshot, not "from 2026-03-20" (#65); running the
 tests overwrites the real indicator cache and `reports/adj_events_uncertain.csv` (#66).
 
-**P1a (task, in progress, branch `fix/P1a-rename-history`):** pre-rename history for renamed
-stocks (#60, #61). Code done: `--import-symbol-change-aliases` lists NSE's official renames as
-alias candidates (dry-run by default); the continuity check works without `PrevClose` (old last
-close against the new first open/close, band = `SPLIT_REVIEW_MIN_RATIO`); `--apply-symbol-aliases`
-loads the old cache rows insert-only, skips pairs in `config/alias_holds.csv`, writes nothing in a
-dry run, and rebuilds adjusted prices once at the end. No official action is filed under an old
-symbol (0 of 1,080 changes), so no alias lookup in `adjust.py` was needed. Real-database run and
-final numbers: see the PR.
+**Done on 19 Nov (task P1a, Fixes PR `fix/P1a-rename-history`):** pre-rename history for
+renamed stocks (#60, #61). `--import-symbol-change-aliases` lists NSE's official renames as
+alias candidates (140 written, dry-run by default); the continuity check works without
+`PrevClose` (old last close against the new first open/close, band = `SPLIT_REVIEW_MIN_RATIO`);
+`--apply-symbol-aliases` loads old cache rows insert-only, skips pairs in
+`config/alias_holds.csv`, writes nothing in a dry run, and rebuilds adjusted prices once at the
+end. Real run: 117 pairs merged (73 exact, 44 close), 128,133 rows added
+(`daily_prices` 2,683,688 -> 2,811,821), ICICILIFE now 2,478 days with no gap. Not merged: 22
+`date_gap` pairs and 3 held pairs (PEL, TATAMOTORS, SRTRANSFIN), listed for the owner. 0 official
+actions are filed under an old symbol; 16 official events before a rename day now apply to the
+merged history, all with an ordinary adjusted move. A full run takes about 7 minutes because each
+pair re-reads the whole raw cache.
 
 **Immediately next:** decide the owner questions in #60, #62 and #63, review the 190
 unexplained jumps (#58; regenerate the list first, #66), then P2. Run `--rebuild-adjusted`
@@ -444,7 +448,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P0 | DOCS-2: move rules, skills, commands to Claude Code | none | docs PR |
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
-| P1a | FIX-RENAME-HISTORY: load pre-rename history (#60, #61) | P1 | In progress, Fixes PR; owner holds in `config/alias_holds.csv` |
+| P1a | FIX-RENAME-HISTORY: load pre-rename history (#60, #61) | P1 | **Done 19 Nov**; owner holds in `config/alias_holds.csv`, 22 `date_gap` pairs left |
 | P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
