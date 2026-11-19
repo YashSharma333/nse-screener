@@ -423,10 +423,37 @@ days (#61), and EQ-only ingestion leaves gaps in 566 symbols with 55 active symb
 `index_membership` is a single 2026-11-02 snapshot, not "from 2026-03-20" (#65); running the
 tests overwrites the real indicator cache and `reports/adj_events_uncertain.csv` (#66).
 
-**Immediately next:** decide the owner questions in #60, #62 and #63, review the 190
-unexplained jumps (#58; regenerate the list first, #66), then P2. Run `--rebuild-adjusted`
-after every `--download-corporate-actions`. Symbol changes are evidence for `symbol_alias`
-(the continuity check stays), not auto-applied.
+**Decided on 19 Nov (D0): data-layer redesign, official files only, fresh start.** The
+rename, alias and universe machinery guessed from prices and keeps producing new data issues
+(#60, #61, #62, #43, #69). It is replaced, in small tasks D0 to D12 (section 14), by this design:
+
+- **Source rule:** data must be raw, exactly as published. We use the best raw source, today
+  NSE's official files fetched by one small helper (`src/ingestion/nse_files.py`) that checks
+  the date inside every file. Adjusted feeds (Yahoo and similar) are rejected.
+- **Prices:** all series (EQ, BE, BZ, SM, ST...) from the UDiFF bhavcopy (2024-01-01 on) and the
+  old `cm...bhav.csv.zip` (before), stored as published with a `series` column. History starts
+  2016-11-21. Market cap is a column in `daily_prices`, filled from the official MCAP file
+  where it exists (about Feb 2024 on), NULL before, never estimated.
+- **Universe:** the latest `EQUITY_L.csv` and seen in the last 3 trading days of bhavcopy. No
+  Excel file, no 500/490 cr rule (market cap becomes a screener filter). A stock missing for 3
+  trading days (delisted, merged away, suspended) is dropped (`--prune-inactive`, dry-run first).
+- **Renames:** official `symbolchange.csv`, applied at READ time through a mapping. Price rows
+  are never relabelled and nothing is inferred from price continuity.
+- **Merger, demerger:** we track only symbols that trade today. A merged-away symbol is dropped.
+  A demerged business is a new stock with its own history from its listing day. The parent's
+  ex-date price drop is adjusted only if an exact official ratio exists, otherwise it goes to
+  `config/adjustment_overrides.csv` for the owner.
+- **Corporate actions:** the official download and text parser stay; adjustment runs only for
+  active symbols and their former names. The official adjusted 52-week file is a cross-check.
+- **Holidays:** current detection (probe every day, validate the date in the file) stays.
+- **Delete-all rule:** any alteration found in stored prices means wipe everything and reload
+  from official files. No restore: the pre-merge backup still held ICICILIFE rows relabelled by
+  the old alias. PR #70 (alias merge) was closed without merging. Until D4 the live database
+  still holds its 128,133 merged rows and 140 candidate alias rows; D4 wipes them.
+- **Dropped:** `index_name`, `index_membership`, the alias tables and code, the Excel universe.
+
+**Immediately next:** D1 (read-only spike on real files), then D2 and D3. Run
+`--rebuild-adjusted` after every `--download-corporate-actions` until D10 replaces it.
 
 ## 14. Roadmap (in order)
 
@@ -435,7 +462,8 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P0 | DOCS-2: move rules, skills, commands to Claude Code | none | docs PR |
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
-| P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
+| D0 to D12 | **Data redesign** (section 13): D0 docs and close PR #70; D1 spike; D2 fetch helper; D3 bhavcopy parsers; D4 schema and wipe (owner OK); D5 price load; D6 market cap; D7 independent check; D8 securities and rename mapping; D9 3-day drop; D10 corporate actions and adjustment; D11 `--update`; D12 delete dead code | P1 | **Next, before P2.** Small PRs, each reported to the owner. Replaces the alias work of P1a |
+| P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | D12 | After the redesign. Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
 | P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
