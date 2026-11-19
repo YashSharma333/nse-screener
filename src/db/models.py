@@ -34,7 +34,7 @@ class Base(DeclarativeBase):
 
 
 # ---------------------------------------------------------------------------
-# Daily price model
+# Daily price model (recreated task D4: raw-first, series, market_cap, isin)
 # ---------------------------------------------------------------------------
 class DailyPrice(Base):
     """OHLCV record for a single stock on a single trading day.
@@ -49,13 +49,15 @@ class DailyPrice(Base):
     id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     symbol = Column(String(20), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
+    series = Column(String(4), nullable=False, default="EQ", server_default=text("'EQ'"))
+    isin = Column(String(12), nullable=True)
     open = Column(Numeric(10, 2), nullable=True)
     high = Column(Numeric(10, 2), nullable=True)
     low = Column(Numeric(10, 2), nullable=True)
     close = Column(Numeric(10, 2), nullable=True)
-    volume = Column(BigInteger, nullable=True)
     prev_close = Column(Numeric(10, 2), nullable=True)
-    index_name = Column(String(50), nullable=True, index=True)
+    volume = Column(BigInteger, nullable=True)
+    market_cap = Column(Numeric(20, 2), nullable=True)
 
     # Corporate-action adjusted price and volume columns
     adj_open = Column(Numeric(14, 4), nullable=True)
@@ -64,12 +66,41 @@ class DailyPrice(Base):
     adj_close = Column(Numeric(14, 4), nullable=True)
     adj_volume = Column(BigInteger, nullable=True)
 
-    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_symbol_date"),)
+    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_daily_prices_symbol_date"),)
 
     def __repr__(self) -> str:
         return (
             f"<DailyPrice(symbol={self.symbol!r}, date={self.date}, "
-            f"close={self.close}, index={self.index_name!r})>"
+            f"series={self.series!r}, close={self.close})>"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Securities master model (task D4)
+# ---------------------------------------------------------------------------
+class Security(Base):
+    """Master registry of listed securities from official NSE reports."""
+
+    __tablename__ = "securities"
+
+    symbol = Column(String(20), primary_key=True)
+    isin = Column(String(12), nullable=True)
+    name = Column(String(200), nullable=True)
+    series = Column(String(4), nullable=True)
+    listing_date = Column(Date, nullable=True)
+    first_seen = Column(Date, nullable=True)
+    last_seen = Column(Date, nullable=True)
+    status = Column(
+        String(10),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Security(symbol={self.symbol!r}, isin={self.isin!r}, "
+            f"series={self.series!r}, status={self.status!r})>"
         )
 
 

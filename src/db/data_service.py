@@ -181,13 +181,15 @@ def load_raw_market_data(
             id,
             symbol,
             date,
+            series,
+            isin,
             open,
             high,
             low,
             close,
             volume,
             prev_close,
-            index_name,
+            market_cap,
             adj_open,
             adj_high,
             adj_low,
@@ -209,6 +211,10 @@ def load_raw_market_data(
                 True,
                 "MySQL connected, but table 'daily_prices' is empty.",
             )
+
+        # Legacy backward-compatibility for UI until D12
+        if "index_name" not in df.columns:
+            df["index_name"] = None
 
         df["date"] = pd.to_datetime(df["date"]).dt.date
         numeric_cols = [

@@ -103,6 +103,7 @@ alembic downgrade -1
 | `006` | `78422e33ba2d` | `stock_master` | Master stock directory: defines the active ~1,800 universe stocks with market cap, sector, industry, cap bucket, and hysteresis status. |
 | `007` | `f7c18050340f` | `symbol_alias`, `stock_master.renamed_to` | Symbol alias registry and renamed tracking: stores mappings between old and new equity ticker symbols, effective dates, verification classifications, and implied ratios; adds nullable `renamed_to` column on `stock_master`. |
 | `008` | `a3c5e1b7d902` | `corporate_actions`, `symbol_changes` | Official NSE corporate actions (one row per action part, with exact `price_factor` for splits, bonuses and consolidations) and official symbol changes. See [docs/corporate_actions.md](docs/corporate_actions.md). |
+| `009` | `094ee0ad95bf` | `daily_prices`, `securities` | Clean raw-first schema: recreates `daily_prices` with `series`, `isin`, `market_cap` and unique `(symbol, date)` key (no `index_name`); creates `securities` master table; drops legacy `index_membership`, `stock_master`, and `symbol_alias`; empties `adj_factors`. |
 
 #### `stock_master` Table Schema
 

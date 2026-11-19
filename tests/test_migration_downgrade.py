@@ -20,8 +20,8 @@ def test_baseline_migration_downgrade_is_safe(tmp_path):
     alembic_cfg.set_main_option("sqlalchemy.url", sqlalchemy_url)
     alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
 
-    # 1. Upgrade to head
-    command.upgrade(alembic_cfg, "head")
+    # 1. Upgrade to legacy head 008 before D4 fresh start
+    command.upgrade(alembic_cfg, "a3c5e1b7d902")
 
     engine = create_engine(sqlalchemy_url)
     insp = inspect(engine)
@@ -49,8 +49,8 @@ def test_baseline_migration_downgrade_is_safe(tmp_path):
         count = conn.execute(text("SELECT COUNT(*) FROM daily_prices")).scalar()
         assert count == 1
 
-    # 5. Re-upgrade to head
-    command.upgrade(alembic_cfg, "head")
+    # 5. Re-upgrade to 008
+    command.upgrade(alembic_cfg, "a3c5e1b7d902")
     with engine.connect() as conn:
         count = conn.execute(text("SELECT COUNT(*) FROM daily_prices")).scalar()
         assert count == 1
@@ -63,7 +63,8 @@ def test_migration_008_creates_and_drops_the_corporate_action_tables(tmp_path):
     alembic_cfg.set_main_option("sqlalchemy.url", sqlalchemy_url)
     alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
 
-    command.upgrade(alembic_cfg, "head")
+    # Upgrade to revision 008 (which creates corporate_actions and symbol_changes)
+    command.upgrade(alembic_cfg, "a3c5e1b7d902")
     engine = create_engine(sqlalchemy_url)
     insp = inspect(engine)
     assert {"corporate_actions", "symbol_changes"} <= set(insp.get_table_names())

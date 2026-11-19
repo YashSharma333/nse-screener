@@ -61,8 +61,8 @@ def test_upsert_rows_sqlite_insert_and_update():
         assert float(stored[2].close) == 2650.0
 
 
-def test_upsert_rows_never_overwrites_non_null_index_name_with_null():
-    """Verify that upsert never overwrites an existing non-NULL index_name with NULL."""
+def test_upsert_rows_never_overwrites_non_null_coalesce_column_with_null():
+    """Verify that upsert never overwrites an existing non-NULL coalesce column with NULL."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     d = date(2024, 1, 1)
@@ -71,27 +71,29 @@ def test_upsert_rows_never_overwrites_non_null_index_name_with_null():
         upsert_rows(
             session,
             DailyPrice,
-            [{"symbol": "TCS", "date": d, "close": 3500.0, "index_name": "largecap"}],
+            [{"symbol": "TCS", "date": d, "close": 3500.0, "isin": "INE467B01029"}],
+            coalesce_columns=("isin",),
         )
         session.commit()
 
     with Session(engine) as session:
         stored = session.query(DailyPrice).filter_by(symbol="TCS", date=d).one()
-        assert stored.index_name == "largecap"
+        assert stored.isin == "INE467B01029"
 
-    # Upsert with index_name = None -> index_name MUST remain 'largecap'
+    # Upsert with isin = None -> isin MUST remain 'INE467B01029'
     with Session(engine) as session:
         upsert_rows(
             session,
             DailyPrice,
-            [{"symbol": "TCS", "date": d, "close": 3550.0, "index_name": None}],
+            [{"symbol": "TCS", "date": d, "close": 3550.0, "isin": None}],
+            coalesce_columns=("isin",),
         )
         session.commit()
 
     with Session(engine) as session:
         stored = session.query(DailyPrice).filter_by(symbol="TCS", date=d).one()
         assert float(stored.close) == 3550.0
-        assert stored.index_name == "largecap"
+        assert stored.isin == "INE467B01029"
 
 
 def test_upsert_rows_sqlite_heterogeneous_key_sets_and_none_values():
@@ -159,38 +161,39 @@ def test_upsert_rows_sqlite_heterogeneous_key_sets_and_none_values():
         assert infy.company_name == "Infosys Limited"
         assert infy.benchmark_index == "NIFTY 50"
 
-    # Verify index_name coalesce with heterogeneous daily_price rows
+    # Verify isin coalesce with heterogeneous daily_price rows
     daily_rows = [
         {
             "symbol": "INFY",
             "date": d,
             "close": 1500.0,
-            "index_name": "largecap",
+            "isin": "INE009A01021",
         },
         {
             "symbol": "TCS",
             "date": d,
             "close": 3600.0,
-            # index_name omitted
+            # isin omitted
         },
     ]
     with Session(engine) as session:
-        upsert_rows(session, DailyPrice, daily_rows)
+        upsert_rows(session, DailyPrice, daily_rows, coalesce_columns=("isin",))
         session.commit()
 
-    # Update INFY with index_name=None -> coalesce must keep 'largecap'
+    # Update INFY with isin=None -> coalesce must keep 'INE009A01021'
     with Session(engine) as session:
         upsert_rows(
             session,
             DailyPrice,
-            [{"symbol": "INFY", "date": d, "close": 1520.0, "index_name": None}],
+            [{"symbol": "INFY", "date": d, "close": 1520.0, "isin": None}],
+            coalesce_columns=("isin",),
         )
         session.commit()
 
     with Session(engine) as session:
         stored_infy = session.query(DailyPrice).filter_by(symbol="INFY", date=d).one()
         assert float(stored_infy.close) == 1520.0
-        assert stored_infy.index_name == "largecap"
+        assert stored_infy.isin == "INE009A01021"
 
 
 def _parse_mysql_insert_and_update_columns(sql: str) -> tuple[list[str], list[str]]:
@@ -273,14 +276,14 @@ def test_upsert_rows_mysql_compile_statement_columns():
                     "date": "d",
                     "close": 200.0,
                     "volume": 2000,
-                    "index_name": "largecap",
+                    "isin": "INE467B01029",
                 },
                 {
                     "symbol": "WIPRO",
                     "date": "d",
                     "close": 300.0,
                     "adj_close": 300.0,
-                    "index_name": None,
+                    "isin": None,
                 },
             ],
         ),
@@ -304,7 +307,7 @@ def test_upsert_rows_mysql_compile_statement_columns():
                 model=model,
                 update_columns=group_update_cols,
                 index_elements=index_elements,
-                coalesce_columns=("index_name",),
+                coalesce_columns=("isin",),
                 dialect_name="mysql",
             )
             compiled = stmt.compile(dialect=mysql_dialect, column_keys=group_keys)
@@ -453,7 +456,7 @@ def test_upsert_rows_mysql_integration():
             assert a1.effective_date is None
             assert a1.implied_ratio is None
 
-            # 3. DailyPrice: mixed keys and index_name coalesce on MySQL
+            # 3. DailyPrice: mixed keys and isin coalesce on MySQL
             price_rows = [
                 {
                     "symbol": "T_UPSERT_1",
@@ -464,7 +467,7 @@ def test_upsert_rows_mysql_integration():
                     "close": 102.0,
                     "volume": 10000,
                     "prev_close": 100.0,
-                    "index_name": "NIFTY 50",
+                    "isin": "INE123456789",
                 },
                 {
                     "symbol": "T_UPSERT_2",
@@ -475,7 +478,7 @@ def test_upsert_rows_mysql_integration():
                     "close": 202.0,
                     "volume": 5000,
                     "prev_close": 200.0,
-                    # index_name omitted
+                    # isin omitted
                 },
             ]
             upsert_rows(
@@ -483,10 +486,11 @@ def test_upsert_rows_mysql_integration():
                 DailyPrice,
                 price_rows,
                 index_elements=["symbol", "date"],
+                coalesce_columns=("isin",),
             )
             session.commit()
 
-            # Update with index_name=None -> coalesce must keep 'NIFTY 50' on MySQL
+            # Update with isin=None -> coalesce must keep 'INE123456789' on MySQL
             upsert_rows(
                 session,
                 DailyPrice,
@@ -495,16 +499,17 @@ def test_upsert_rows_mysql_integration():
                         "symbol": "T_UPSERT_1",
                         "date": d,
                         "close": 104.0,
-                        "index_name": None,
+                        "isin": None,
                     }
                 ],
                 index_elements=["symbol", "date"],
+                coalesce_columns=("isin",),
             )
             session.commit()
 
             p1 = session.query(DailyPrice).filter_by(symbol="T_UPSERT_1", date=d).one()
             assert float(p1.close) == 104.0
-            assert p1.index_name == "NIFTY 50"
+            assert p1.isin == "INE123456789"
 
         finally:
             # Clean up test rows

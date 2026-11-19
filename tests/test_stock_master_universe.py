@@ -105,8 +105,8 @@ def test_alembic_upgrade_and_downgrade(tmp_path: Path):
     alembic_cfg.set_main_option("sqlalchemy.url", sqlalchemy_url)
     alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
 
-    # Upgrade to head
-    command.upgrade(alembic_cfg, "head")
+    # Upgrade to 006 (where stock_master is created)
+    command.upgrade(alembic_cfg, "78422e33ba2d")
     engine = create_engine(sqlalchemy_url)
     insp = inspect(engine)
     tables = insp.get_table_names()
@@ -118,8 +118,8 @@ def test_alembic_upgrade_and_downgrade(tmp_path: Path):
     tables = insp.get_table_names()
     assert "stock_master" not in tables
 
-    # Re-upgrade to head
-    command.upgrade(alembic_cfg, "head")
+    # Re-upgrade to 006
+    command.upgrade(alembic_cfg, "78422e33ba2d")
     insp = inspect(engine)
     tables = insp.get_table_names()
     assert "stock_master" in tables
@@ -738,22 +738,20 @@ def test_universe_mode_writes_cap_bucket_and_never_overwrites_with_null(sqlite_d
         upsert_rows(session, DailyPrice, all_rows, index_elements=["symbol", "date"])
         session.commit()
 
-        # Verify non-NULL index_name stored
+        # Verify DailyPrice has no index_name in D4
         rel = session.scalars(select(DailyPrice).where(DailyPrice.symbol == "RELIANCE")).one()
-        assert rel.index_name == "largecap"
+        assert not hasattr(rel, "index_name")
 
         mid = session.scalars(select(DailyPrice).where(DailyPrice.symbol == "MIDCAP_CO")).one()
-        assert mid.index_name == "midcap"
+        assert not hasattr(mid, "index_name")
 
-        # TEST UPSERT SAFETY: upsert incoming row with index_name=None ->
-        # must NOT overwrite stored value
+        # TEST UPSERT SAFETY: upsert incoming row updates close and volume
         update_row = [
             {
                 "symbol": "RELIANCE",
                 "date": d1,
                 "close": 2560.0,
                 "volume": 1_200_000,
-                "index_name": None,  # incoming None
             }
         ]
         upsert_rows(session, DailyPrice, update_row, index_elements=["symbol", "date"])
@@ -762,8 +760,6 @@ def test_universe_mode_writes_cap_bucket_and_never_overwrites_with_null(sqlite_d
         rel_after = session.scalars(select(DailyPrice).where(DailyPrice.symbol == "RELIANCE")).one()
         assert float(rel_after.close) == 2560.0
         assert rel_after.volume == 1_200_000
-        # CRITICAL: index_name must STILL be 'largecap', NOT None!
-        assert rel_after.index_name == "largecap"
 
 
 def test_swing_screeners_return_symbol_from_universe_mode():

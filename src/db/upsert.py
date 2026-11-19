@@ -78,6 +78,7 @@ def _build_upsert_statement(
                     else getattr(stmt.excluded, col)
                 )
                 for col in update_cols
+                if hasattr(stmt.excluded, col)
             }
             return stmt.on_conflict_do_update(
                 index_elements=list(index_elements),
@@ -95,6 +96,7 @@ def _build_upsert_statement(
                     else getattr(stmt.inserted, col)
                 )
                 for col in update_cols
+                if hasattr(stmt.inserted, col)
             }
             return stmt.on_duplicate_key_update(set_dict)
         return stmt.prefix_with("IGNORE")
@@ -112,6 +114,7 @@ def _build_upsert_statement(
                     else getattr(stmt.excluded, col)
                 )
                 for col in update_cols
+                if hasattr(stmt.excluded, col)
             }
             return stmt.on_conflict_do_update(
                 index_elements=list(index_elements),
@@ -183,6 +186,16 @@ def upsert_rows(
     if not rows:
         return 0
 
+    # Filter out keys that do not exist on the target model table
+    # (e.g. legacy columns like index_name passed to DailyPrice)
+    table_cols = {c.name for c in model.__table__.columns} if hasattr(model, "__table__") else None
+    if table_cols is not None:
+        filtered_rows = [{k: v for k, v in r.items() if k in table_cols} for r in rows]
+        if coalesce_columns:
+            coalesce_columns = [c for c in coalesce_columns if c in table_cols]
+    else:
+        filtered_rows = rows
+
     bind = session.get_bind()
     dialect_name = bind.dialect.name.lower()
 
@@ -195,7 +208,7 @@ def upsert_rows(
     # the same columns. This prevents MySQL error 1054 ("Unknown column 'new.col'
     # in 'field list'") when rows have different sets of keys.
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
-    for row in rows:
+    for row in filtered_rows:
         key_set = tuple(sorted(row))
         groups.setdefault(key_set, []).append(row)
 

@@ -717,8 +717,8 @@ def test_alembic_upgrade_downgrade_migration_007(tmp_path: Path):
     alembic_cfg.set_main_option("sqlalchemy.url", sqlalchemy_url)
     alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
 
-    # Upgrade to head
-    command.upgrade(alembic_cfg, "head")
+    # Upgrade to 007 (where symbol_alias is created)
+    command.upgrade(alembic_cfg, "f7c18050340f")
 
     engine = create_engine(sqlalchemy_url)
     insp = inspect(engine)
@@ -738,8 +738,8 @@ def test_alembic_upgrade_downgrade_migration_007(tmp_path: Path):
     sm_cols_after = [c["name"] for c in insp_after.get_columns("stock_master")]
     assert "renamed_to" not in sm_cols_after
 
-    # Re-upgrade to head
-    command.upgrade(alembic_cfg, "head")
+    # Re-upgrade to 007
+    command.upgrade(alembic_cfg, "f7c18050340f")
     insp_final = inspect(engine)
     assert "symbol_alias" in insp_final.get_table_names()
     assert "renamed_to" in [c["name"] for c in insp_final.get_columns("stock_master")]

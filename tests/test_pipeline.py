@@ -25,9 +25,11 @@ class TestIngestionAndModels(unittest.TestCase):
         self.assertEqual(res.symbols, {"RELIANCE", "DIXON", "KAYNES"})
 
     def test_daily_price_model_index_name(self):
-        self.assertTrue(hasattr(DailyPrice, "index_name"))
-        col = DailyPrice.index_name
-        self.assertEqual(col.name, "index_name")
+        # In task D4, index_name was dropped from daily_prices; series, market_cap, isin were added
+        self.assertFalse(hasattr(DailyPrice, "index_name"))
+        self.assertTrue(hasattr(DailyPrice, "series"))
+        self.assertTrue(hasattr(DailyPrice, "market_cap"))
+        self.assertTrue(hasattr(DailyPrice, "isin"))
 
     def test_screener_empty_dataframe(self):
         import pandas as pd
