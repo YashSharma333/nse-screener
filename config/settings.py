@@ -80,6 +80,22 @@ def setup_logging() -> None:
 # for the owner in reports/adj_events_uncertain.csv. It never changes a price.
 SPLIT_REVIEW_MIN_RATIO: float = 1.25
 # If more than this share of symbols jump on one date, it is a data problem, not splits.
+# ---------------------------------------------------------------------------
+# Symbol rename (alias) continuity check (task P1a)
+# ---------------------------------------------------------------------------
+# Old close and new previous close are the same share, so they must match to the paisa.
+ALIAS_PRICE_TOLERANCE: float = 0.05
+# "verified_close": the two prices differ by no more than this share (1 percent).
+ALIAS_CLOSE_RATIO_TOLERANCE: float = 0.01
+# detect-renames only pairs symbols whose last and first day are this close (trading days).
+ALIAS_MAX_TRADING_DAYS_APART: int = 5
+# When the cache has no PrevClose, the old close is compared with the new FIRST close, which
+# already holds one day of normal movement. A real split or bonus moves more than
+# SPLIT_REVIEW_MIN_RATIO, so that ratio (and its inverse) is the allowed band.
+ALIAS_FALLBACK_MAX_RATIO: float = SPLIT_REVIEW_MIN_RATIO
+# Pairs the owner has not yet decided (mergers, demergers, special cases) live in this file
+# and are never applied automatically.
+ALIAS_HOLDS_FILE: Path = PROJECT_ROOT / "config" / "alias_holds.csv"
 SPLIT_GUARD_FRACTION: float = 0.15
 SPLIT_GUARD_MIN_SYMBOLS: int = 5
 # ---------------------------------------------------------------------------

@@ -27,12 +27,26 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
-from config.settings import PROJECT_ROOT, setup_logging
+from config.settings import (
+    ALIAS_CLOSE_RATIO_TOLERANCE,
+    ALIAS_FALLBACK_MAX_RATIO,
+    ALIAS_HOLDS_FILE,
+    ALIAS_MAX_TRADING_DAYS_APART,
+    ALIAS_PRICE_TOLERANCE,
+    PROJECT_ROOT,
+    setup_logging,
+)
 from src.db.data_service import get_universe_cap_buckets
-from src.db.models import BenchmarkPrice, DailyPrice, StockMaster, SymbolAlias
+from src.db.models import (
+    BenchmarkPrice,
+    DailyPrice,
+    StockMaster,
+    SymbolAlias,
+    SymbolChange,
+)
 from src.db.session import check_connection, get_db, init_db
 from src.db.upsert import upsert_rows
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
@@ -2320,6 +2334,87 @@ class BhavcopyETL:
         with get_db() as s:
             return _execute(s)
 
+    def import_symbol_change_aliases(
+        self,
+        dry_run: bool = True,
+        session: Session | None = None,
+    ) -> dict[str, Any]:
+        """List NSE's official symbol changes as alias CANDIDATES (evidence only).
+
+        A change becomes a candidate when the rename happened inside our price history, the
+        new symbol has prices and the old symbol has none. Whether a candidate is merged is
+        decided later by the continuity check in ``apply_symbol_aliases``, not by this list.
+
+        Skipped on purpose (reported, never merged by this step):
+        - ``reused``: one old symbol appears in several changes (two companies, one name).
+        - ``chain``: the new symbol is itself an old symbol (A -> B -> C needs an owner look).
+        - ``known``: the pair is already in symbol_alias.
+        """
+
+        def _execute(s: Session) -> dict[str, Any]:
+            first_date = s.scalar(select(func.min(DailyPrice.date)))
+            priced = set(s.scalars(select(DailyPrice.symbol).distinct()).all())
+            known = {(a.old_symbol, a.new_symbol) for a in s.scalars(select(SymbolAlias)).all()}
+            changes = s.scalars(select(SymbolChange)).all()
+            old_counts: dict[str, int] = {}
+            for ch in changes:
+                old_counts[ch.old_symbol] = old_counts.get(ch.old_symbol, 0) + 1
+            all_old = set(old_counts)
+
+            records: list[dict[str, Any]] = []
+            skipped: dict[str, list[tuple[str, str]]] = {"reused": [], "chain": [], "known": []}
+            for ch in sorted(changes, key=lambda c: (c.old_symbol, c.new_symbol)):
+                pair = (ch.old_symbol, ch.new_symbol)
+                inside_history = first_date is not None and ch.effective_date >= first_date
+                if not inside_history or ch.new_symbol not in priced or ch.old_symbol in priced:
+                    continue
+                if pair in known:
+                    skipped["known"].append(pair)
+                elif old_counts[ch.old_symbol] > 1:
+                    skipped["reused"].append(pair)
+                elif ch.new_symbol in all_old:
+                    skipped["chain"].append(pair)
+                else:
+                    records.append(
+                        {
+                            "old_symbol": ch.old_symbol,
+                            "new_symbol": ch.new_symbol,
+                            "effective_date": ch.effective_date,
+                            "status": "candidate",
+                            "implied_ratio": None,
+                            "note": f"symbol_changes: {ch.company or ''}"[:255],
+                        }
+                    )
+
+            if records and not dry_run:
+                # update_columns=[]: never overwrite an alias row that already exists.
+                upsert_rows(
+                    s,
+                    SymbolAlias,
+                    records,
+                    update_columns=[],
+                    index_elements=["old_symbol", "new_symbol"],
+                )
+                s.commit()
+            logger.info(
+                "[%s] symbol_changes -> alias candidates: %d new, skipped %s",
+                "DRY RUN" if dry_run else "WRITTEN",
+                len(records),
+                {k: len(v) for k, v in skipped.items()},
+            )
+            return {
+                "status": "dry_run" if dry_run else "success",
+                "dry_run": dry_run,
+                "candidates": len(records),
+                "records": records,
+                "skipped": skipped,
+            }
+
+        if session is not None:
+            return _execute(session)
+        with get_db() as s:
+            return _execute(s)
+
     # ------------------------------------------------------------------
     # Step 9 — Continuity Check for Symbol Aliases
     # ------------------------------------------------------------------
@@ -2427,7 +2522,7 @@ class BhavcopyETL:
                 and new_vol > 0
                 and old_close is not None
                 and new_close is not None
-                and abs(float(old_close) - float(new_close)) > 0.05
+                and abs(float(old_close) - float(new_close)) > ALIAS_PRICE_TOLERANCE
             ):
                 return {
                     "classification": "overlap",
@@ -2497,6 +2592,18 @@ class BhavcopyETL:
 
         # 4. Compare prices
         old_close = old_hist[prev_trading_day].get("close")
+        if old_close is not None and float(old_close) > 0 and first_prev_close is None:
+            # Newer cache files carry no PrevClose: use the new symbol's first real prices.
+            return self._classify_without_prev_close(
+                old_sym,
+                new_sym,
+                float(old_close),
+                new_first_row,
+                prev_trading_day,
+                new_first_date,
+                old_hist,
+                new_hist,
+            )
         if first_prev_close is None or old_close is None or float(old_close) <= 0:
             return {
                 "classification": "ratio_mismatch",
@@ -2518,9 +2625,9 @@ class BhavcopyETL:
         diff = abs(first_prev_close_f - old_close_f)
         implied_ratio = round(first_prev_close_f / old_close_f, 4)
 
-        if diff <= 0.05:
+        if diff <= ALIAS_PRICE_TOLERANCE:
             classification = "verified_exact"
-        elif abs(implied_ratio - 1.0) <= 0.01:
+        elif abs(implied_ratio - 1.0) <= ALIAS_CLOSE_RATIO_TOLERANCE:
             classification = "verified_close"
         else:
             classification = "ratio_mismatch"
@@ -2540,6 +2647,72 @@ class BhavcopyETL:
             "new_hist": new_hist,
         }
 
+    @staticmethod
+    def _classify_without_prev_close(
+        old_sym: str,
+        new_sym: str,
+        old_close: float,
+        new_first_row: dict[str, Any],
+        prev_trading_day: date,
+        new_first_date: date,
+        old_hist: dict[date, dict[str, Any]],
+        new_hist: dict[date, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Continuity check when the cache has no PrevClose for the new symbol.
+
+        Why: PrevClose is the only exact link between the two symbols, but newer cache files
+        (2023 onward) do not have it. Instead we compare the old LAST close with the new
+        FIRST open and close. That includes one day of normal movement, so the allowed band is
+        wide (ALIAS_FALLBACK_MAX_RATIO, the same size as a split review). A match inside the
+        band is reported as verified_close with ``used_fallback`` set; outside it, mismatch.
+        """
+        new_open = new_first_row.get("open")
+        new_close = new_first_row.get("close")
+        ratios = [
+            round(float(price) / old_close, 4)
+            for price in (new_open, new_close)
+            if price is not None and float(price) > 0
+        ]
+        # Judge by the ratio closest to 1: an overnight gap alone must not reject a rename.
+        best_ratio = min(ratios, key=lambda r: abs(r - 1.0)) if ratios else None
+        in_band = best_ratio is not None and (
+            1.0 / ALIAS_FALLBACK_MAX_RATIO <= best_ratio <= ALIAS_FALLBACK_MAX_RATIO
+        )
+        classification = "verified_close" if in_band else "ratio_mismatch"
+        return {
+            "classification": classification,
+            "status": classification,
+            "implied_ratio": best_ratio,
+            "old_symbol": old_sym,
+            "new_symbol": new_sym,
+            "old_close": old_close,
+            "new_prev_close": None,
+            "used_fallback": True,
+            "new_first_open": new_open,
+            "new_first_close": new_close,
+            "prev_trading_day": prev_trading_day,
+            "new_first_date": new_first_date,
+            "reason": "No PrevClose in cache: compared old last close with new first open/close",
+            "old_hist": old_hist,
+            "new_hist": new_hist,
+        }
+
+    @staticmethod
+    def load_alias_holds(path: Path | None = None) -> set[tuple[str, str]]:
+        """Read the owner's hold list: pairs that are never applied automatically.
+
+        Why: mergers and demergers change the price level on purpose, so a human decides.
+        """
+        hold_file = Path(path) if path is not None else ALIAS_HOLDS_FILE
+        if not hold_file.exists():
+            return set()
+        frame = pd.read_csv(hold_file, comment="#", dtype=str).fillna("")
+        return {
+            (str(r["old_symbol"]).strip().upper(), str(r["new_symbol"]).strip().upper())
+            for _, r in frame.iterrows()
+            if str(r["old_symbol"]).strip() and str(r["new_symbol"]).strip()
+        }
+
     # ------------------------------------------------------------------
     # Step 10 — Apply Symbol Aliases
     # ------------------------------------------------------------------
@@ -2549,8 +2722,11 @@ class BhavcopyETL:
         session: Session | None = None,
         reports_dir: Path | None = None,
         alias_filter: list[tuple[str, str]] | None = None,
+        holds: set[tuple[str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Apply verified symbol renames in one transaction.
+        """Apply verified symbol renames (one commit per alias, one rebuild at the end).
+
+        Pairs in ``holds`` are never applied (the CLI passes config/alias_holds.csv).
 
         For each alias:
         1. Continuity check (read-only from raw cache).
@@ -2567,6 +2743,7 @@ class BhavcopyETL:
         """
         r_dir = reports_dir or (PROJECT_ROOT / "reports")
         r_dir.mkdir(parents=True, exist_ok=True)
+        held_pairs = holds or set()
 
         def _execute(s: Session) -> dict[str, Any]:
             if alias_filter is not None:
@@ -2594,18 +2771,37 @@ class BhavcopyETL:
 
             summaries = []
             applied_count = 0
+            applied_new_symbols: list[str] = []
 
             for old_sym, new_sym in aliases_to_check:
                 old_sym = old_sym.strip().upper()
                 new_sym = new_sym.strip().upper()
+
+                if (old_sym, new_sym) in held_pairs:
+                    logger.info(
+                        "Alias %s -> %s is on the owner hold list: skipped.", old_sym, new_sym
+                    )
+                    summaries.append(
+                        {
+                            "old_symbol": old_sym,
+                            "new_symbol": new_sym,
+                            "classification": "held",
+                            "implied_ratio": None,
+                            "rows_moved": 0,
+                            "rows_added": 0,
+                            "status": "held",
+                        }
+                    )
+                    continue
 
                 cont = self.check_alias_continuity(old_sym, new_sym)
                 classification = cont["classification"]
                 implied_ratio = cont.get("implied_ratio")
 
                 # Update status in symbol_alias table
+                # Why: a dry run must write nothing, not even the alias status.
                 alias_row = s.get(SymbolAlias, (old_sym, new_sym))
-                if alias_row is not None:
+                if alias_row is not None and not dry_run:
                     alias_row.status = classification
                     alias_row.implied_ratio = implied_ratio
                     if cont.get("new_first_date"):
@@ -2642,7 +2838,8 @@ class BhavcopyETL:
                         "## Suggested fix\n"
                         f"Verify corporate action adjustment factor for {old_sym} -> {new_sym}."
                     )
-                    create_github_issue(issue_title, issue_body, label="needs-user-input")
+                    if not dry_run:  # filing an issue is a write: never during a dry run
+                        create_github_issue(issue_title, issue_body, label="needs-user-input")
 
                 if classification not in ("verified_exact", "verified_close"):
                     logger.info(
@@ -2770,6 +2967,17 @@ class BhavcopyETL:
                     else (old_stock.cap_bucket if old_stock and old_stock.cap_bucket else "Unknown")
                 )
 
+                # index_name: reuse the label of NEW's own earliest row, so the history is
+                # labelled like the rest of the stock; never write NULL.
+                existing_label = s.scalar(
+                    select(DailyPrice.index_name)
+                    .where(DailyPrice.symbol == new_sym, DailyPrice.index_name.is_not(None))
+                    .order_by(DailyPrice.date.asc())
+                    .limit(1)
+                )
+                if existing_label:
+                    cap_bucket_val = existing_label
+
                 # 4. Insert cached OLD rows under NEW for dates missing in DB
                 # and fill NEW's own missing dates from cache
                 rows_to_insert = []
@@ -2808,7 +3016,15 @@ class BhavcopyETL:
                         new_db_dates.add(d_val)
 
                 if rows_to_insert:
-                    upsert_rows(s, DailyPrice, rows_to_insert, index_elements=["symbol", "date"])
+                    # update_columns=[]: an existing (symbol, date) row is never changed.
+                    upsert_rows(
+                        s,
+                        DailyPrice,
+                        rows_to_insert,
+                        update_columns=[],
+                        index_elements=["symbol", "date"],
+                    )
+                    self._write_added_rows_backup(r_dir, old_sym, new_sym, rows_to_insert)
                 rows_added = len(rows_to_insert)
 
                 # 5. Copy sector/industry/cap_bucket to NEW if missing
@@ -2852,14 +3068,7 @@ class BhavcopyETL:
                 s.commit()
                 applied_count += 1
 
-                # 8. Rebuild adjusted prices and refresh indicator cache for NEW
-                logger.info("Rebuilding adjusted prices for %s after alias merge...", new_sym)
-                self.rebuild_adjusted_prices(symbols=[new_sym])
-
-                logger.info("Refreshing indicator cache...")
-                from src.db.data_service import load_indicator_snapshot
-
-                load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+                applied_new_symbols.append(new_sym)
 
                 logger.info(
                     "✓ Alias %s -> %s successfully applied: moved %d rows, added %d rows "
@@ -2888,6 +3097,17 @@ class BhavcopyETL:
                     }
                 )
 
+            if applied_new_symbols:
+                # Why once, at the end: each rebuild reads all price history.
+                logger.info(
+                    "Rebuilding adjusted prices for %d merged symbols...", len(applied_new_symbols)
+                )
+                self.rebuild_adjusted_prices(symbols=sorted(set(applied_new_symbols)))
+                logger.info("Refreshing indicator cache...")
+                from src.db.data_service import load_indicator_snapshot
+
+                load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+
             return {
                 "status": "success",
                 "dry_run": dry_run,
@@ -2899,6 +3119,16 @@ class BhavcopyETL:
             return _execute(session)
         with get_db() as s:
             return _execute(s)
+
+    @staticmethod
+    def _write_added_rows_backup(
+        reports_dir: Path, old_sym: str, new_sym: str, rows: list[dict[str, Any]]
+    ) -> None:
+        """Save the rows an alias merge ADDED, so the merge can be undone by hand."""
+        path = reports_dir / f"alias_added_{old_sym}_to_{new_sym}.csv"
+        frame = pd.DataFrame(rows)
+        frame.to_csv(path, index=False)
+        logger.info("Saved %d added rows to %s", len(rows), path)
 
     # ------------------------------------------------------------------
     # Step 11 — Detect Symbol Renames from Cache (Read-Only)
@@ -3021,7 +3251,7 @@ class BhavcopyETL:
                 new_first = new_data["first_date"]
                 new_first_idx = date_to_idx[new_first]
                 days_apart = new_first_idx - old_last_idx
-                if not (1 <= days_apart <= 5):
+                if not (1 <= days_apart <= ALIAS_MAX_TRADING_DAYS_APART):
                     continue
 
                 # Check overlap: both have volume > 0 on same date with different prices
@@ -3030,7 +3260,7 @@ class BhavcopyETL:
                 for cd in common_dates:
                     oc, ov = old_data["dates"][cd]
                     nc, nv = new_data["dates"][cd]
-                    if ov > 0 and nv > 0 and abs(oc - nc) > 0.05:
+                    if ov > 0 and nv > 0 and abs(oc - nc) > ALIAS_PRICE_TOLERANCE:
                         overlap = True
                         break
                 if overlap:
@@ -3049,9 +3279,9 @@ class BhavcopyETL:
                 diff = abs(new_prev_close - old_close)
                 implied_ratio = round(new_prev_close / old_close, 4)
 
-                if diff <= 0.05:
+                if diff <= ALIAS_PRICE_TOLERANCE:
                     classification = "verified_exact"
-                elif abs(implied_ratio - 1.0) <= 0.01:
+                elif abs(implied_ratio - 1.0) <= ALIAS_CLOSE_RATIO_TOLERANCE:
                     classification = "verified_close"
                 else:
                     continue

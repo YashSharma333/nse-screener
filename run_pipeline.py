@@ -145,6 +145,14 @@ def main() -> None:
         help="Import symbol aliases from CSV file (default: config/symbol_aliases.csv)",
     )
     parser.add_argument(
+        "--import-symbol-change-aliases",
+        action="store_true",
+        help=(
+            "List NSE's official symbol changes (symbol_changes table) as alias candidates "
+            "in symbol_alias; evidence only, dry-run by default, use --yes to write"
+        ),
+    )
+    parser.add_argument(
         "--apply-symbol-aliases",
         action="store_true",
         help=(
@@ -197,8 +205,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Preview only, without modifying the database. Supported by --import-universe, "
-            "--apply-symbol-aliases, --purge-bogus-sessions, --fill-missing-symbols and "
-            "--detect-renames; any other command refuses it"
+            "--import-symbol-change-aliases, --apply-symbol-aliases, --purge-bogus-sessions, "
+            "--fill-missing-symbols and --detect-renames; any other command refuses it"
         ),
     )
     parser.add_argument(
@@ -206,7 +214,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Confirm writing changes to database "
-            "(used with --purge-bogus-sessions, --import-universe, and --apply-symbol-aliases)"
+            "(used with --purge-bogus-sessions, --import-universe, "
+            "--import-symbol-change-aliases and --apply-symbol-aliases)"
         ),
     )
     parser.add_argument(
@@ -236,7 +245,8 @@ def main() -> None:
     if not dry_run_is_supported(args):
         parser.error(
             "--dry-run is not supported by this command and would write to the database. "
-            "Remove --dry-run, or use it with --import-universe, --apply-symbol-aliases, "
+            "Remove --dry-run, or use it with --import-universe, "
+            "--import-symbol-change-aliases, --apply-symbol-aliases, "
             "--purge-bogus-sessions, --fill-missing-symbols or --detect-renames."
         )
 
@@ -291,6 +301,20 @@ def main() -> None:
                 "Import symbol aliases complete: %d candidate records imported.",
                 res.get("imported", 0),
             )
+        elif args.import_symbol_change_aliases:
+            dry_run = args.dry_run or (not args.yes)
+            if dry_run and not args.dry_run:
+                logger.info(
+                    "--import-symbol-change-aliases invoked without --yes: "
+                    "defaulting to --dry-run mode."
+                )
+            res = etl.import_symbol_change_aliases(dry_run=dry_run)
+            logger.info(
+                "Symbol-change aliases [%s]: %d new candidates; skipped %s",
+                "DRY RUN" if dry_run else "WRITTEN",
+                res["candidates"],
+                {k: len(v) for k, v in res["skipped"].items()},
+            )
         elif args.apply_symbol_aliases:
             dry_run = args.dry_run or (not args.yes)
             if dry_run and not args.dry_run:
@@ -298,11 +322,22 @@ def main() -> None:
                     "--apply-symbol-aliases invoked without --yes: defaulting to --dry-run mode."
                 )
             logger.info("Executing apply symbol aliases (dry_run=%s)...", dry_run)
-            res = etl.apply_symbol_aliases(dry_run=dry_run)
+            res = etl.apply_symbol_aliases(dry_run=dry_run, holds=etl.load_alias_holds())
+            summaries = res.get("summaries", [])
+            by_class: dict[str, int] = {}
+            for item in summaries:
+                by_class[item["classification"]] = by_class.get(item["classification"], 0) + 1
+            rows_total = sum(
+                i.get("rows_added", 0)
+                for i in summaries
+                if i["classification"].startswith("verified")
+            )
             logger.info(
-                "Apply symbol aliases [%s] complete: %d applied.",
+                "Apply symbol aliases [%s] complete: %d applied; per class %s; rows %d.",
                 "DRY RUN" if dry_run else "APPLIED",
                 res.get("applied_count", 0),
+                by_class,
+                rows_total,
             )
         elif args.detect_renames:
             start_date = None

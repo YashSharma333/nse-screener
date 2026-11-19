@@ -1,0 +1,5 @@
+# Pairs that are NEVER applied automatically (owner decision pending). Columns: old_symbol,new_symbol,reason
+old_symbol,new_symbol,reason
+PEL,PIRAMALFIN,"#43 date gap, merger of Piramal Enterprises and Piramal Finance"
+TATAMOTORS,TMPV,"Oct 2025 demerger: price level changes on purpose"
+SRTRANSFIN,SHRIRAMFIN,"Dec 2022 merger of Shriram Transport and Shriram City Union"

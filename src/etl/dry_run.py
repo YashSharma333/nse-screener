@@ -12,6 +12,7 @@ import argparse
 # Names of the argparse options (without the leading "--") whose commands honour --dry-run.
 DRY_RUN_COMMANDS: tuple[str, ...] = (
     "import_universe",
+    "import_symbol_change_aliases",
     "apply_symbol_aliases",
     "purge_bogus_sessions",
     "fill_missing_symbols",

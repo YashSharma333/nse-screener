@@ -241,7 +241,7 @@ needs a name check; GATI, GET&D, SUNDARMHLD, RAMBHAJO look like IPO false positi
 `--backfill`, `--incremental`, `--refresh-cache`, `--rebuild-adjusted`, `--benchmarks
 --start --end`, `--recheck-non-trading --start --end`, `--purge-bogus-sessions [--yes]`,
 `--import-universe PATH [--yes]`, `--universe-overrides`, `--import-symbol-aliases [--yes]`,
-`--apply-symbol-aliases [--yes]`, `--detect-renames`, `--fill-missing-symbols`,
+`--import-symbol-change-aliases [--yes]`, `--apply-symbol-aliases [--yes]`, `--detect-renames`, `--fill-missing-symbols`,
 `--download-corporate-actions [--start --end]` (no `--dry-run`),
 `--add-threshold`, `--keep-threshold`, `--dry-run`. Check `--help` for the truth.
 
@@ -423,6 +423,15 @@ days (#61), and EQ-only ingestion leaves gaps in 566 symbols with 55 active symb
 `index_membership` is a single 2026-11-02 snapshot, not "from 2026-03-20" (#65); running the
 tests overwrites the real indicator cache and `reports/adj_events_uncertain.csv` (#66).
 
+**P1a (task, in progress, branch `fix/P1a-rename-history`):** pre-rename history for renamed
+stocks (#60, #61). Code done: `--import-symbol-change-aliases` lists NSE's official renames as
+alias candidates (dry-run by default); the continuity check works without `PrevClose` (old last
+close against the new first open/close, band = `SPLIT_REVIEW_MIN_RATIO`); `--apply-symbol-aliases`
+loads the old cache rows insert-only, skips pairs in `config/alias_holds.csv`, writes nothing in a
+dry run, and rebuilds adjusted prices once at the end. No official action is filed under an old
+symbol (0 of 1,080 changes), so no alias lookup in `adjust.py` was needed. Real-database run and
+final numbers: see the PR.
+
 **Immediately next:** decide the owner questions in #60, #62 and #63, review the 190
 unexplained jumps (#58; regenerate the list first, #66), then P2. Run `--rebuild-adjusted`
 after every `--download-corporate-actions`. Symbol changes are evidence for `symbol_alias`
@@ -435,6 +444,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P0 | DOCS-2: move rules, skills, commands to Claude Code | none | docs PR |
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
+| P1a | FIX-RENAME-HISTORY: load pre-rename history (#60, #61) | P1 | In progress, Fixes PR; owner holds in `config/alias_holds.csv` |
 | P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |

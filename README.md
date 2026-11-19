@@ -278,7 +278,7 @@ python run_pipeline.py --fill-missing-symbols --start 2024-01-01 --end 2024-12-3
 # Preview only: counts the rows it would add, writes and downloads nothing
 python run_pipeline.py --fill-missing-symbols --dry-run
 ```
-* **About `--dry-run`:** it works with `--import-universe`, `--apply-symbol-aliases`, `--purge-bogus-sessions`, `--fill-missing-symbols` and `--detect-renames`. Any other command refuses it with an error, so a "preview" can never silently write. Expected last log line of a preview: `[DRY RUN] Nothing was written: N rows would be added across M symbols; K dates would need a download.`
+* **About `--dry-run`:** it works with `--import-universe`, `--import-symbol-change-aliases`, `--apply-symbol-aliases`, `--purge-bogus-sessions`, `--fill-missing-symbols` and `--detect-renames`. Any other command refuses it with an error, so a "preview" can never silently write. Expected last log line of a preview: `[DRY RUN] Nothing was written: N rows would be added across M symbols; K dates would need a download.`
 * **Why it exists:** When you add new symbols to `stock_master`, prior historical sessions in your database might only contain rows for previously tracked stocks. This command iterates date-by-date through every trading session in `daily_prices`, identifies any active universe symbol that lacks a row, and populates it directly from `data/raw/bhavcopy_cache/<date>.parquet` (or downloads the session if the cache file is missing). Stocks listed more recently (IPOs) naturally have fewer rows and are handled cleanly.
 * **Alias-aware ingestion:** When filling missing history for renamed stocks, any cached rows under old ticker symbols registered in `symbol_alias` are automatically mapped to the new symbol. Ingestion never recreates rows under symbols marked with `status='renamed'`.
 * **What it changes:** Bulk upserts missing price rows into `daily_prices`, runs `rebuild_adjusted` for added symbols, and refreshes the indicator cache.
@@ -367,6 +367,19 @@ python run_pipeline.py --import-symbol-aliases path/to/custom_aliases.csv
 * **Why it exists:** When listed companies change their ticker symbols on the NSE (e.g. `ICICIPRULI` -> `ICICILIFE`, `PEL` -> `PIRAMALFIN`), unmerged histories break indicator windows (SMA 200, 52-week High/Low, RS). This command registers known symbol rename candidate pairs into the `symbol_alias` database table with initial status `'candidate'`.
 * **What it changes:** Upserts candidate alias records into `symbol_alias`.
 
+##### 10b. List Official Symbol Changes as Candidates (`--import-symbol-change-aliases`)
+```bash
+# Preview (dry-run by default): which of NSE's official renames are candidates?
+python run_pipeline.py --import-symbol-change-aliases
+# Expected last log line: Symbol-change aliases [DRY RUN]: 125 new candidates; skipped {'reused': 0, 'chain': 4, 'known': 1}
+
+# Write them into symbol_alias as status 'candidate'
+python run_pipeline.py --import-symbol-change-aliases --yes
+```
+* **Why it exists:** NSE's official `symbol_changes` list (loaded by `--download-corporate-actions`) is the evidence for which stocks were renamed. Stocks whose new symbol starts at the rename date have no price history before it (issue #60); the old history is still in the Bhavcopy cache.
+* **What counts as a candidate:** the rename happened inside our price history, the new symbol has prices and the old symbol has none. Not listed (reported only): `reused` (one old symbol for two companies), `chain` (the new symbol is itself renamed again, needs the owner), `known` (already in `symbol_alias`).
+* **What it changes:** only inserts new `candidate` rows in `symbol_alias`; an existing alias is never overwritten. The list is evidence only: the continuity check in step 11 decides what is merged.
+
 ##### 11. Apply Symbol Aliases (`--apply-symbol-aliases`)
 ```bash
 # Dry-run verification (safe, prints summary and checks continuity without writing)
@@ -376,20 +389,23 @@ python run_pipeline.py --apply-symbol-aliases
 python run_pipeline.py --apply-symbol-aliases --yes
 ```
 * **Why it exists:** Seamlessly links price history across ticker renames after rigorous verification against raw exchange Bhavcopy data.
-* **Raw Continuity Check:** Evaluates raw values directly from `data/raw/bhavcopy_cache/` (never unverified or adjusted prices). Compares the new symbol's first `PREV_CLOSE` with the old symbol's raw `CLOSE` on the last trading day before the new symbol began trading:
+* **Raw Continuity Check:** Evaluates raw values directly from `data/raw/bhavcopy_cache/` (never unverified or adjusted prices). Compares the new symbol's first `PREV_CLOSE` with the old symbol's raw `CLOSE` on the last trading day before the new symbol began trading. Cache files from 2023 onward have no `PrevClose`; then the old last close is compared with the new first open/close and accepted inside the split-review band (between 1/1.25 and 1.25, `ALIAS_FALLBACK_MAX_RATIO`), reported as `verified_close` with `used_fallback`. Thresholds live in `config/settings.py`:
   - `verified_exact`: Raw prices match within 1 tick (`|diff| <= 0.05`). Safe to merge.
   - `verified_close`: Ratio within 1% (`abs(ratio - 1.0) <= 0.01`). Merges with warning (small dividend or rounding difference).
   - `ratio_mismatch`: Implied ratio diverges (e.g. 2:1 split, bonus, or merger ratio). **Does NOT merge**. Prints implied ratio and logs an issue for manual review.
   - `date_gap`: Old symbol has no traded row on the trading session immediately prior to new symbol's first date. **Does NOT merge**.
   - `overlap`: Both symbols traded simultaneously on the same date with volume > 0 and differing prices. **Does NOT merge**.
 * **What it changes (when `--yes` is specified and verified):**
-  - Exports a safety backup of all rows being moved to `reports/alias_applied_<OLD>_<NEW>_<TIMESTAMP>.json`.
+  - Exports a safety backup of all rows being moved to `reports/alias_backup_<OLD>_to_<NEW>.csv`, and the rows it ADDED to `reports/alias_added_<OLD>_to_<NEW>.csv` (the undo list).
+  - Pairs listed in `config/alias_holds.csv` (mergers, demergers and other owner decisions) are never applied.
+  - A dry run writes nothing: no rows, no alias status, no GitHub issue. Its last line shows the rows per class, for example: `Apply symbol aliases [DRY RUN] complete: 0 applied; per class {'verified_exact': 14, 'verified_close': 77, 'held': 3, 'date_gap': 2}; rows 103995.`
   - Moves all `daily_prices` rows from OLD to NEW in one atomic transaction.
   - Inserts any cached OLD rows under NEW if OLD had zero database rows (e.g. `PEL` -> `PIRAMALFIN`).
   - Fills any missing gap dates for NEW directly from Bhavcopy cache.
   - Copies sector, industry, and cap bucket metadata from OLD to NEW if NEW is unclassified.
   - Marks OLD in `stock_master` as `status='renamed'`, `renamed_to=NEW`, and `in_universe=False`.
-  - Runs `rebuild_adjusted_prices` for the new symbol and refreshes the indicator cache.
+  - Existing rows are never changed or deleted by the add step (insert only); added rows copy the `index_name` of the new symbol's own rows.
+  - Runs `rebuild_adjusted_prices` once for all merged symbols and refreshes the indicator cache. Official splits and bonuses are filed under the CURRENT symbol, so they apply to the merged history automatically.
 
 ##### 12. Detect Symbol Renames (`--detect-renames`)
 ```bash
