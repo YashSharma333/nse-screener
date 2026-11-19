@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "nse-mysql": {
+      "command": "bash",
+      "args": ["__REPO_PATH__/scripts/mcp_mysql.sh"]
+    }
+  }
+}

@@ -714,6 +714,21 @@ Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
 **Backups:** `bash scripts/backup_db.sh` writes a compressed dump of the database to
 `~/Documents/backups` (outside the repo). The agent runs it before any database change.
 
+### Using the MySQL server in Antigravity
+
+Antigravity reads one global file (`~/.gemini/config/mcp_config.json`), not
+`.mcp.json`. Do the one-time MySQL user and `.env` setup above, then run:
+
+```bash
+bash scripts/install_antigravity_mcp.sh
+```
+
+It adds a read-only `nse-mysql` server (the same `scripts/mcp_mysql.sh`) and keeps
+any servers you already have (a `.bak` copy is saved). Restart Antigravity and check
+its MCP panel. Prefer to edit by hand? Copy
+[antigravity/mcp_config.template.json](antigravity/mcp_config.template.json) and
+replace `__REPO_PATH__` with this folder's full path.
+
 ### Adding another MCP server later
 
 Add an entry under `mcpServers` in `.mcp.json` (a `command` + `args` for a local
