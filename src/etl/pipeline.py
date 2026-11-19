@@ -1400,7 +1400,7 @@ class BhavcopyETL:
                         "close": float(r.close) if r.close is not None else None,
                         "volume": int(r.volume) if r.volume is not None else None,
                         "prev_close": float(r.prev_close) if r.prev_close is not None else None,
-                        "index_name": r.index_name,
+                        "index_name": getattr(r, "index_name", None),
                         "adj_open": float(r.adj_open) if r.adj_open is not None else None,
                         "adj_high": float(r.adj_high) if r.adj_high is not None else None,
                         "adj_low": float(r.adj_low) if r.adj_low is not None else None,
@@ -2736,7 +2736,7 @@ class BhavcopyETL:
                             "prev_close": (
                                 float(r.prev_close) if r.prev_close is not None else None
                             ),
-                            "index_name": r.index_name,
+                            "index_name": getattr(r, "index_name", None),
                         }
                         for r in old_db_rows
                     ]

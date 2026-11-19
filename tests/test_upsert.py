@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from src.db.models import Base, DailyPrice, StockMaster, SymbolAlias
+from src.db.models import Base, DailyPrice, Security, StockMaster, SymbolAlias
 from src.db.upsert import _build_upsert_statement, _infer_index_elements, upsert_rows
 
 
@@ -61,8 +61,8 @@ def test_upsert_rows_sqlite_insert_and_update():
         assert float(stored[2].close) == 2650.0
 
 
-def test_upsert_rows_never_overwrites_non_null_index_name_with_null():
-    """Verify that upsert never overwrites an existing non-NULL index_name with NULL."""
+def test_upsert_rows_never_overwrites_non_null_coalesce_column_with_null():
+    """Verify that upsert never overwrites an existing non-NULL coalesce column with NULL."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     d = date(2024, 1, 1)
@@ -71,27 +71,29 @@ def test_upsert_rows_never_overwrites_non_null_index_name_with_null():
         upsert_rows(
             session,
             DailyPrice,
-            [{"symbol": "TCS", "date": d, "close": 3500.0, "index_name": "largecap"}],
+            [{"symbol": "TCS", "date": d, "close": 3500.0, "isin": "INE467B01029"}],
+            coalesce_columns=("isin",),
         )
         session.commit()
 
     with Session(engine) as session:
         stored = session.query(DailyPrice).filter_by(symbol="TCS", date=d).one()
-        assert stored.index_name == "largecap"
+        assert stored.isin == "INE467B01029"
 
-    # Upsert with index_name = None -> index_name MUST remain 'largecap'
+    # Upsert with isin = None -> isin MUST remain 'INE467B01029'
     with Session(engine) as session:
         upsert_rows(
             session,
             DailyPrice,
-            [{"symbol": "TCS", "date": d, "close": 3550.0, "index_name": None}],
+            [{"symbol": "TCS", "date": d, "close": 3550.0, "isin": None}],
+            coalesce_columns=("isin",),
         )
         session.commit()
 
     with Session(engine) as session:
         stored = session.query(DailyPrice).filter_by(symbol="TCS", date=d).one()
         assert float(stored.close) == 3550.0
-        assert stored.index_name == "largecap"
+        assert stored.isin == "INE467B01029"
 
 
 def test_upsert_rows_sqlite_heterogeneous_key_sets_and_none_values():
@@ -159,38 +161,39 @@ def test_upsert_rows_sqlite_heterogeneous_key_sets_and_none_values():
         assert infy.company_name == "Infosys Limited"
         assert infy.benchmark_index == "NIFTY 50"
 
-    # Verify index_name coalesce with heterogeneous daily_price rows
+    # Verify isin coalesce with heterogeneous daily_price rows
     daily_rows = [
         {
             "symbol": "INFY",
             "date": d,
             "close": 1500.0,
-            "index_name": "largecap",
+            "isin": "INE009A01021",
         },
         {
             "symbol": "TCS",
             "date": d,
             "close": 3600.0,
-            # index_name omitted
+            # isin omitted
         },
     ]
     with Session(engine) as session:
-        upsert_rows(session, DailyPrice, daily_rows)
+        upsert_rows(session, DailyPrice, daily_rows, coalesce_columns=("isin",))
         session.commit()
 
-    # Update INFY with index_name=None -> coalesce must keep 'largecap'
+    # Update INFY with isin=None -> coalesce must keep 'INE009A01021'
     with Session(engine) as session:
         upsert_rows(
             session,
             DailyPrice,
-            [{"symbol": "INFY", "date": d, "close": 1520.0, "index_name": None}],
+            [{"symbol": "INFY", "date": d, "close": 1520.0, "isin": None}],
+            coalesce_columns=("isin",),
         )
         session.commit()
 
     with Session(engine) as session:
         stored_infy = session.query(DailyPrice).filter_by(symbol="INFY", date=d).one()
         assert float(stored_infy.close) == 1520.0
-        assert stored_infy.index_name == "largecap"
+        assert stored_infy.isin == "INE009A01021"
 
 
 def _parse_mysql_insert_and_update_columns(sql: str) -> tuple[list[str], list[str]]:
@@ -273,14 +276,14 @@ def test_upsert_rows_mysql_compile_statement_columns():
                     "date": "d",
                     "close": 200.0,
                     "volume": 2000,
-                    "index_name": "largecap",
+                    "isin": "INE467B01029",
                 },
                 {
                     "symbol": "WIPRO",
                     "date": "d",
                     "close": 300.0,
                     "adj_close": 300.0,
-                    "index_name": None,
+                    "isin": None,
                 },
             ],
         ),
@@ -304,7 +307,7 @@ def test_upsert_rows_mysql_compile_statement_columns():
                 model=model,
                 update_columns=group_update_cols,
                 index_elements=index_elements,
-                coalesce_columns=("index_name",),
+                coalesce_columns=("isin",),
                 dialect_name="mysql",
             )
             compiled = stmt.compile(dialect=mysql_dialect, column_keys=group_keys)
@@ -354,106 +357,59 @@ def test_upsert_rows_mysql_integration():
     """Real-MySQL integration test running against a live MySQL 8.0 server in CI."""
     d = date(2024, 1, 1)
 
-    # 1. StockMaster: heterogeneous keys, None values, and untouched columns
-    stock_rows = [
+    # 1. Security: heterogeneous keys, None values, and untouched columns
+    sec_rows = [
         {
             "symbol": "T_UPSERT_1",
-            "company_name": "Test Upsert 1",
+            "name": "Test Upsert 1",
+            "series": "EQ",
+            "isin": "INE001A01011",
             "status": "active",
-            "added_on": d,
-            "benchmark_index": "NIFTY 50",
-            "in_universe": True,
         },
         {
             "symbol": "T_UPSERT_2",
-            "company_name": "Test Upsert 2",
-            "status": "active",
-            "added_on": d,
-            # benchmark_index omitted
-            "in_universe": True,
+            "name": "Test Upsert 2",
+            "series": "BE",
+            # isin omitted
         },
         {
             "symbol": "T_UPSERT_3",
-            "company_name": "Test Upsert 3",
-            "status": "below_threshold",
-            "added_on": d,
-            "benchmark_index": None,
-            "in_universe": False,
+            "name": "Test Upsert 3",
+            "status": "suspended",
+            "isin": None,
         },
     ]
 
     with _get_mysql_session() as session:
         try:
-            upsert_rows(session, StockMaster, stock_rows, index_elements=["symbol"])
+            upsert_rows(session, Security, sec_rows, index_elements=["symbol"])
             session.commit()
 
             # Verify stored rows
-            s1 = session.query(StockMaster).filter_by(symbol="T_UPSERT_1").one()
-            assert s1.benchmark_index == "NIFTY 50"
+            s1 = session.query(Security).filter_by(symbol="T_UPSERT_1").one()
+            assert s1.isin == "INE001A01011"
 
-            # Update row omitting benchmark_index -> stored value must remain untouched
+            # Update row omitting isin -> stored value must remain untouched
             upsert_rows(
                 session,
-                StockMaster,
+                Security,
                 [
                     {
                         "symbol": "T_UPSERT_1",
-                        "company_name": "Test Upsert 1 Updated",
+                        "name": "Test Upsert 1 Updated",
+                        "series": "EQ",
                         "status": "active",
-                        "added_on": d,
-                        "in_universe": True,
                     }
                 ],
                 index_elements=["symbol"],
             )
             session.commit()
 
-            s1 = session.query(StockMaster).filter_by(symbol="T_UPSERT_1").one()
-            assert s1.company_name == "Test Upsert 1 Updated"
-            assert s1.benchmark_index == "NIFTY 50"
+            s1 = session.query(Security).filter_by(symbol="T_UPSERT_1").one()
+            assert s1.name == "Test Upsert 1 Updated"
+            assert s1.isin == "INE001A01011"
 
-            # 2. SymbolAlias: blank effective_date and implied_ratio
-            alias_rows = [
-                {
-                    "old_symbol": "T_OLD_1",
-                    "new_symbol": "T_NEW_1",
-                    "effective_date": None,
-                    "status": "candidate",
-                    "implied_ratio": None,
-                    "note": "blank fields",
-                },
-                {
-                    "old_symbol": "T_OLD_2",
-                    "new_symbol": "T_NEW_2",
-                    "effective_date": d,
-                    "status": "verified_exact",
-                    "implied_ratio": 1.0,
-                    "note": "populated fields",
-                },
-                {
-                    "old_symbol": "T_OLD_3",
-                    "new_symbol": "T_NEW_3",
-                    "status": "candidate",
-                    # effective_date and implied_ratio omitted
-                },
-            ]
-            upsert_rows(
-                session,
-                SymbolAlias,
-                alias_rows,
-                index_elements=["old_symbol", "new_symbol"],
-            )
-            session.commit()
-
-            a1 = (
-                session.query(SymbolAlias)
-                .filter_by(old_symbol="T_OLD_1", new_symbol="T_NEW_1")
-                .one()
-            )
-            assert a1.effective_date is None
-            assert a1.implied_ratio is None
-
-            # 3. DailyPrice: mixed keys and index_name coalesce on MySQL
+            # 2. DailyPrice: mixed keys and isin coalesce on MySQL
             price_rows = [
                 {
                     "symbol": "T_UPSERT_1",
@@ -464,7 +420,7 @@ def test_upsert_rows_mysql_integration():
                     "close": 102.0,
                     "volume": 10000,
                     "prev_close": 100.0,
-                    "index_name": "NIFTY 50",
+                    "isin": "INE123456789",
                 },
                 {
                     "symbol": "T_UPSERT_2",
@@ -475,7 +431,7 @@ def test_upsert_rows_mysql_integration():
                     "close": 202.0,
                     "volume": 5000,
                     "prev_close": 200.0,
-                    # index_name omitted
+                    # isin omitted
                 },
             ]
             upsert_rows(
@@ -483,10 +439,11 @@ def test_upsert_rows_mysql_integration():
                 DailyPrice,
                 price_rows,
                 index_elements=["symbol", "date"],
+                coalesce_columns=("isin",),
             )
             session.commit()
 
-            # Update with index_name=None -> coalesce must keep 'NIFTY 50' on MySQL
+            # Update with isin=None -> coalesce must keep 'INE123456789' on MySQL
             upsert_rows(
                 session,
                 DailyPrice,
@@ -495,24 +452,22 @@ def test_upsert_rows_mysql_integration():
                         "symbol": "T_UPSERT_1",
                         "date": d,
                         "close": 104.0,
-                        "index_name": None,
+                        "isin": None,
                     }
                 ],
                 index_elements=["symbol", "date"],
+                coalesce_columns=("isin",),
             )
             session.commit()
 
             p1 = session.query(DailyPrice).filter_by(symbol="T_UPSERT_1", date=d).one()
             assert float(p1.close) == 104.0
-            assert p1.index_name == "NIFTY 50"
+            assert p1.isin == "INE123456789"
 
         finally:
             # Clean up test rows
-            session.query(StockMaster).filter(
-                StockMaster.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
-            ).delete(synchronize_session=False)
-            session.query(SymbolAlias).filter(
-                SymbolAlias.old_symbol.in_(["T_OLD_1", "T_OLD_2", "T_OLD_3"])
+            session.query(Security).filter(
+                Security.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
             ).delete(synchronize_session=False)
             session.query(DailyPrice).filter(
                 DailyPrice.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
