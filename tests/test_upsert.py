@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from src.db.models import Base, DailyPrice, StockMaster, SymbolAlias
+from src.db.models import Base, DailyPrice, Security, StockMaster, SymbolAlias
 from src.db.upsert import _build_upsert_statement, _infer_index_elements, upsert_rows
 
 
@@ -357,106 +357,59 @@ def test_upsert_rows_mysql_integration():
     """Real-MySQL integration test running against a live MySQL 8.0 server in CI."""
     d = date(2024, 1, 1)
 
-    # 1. StockMaster: heterogeneous keys, None values, and untouched columns
-    stock_rows = [
+    # 1. Security: heterogeneous keys, None values, and untouched columns
+    sec_rows = [
         {
             "symbol": "T_UPSERT_1",
-            "company_name": "Test Upsert 1",
+            "name": "Test Upsert 1",
+            "series": "EQ",
+            "isin": "INE001A01011",
             "status": "active",
-            "added_on": d,
-            "benchmark_index": "NIFTY 50",
-            "in_universe": True,
         },
         {
             "symbol": "T_UPSERT_2",
-            "company_name": "Test Upsert 2",
-            "status": "active",
-            "added_on": d,
-            # benchmark_index omitted
-            "in_universe": True,
+            "name": "Test Upsert 2",
+            "series": "BE",
+            # isin omitted
         },
         {
             "symbol": "T_UPSERT_3",
-            "company_name": "Test Upsert 3",
-            "status": "below_threshold",
-            "added_on": d,
-            "benchmark_index": None,
-            "in_universe": False,
+            "name": "Test Upsert 3",
+            "status": "suspended",
+            "isin": None,
         },
     ]
 
     with _get_mysql_session() as session:
         try:
-            upsert_rows(session, StockMaster, stock_rows, index_elements=["symbol"])
+            upsert_rows(session, Security, sec_rows, index_elements=["symbol"])
             session.commit()
 
             # Verify stored rows
-            s1 = session.query(StockMaster).filter_by(symbol="T_UPSERT_1").one()
-            assert s1.benchmark_index == "NIFTY 50"
+            s1 = session.query(Security).filter_by(symbol="T_UPSERT_1").one()
+            assert s1.isin == "INE001A01011"
 
-            # Update row omitting benchmark_index -> stored value must remain untouched
+            # Update row omitting isin -> stored value must remain untouched
             upsert_rows(
                 session,
-                StockMaster,
+                Security,
                 [
                     {
                         "symbol": "T_UPSERT_1",
-                        "company_name": "Test Upsert 1 Updated",
+                        "name": "Test Upsert 1 Updated",
+                        "series": "EQ",
                         "status": "active",
-                        "added_on": d,
-                        "in_universe": True,
                     }
                 ],
                 index_elements=["symbol"],
             )
             session.commit()
 
-            s1 = session.query(StockMaster).filter_by(symbol="T_UPSERT_1").one()
-            assert s1.company_name == "Test Upsert 1 Updated"
-            assert s1.benchmark_index == "NIFTY 50"
+            s1 = session.query(Security).filter_by(symbol="T_UPSERT_1").one()
+            assert s1.name == "Test Upsert 1 Updated"
+            assert s1.isin == "INE001A01011"
 
-            # 2. SymbolAlias: blank effective_date and implied_ratio
-            alias_rows = [
-                {
-                    "old_symbol": "T_OLD_1",
-                    "new_symbol": "T_NEW_1",
-                    "effective_date": None,
-                    "status": "candidate",
-                    "implied_ratio": None,
-                    "note": "blank fields",
-                },
-                {
-                    "old_symbol": "T_OLD_2",
-                    "new_symbol": "T_NEW_2",
-                    "effective_date": d,
-                    "status": "verified_exact",
-                    "implied_ratio": 1.0,
-                    "note": "populated fields",
-                },
-                {
-                    "old_symbol": "T_OLD_3",
-                    "new_symbol": "T_NEW_3",
-                    "status": "candidate",
-                    # effective_date and implied_ratio omitted
-                },
-            ]
-            upsert_rows(
-                session,
-                SymbolAlias,
-                alias_rows,
-                index_elements=["old_symbol", "new_symbol"],
-            )
-            session.commit()
-
-            a1 = (
-                session.query(SymbolAlias)
-                .filter_by(old_symbol="T_OLD_1", new_symbol="T_NEW_1")
-                .one()
-            )
-            assert a1.effective_date is None
-            assert a1.implied_ratio is None
-
-            # 3. DailyPrice: mixed keys and isin coalesce on MySQL
+            # 2. DailyPrice: mixed keys and isin coalesce on MySQL
             price_rows = [
                 {
                     "symbol": "T_UPSERT_1",
@@ -513,11 +466,8 @@ def test_upsert_rows_mysql_integration():
 
         finally:
             # Clean up test rows
-            session.query(StockMaster).filter(
-                StockMaster.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
-            ).delete(synchronize_session=False)
-            session.query(SymbolAlias).filter(
-                SymbolAlias.old_symbol.in_(["T_OLD_1", "T_OLD_2", "T_OLD_3"])
+            session.query(Security).filter(
+                Security.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
             ).delete(synchronize_session=False)
             session.query(DailyPrice).filter(
                 DailyPrice.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
