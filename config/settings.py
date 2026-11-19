@@ -124,3 +124,19 @@ NSE_WWW_BASE: str = f"https://{NSE_WWW_HOST}"
 NSE_HISTORY_START: date = date(2016, 11, 21)
 NSE_UDIFF_START: date = date(2024, 1, 1)
 NSE_MCAP_START: date = date(2024, 2, 1)
+
+# ---------------------------------------------------------------------------
+# Bhavcopy parsing and raw cache settings (task D3)
+# ---------------------------------------------------------------------------
+# Regular equity trading series kept in daily_prices:
+# • EQ: Normal rolling settlement equity shares
+# • BE: Trade-for-trade equity shares (illiquid or under surveillance)
+# • BZ: Surveillance/restricted trading category
+# • SM: SME equity shares (normal trading)
+# • ST: SME trade-for-trade equity shares
+# All other series (BL block deals, N* debentures, P1 preference, W*, GB, GS, IV)
+# are other instruments sharing a ticker symbol that would violate the (symbol, date) primary key.
+REGULAR_SERIES: tuple[str, ...] = ("EQ", "BE", "BZ", "SM", "ST")
+
+# Raw parsed Bhavcopy parquet cache (new full-universe folder; old EQ-only cache is deprecated)
+BHAVCOPY_ALL_DIR: Path = PROJECT_ROOT / "data" / "raw" / "nse" / "bhavcopy_all"
