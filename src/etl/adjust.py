@@ -48,6 +48,18 @@ REPORTS_DIR = Path("reports")
 EVENT_COLUMNS = ["symbol", "date", "factor", "ratio_kind", "source", "kinds"]
 # Columns of the review report (big price moves that no applied event explains).
 JUMP_COLUMNS = ["symbol", "date", "ratio", "implied_factor", "close_prev", "close", "reason"]
+# Columns of the gap report (all large overnight price dislocations).
+GAP_COLUMNS = [
+    "symbol",
+    "date",
+    "move_type",
+    "pct_change",
+    "close_prev",
+    "close",
+    "ratio",
+    "has_corp_action",
+    "action_type",
+]
 
 
 class CorporateActionsMissingError(RuntimeError):
@@ -150,7 +162,9 @@ def load_adjustment_overrides(path: Path | None = None) -> pd.DataFrame:
     return pd.DataFrame(records, columns=columns)
 
 
-def read_official_events(session: Session | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def read_official_events(
+    session: Session | None = None, symbols: Sequence[str] | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Read the official exact events and the actions that need review from the database.
 
     Why it stops on an empty table: with no official data every price would silently be
@@ -164,7 +178,7 @@ def read_official_events(session: Session | None = None) -> tuple[pd.DataFrame, 
                 "The corporate_actions table is empty. "
                 "Run: python run_pipeline.py --download-corporate-actions"
             )
-        return get_price_adjustment_events(active)
+        return get_price_adjustment_events(active, symbols=symbols)
 
     if session is not None:
         return _read(session)
@@ -366,6 +380,93 @@ def find_unexplained_jumps(
     return pd.DataFrame(rows, columns=JUMP_COLUMNS)
 
 
+def find_big_gaps(
+    df: pd.DataFrame,
+    events: pd.DataFrame | None = None,
+    official_review: pd.DataFrame | None = None,
+    global_trading_days: Sequence[date] | None = None,
+    non_trading_days: set[date] | None = None,
+) -> pd.DataFrame:
+    """Detect and classify big overnight gap-ups and gap-downs across stocks.
+
+    - GAP_DOWN: overnight drop >= 20% (pct_change <= -20% or ratio >= 1.25)
+    - GAP_UP: overnight surge >= 25% (pct_change >= +25% or 1/ratio >= 1.25)
+
+    Cross-references whether an official corporate action or review item occurred on that date.
+    Report only.
+    """
+    empty = pd.DataFrame(columns=GAP_COLUMNS)
+    if df.empty or "close" not in df.columns:
+        return empty
+
+    work = df[["symbol", "date", "close"]].copy()
+    work["date"] = pd.to_datetime(work["date"])
+    work = work.sort_values(["symbol", "date"]).reset_index(drop=True)
+    work["close_prev"] = work.groupby("symbol")["close"].shift(1)
+    work["date_prev"] = work.groupby("symbol")["date"].shift(1)
+
+    usable = (work["close_prev"] > 0) & (work["close"] > 0)
+    ratio = work["close_prev"] / work["close"].where(work["close"] > 0)
+    size = np.maximum(ratio, 1.0 / ratio)
+    candidates = work[usable & (size >= SPLIT_REVIEW_MIN_RATIO)].copy()
+    if candidates.empty:
+        return empty
+
+    consecutive = _has_preceding_trading_day(candidates, global_trading_days, non_trading_days)
+    candidates = candidates[consecutive].copy()
+    if candidates.empty:
+        return empty
+
+    candidates["day"] = candidates["date"].dt.date
+    candidates["ratio"] = (candidates["close_prev"] / candidates["close"]).round(4)
+    candidates["pct_change"] = (
+        (candidates["close"] - candidates["close_prev"]) / candidates["close_prev"] * 100
+    ).round(2)
+
+    explained: dict[tuple[str, date], str] = {}
+    if events is not None and not events.empty:
+        for ev_row in events.itertuples():
+            explained[(ev_row.symbol, ev_row.date)] = str(
+                getattr(ev_row, "kinds", "corporate_action")
+            )
+
+    review_types: dict[tuple[str, date], list[str]] = {}
+    if official_review is not None and not official_review.empty:
+        for rev_row in official_review.itertuples():
+            review_types.setdefault((rev_row.symbol, rev_row.date), []).append(rev_row.action_type)
+
+    gap_rows = []
+    for _, cand in candidates.iterrows():
+        key = (cand["symbol"], cand["day"])
+        is_down = cand["close"] < cand["close_prev"]
+        move_type = "GAP_DOWN" if is_down else "GAP_UP"
+
+        has_ca = key in explained or key in review_types
+        act_parts = []
+        if key in explained:
+            act_parts.append(explained[key])
+        if key in review_types:
+            act_parts.extend(review_types[key])
+        action_type = ", ".join(sorted(set(act_parts))) if act_parts else "NONE"
+
+        gap_rows.append(
+            {
+                "symbol": cand["symbol"],
+                "date": cand["day"],
+                "move_type": move_type,
+                "pct_change": float(cand["pct_change"]),
+                "close_prev": float(cand["close_prev"]),
+                "close": float(cand["close"]),
+                "ratio": float(cand["ratio"]),
+                "has_corp_action": has_ca,
+                "action_type": action_type,
+            }
+        )
+
+    res_df = pd.DataFrame(gap_rows, columns=GAP_COLUMNS)
+    return res_df.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+
 def cumulative_factors(dates: Sequence[date], events_df: pd.DataFrame) -> np.ndarray:
     """Compute cumulative backward adjustment factor for each date in a symbol series."""
     sorted_dates = pd.to_datetime(pd.Series(dates)).reset_index(drop=True)
@@ -395,8 +496,10 @@ def save_events_report(
     file_path: Path | None = None,
     review_df: pd.DataFrame | None = None,
     review_path: Path | None = None,
+    gaps_df: pd.DataFrame | None = None,
+    gaps_path: Path | None = None,
 ) -> None:
-    """Save applied events (and, if given, unexplained jumps) to CSV reports for the owner."""
+    """Save applied events, unexplained jumps, and big gap moves to CSV reports for the owner."""
     target_path = file_path or (REPORTS_DIR / "adj_events_review.csv")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     events_df.to_csv(target_path, index=False)
@@ -408,6 +511,11 @@ def save_events_report(
         logger.info(
             "Saved %d unexplained price jumps (NOT applied) to %s", len(review_df), uncertain_path
         )
+
+    if gaps_df is not None:
+        target_gaps = gaps_path or (REPORTS_DIR / "adj_gaps.csv")
+        gaps_df.to_csv(target_gaps, index=False)
+        logger.info("Saved %d big gap moves to %s", len(gaps_df), target_gaps)
 
 
 def rebuild_adjusted(
@@ -482,7 +590,7 @@ def rebuild_adjusted(
         return 0
 
     # 2. Official events + owner overrides adjust prices; unexplained jumps are only reported.
-    official, official_review = read_official_events(session)
+    official, official_review = read_official_events(session, symbols=symbols)
     events_df = build_events(official, df, overrides=load_adjustment_overrides(overrides_path))
     review_df = find_unexplained_jumps(
         df,
@@ -490,6 +598,12 @@ def rebuild_adjusted(
         official_review,
         global_trading_days=global_trading_days,
         total_db_symbols=total_db_symbols,
+    )
+    gaps_df = find_big_gaps(
+        df,
+        events_df,
+        official_review,
+        global_trading_days=global_trading_days,
     )
 
     def _sync_db(active_session: Session) -> None:
@@ -516,7 +630,7 @@ def rebuild_adjusted(
         with get_db() as s:
             _sync_db(s)
 
-    save_events_report(events_df, review_df=review_df)
+    save_events_report(events_df, review_df=review_df, gaps_df=gaps_df)
 
     # 3. Vectorized adjusted price calculation per symbol, updating only changed/NULL rows
     updated_rows = 0
@@ -658,7 +772,7 @@ def adjust_new_rows(
 
     # Only events on or after the first new day matter here; older ones were handled by the
     # last full rebuild (run --rebuild-adjusted after every --download-corporate-actions).
-    official, _official_review = read_official_events(session)
+    official, _official_review = read_official_events(session, symbols=symbols)
     new_events = build_events(official, combined_df, overrides=load_adjustment_overrides())
     if not new_events.empty:
         new_events = new_events[new_events["date"] >= min_date].copy()
