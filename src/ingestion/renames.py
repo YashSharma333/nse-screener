@@ -78,6 +78,23 @@ class RenameChains:
         sym = symbol.strip().upper()
         return list(self.former_map.get(sym, []))
 
+    def get_history(self, symbol: str) -> list[dict[str, Any]]:
+        """Return all rename events for this security in chronological order."""
+        sym = symbol.strip().upper()
+        curr = self.get_current(sym)
+        formers = self.get_former(curr)
+        all_syms = {*formers, curr, sym}
+        return [
+            {
+                "old_symbol": old_s,
+                "new_symbol": new_s,
+                "effective_date": dt,
+                "company": comp,
+            }
+            for old_s, new_s, dt, comp in self.transitions
+            if old_s in all_syms or new_s in all_syms
+        ]
+
 
 def parse_symbol_changes_csv(content: bytes | str) -> list[dict[str, Any]]:
     """Parse raw bytes or text of symbolchange.csv into valid change records.
@@ -342,6 +359,50 @@ def former_names(
     with get_db() as managed_session:
         active_chains = load_chains_from_db(managed_session)
         return active_chains.get_former(sym)
+
+
+def rename_history(
+    symbol: str,
+    chains: RenameChains | None = None,
+    session: Session | None = None,
+) -> list[dict[str, Any]]:
+    """Return all rename events (with exact effective dates) for a security in date order."""
+    sym = symbol.strip().upper()
+    if chains is not None:
+        return chains.get_history(sym)
+
+    if session is not None:
+        active_chains = load_chains_from_db(session)
+        return active_chains.get_history(sym)
+
+    with get_db() as managed_session:
+        active_chains = load_chains_from_db(managed_session)
+        return active_chains.get_history(sym)
+
+
+def rename_date(
+    old_symbol: str,
+    new_symbol: str | None = None,
+    chains: RenameChains | None = None,
+    session: Session | None = None,
+) -> date | None:
+    """Return the exact effective date when old_symbol was renamed.
+
+    Parameters
+    ----------
+    old_symbol : str
+        The earlier symbol.
+    new_symbol : str, optional
+        Target new symbol. If omitted, returns the date of the first rename away from old_symbol.
+    """
+    history = rename_history(old_symbol, chains=chains, session=session)
+    old_s = old_symbol.strip().upper()
+    new_s = new_symbol.strip().upper() if new_symbol else None
+
+    for event in history:
+        if event["old_symbol"] == old_s and (new_s is None or event["new_symbol"] == new_s):
+            return event["effective_date"]
+    return None
 
 
 def verify_rename_by_isin(

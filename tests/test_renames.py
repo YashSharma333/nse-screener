@@ -25,6 +25,8 @@ from src.ingestion.renames import (
     load_renames,
     parse_symbol_changes_csv,
     prices_for,
+    rename_date,
+    rename_history,
     verify_rename_by_isin,
 )
 
@@ -61,6 +63,20 @@ def test_chain_a_b_c() -> None:
     assert former_names("C", chains=chains) == ["A", "B"]
     assert former_names("B", chains=chains) == ["A"]
     assert former_names("A", chains=chains) == []
+
+    # Exact date and timeline retrieval
+    hist = rename_history("C", chains=chains)
+    assert len(hist) == 2
+    assert hist[0]["old_symbol"] == "A"
+    assert hist[0]["new_symbol"] == "B"
+    assert hist[0]["effective_date"] == date(2019, 1, 1)
+    assert hist[1]["old_symbol"] == "B"
+    assert hist[1]["new_symbol"] == "C"
+    assert hist[1]["effective_date"] == date(2021, 1, 1)
+
+    assert rename_date("A", chains=chains) == date(2019, 1, 1)
+    assert rename_date("B", chains=chains) == date(2021, 1, 1)
+    assert rename_date("C", chains=chains) is None
 
 
 def test_rename_keeps_isin_same_security(sqlite_session: Session) -> None:
