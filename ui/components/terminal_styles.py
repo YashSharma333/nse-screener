@@ -378,27 +378,24 @@ def render_sidebar_controls() -> None:
         unsafe_allow_html=True,
     )
 
-    # Market Data Pipeline trigger with safe incremental execution
+    # Full daily update trigger (all stocks, not only index constituents)
     st.sidebar.markdown("#### 🔄 Ingestion Engine")
     if st.sidebar.button(
         "⚡ Sync Market Data",
         key="sidebar_etl_incremental_sync",
         disabled=st.session_state.get("is_updating_etl", False),
         width="stretch",
-        help="Incrementally fetch latest Bhavcopy records and sync MySQL without full re-download",
+        help=(
+            "Runs the full daily update: new prices for ALL stocks, market cap, "
+            "corporate actions, adjusted prices and the indicator cache."
+        ),
     ):
-        from src.etl.pipeline import BhavcopyETL
+        from ui.data import run_full_update
 
         st.session_state.is_updating_etl = True
-        try:
-            with st.spinner("Syncing latest market data..."):
-                etl = BhavcopyETL()
-                res = etl.run_incremental()
-                st.session_state.etl_status = res
-        except Exception as exc:
-            st.session_state.etl_status = {"status": "error", "message": str(exc)}
-        finally:
-            st.session_state.is_updating_etl = False
+        with st.spinner("Running the full daily update (can take several minutes)..."):
+            st.session_state.etl_status = run_full_update()
+        st.session_state.is_updating_etl = False
         st.rerun()
 
     # Proactive status notification handling (including offline mode guard)

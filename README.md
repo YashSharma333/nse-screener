@@ -542,6 +542,9 @@ Open [http://localhost:8501](http://localhost:8501) in your web browser.
 > [!NOTE]
 > **Data Availability:** Synthetic demo-mode data was removed in Phase 1; live MySQL or Parquet cache is required to run the application. If your database is empty, the dashboard displays a setup banner with the exact CLI commands to initialize and backfill data.
 
+> [!NOTE]
+> **Sync Market Data button (sidebar):** runs the same routine as `python run_pipeline.py --update`: new prices for **all** stocks (not only Nifty-500), market cap, corporate actions, adjusted prices and the indicator cache. It can take several minutes. Like `--update`, it loads up to *yesterday* only, because today's file may not be published yet. If a step fails, the page shows which step (for example "Step 2 (market_cap)"). Restart `streamlit run` after code changes: Streamlit does not reload imported `src/` modules.
+
 ### 6. Run the Test Suite & Linters
 ```bash
 # Run full test suite with coverage (works completely offline without MySQL)
