@@ -378,74 +378,35 @@ def render_sidebar_controls() -> None:
         unsafe_allow_html=True,
     )
 
-    # Full daily update trigger (all stocks, not only index constituents)
-    st.sidebar.markdown("#### 🔄 Ingestion Engine")
-    if st.sidebar.button(
-        "⚡ Sync Market Data",
-        key="sidebar_etl_incremental_sync",
-        disabled=st.session_state.get("is_updating_etl", False),
-        width="stretch",
-        help=(
-            "Runs the full daily update: new prices for ALL stocks, market cap, "
-            "corporate actions, adjusted prices and the indicator cache."
-        ),
-    ):
-        from ui.data import run_full_update
+    # Data update lives in an expander so the sidebar stays short.
+    status = st.session_state.get("etl_status")
+    with st.sidebar.expander("🔄 Update data", expanded=bool(status)):
+        if st.button(
+            "⚡ Sync Market Data",
+            key="sidebar_etl_incremental_sync",
+            disabled=st.session_state.get("is_updating_etl", False),
+            width="stretch",
+            help=(
+                "Runs the full daily update: new prices for ALL stocks, market cap, "
+                "corporate actions, adjusted prices and the indicator cache."
+            ),
+        ):
+            from ui.data import run_full_update
 
-        st.session_state.is_updating_etl = True
-        with st.spinner("Running the full daily update (can take several minutes)..."):
-            st.session_state.etl_status = run_full_update()
-        st.session_state.is_updating_etl = False
-        st.rerun()
+            st.session_state.is_updating_etl = True
+            with st.spinner("Running the full daily update (can take several minutes)..."):
+                st.session_state.etl_status = run_full_update()
+            st.session_state.is_updating_etl = False
+            st.rerun()
 
-    # Proactive status notification handling (including offline mode guard)
-    if st.session_state.get("etl_status"):
-        status = st.session_state.etl_status.get("status")
-        msg = st.session_state.etl_status.get("message", "")
-        if status == "success":
-            st.sidebar.success(f"✓ {msg}")
-        elif status in ("up_to_date", "offline"):
-            # Informational badge when already current or utilizing local parquet cache
-            st.sidebar.info(f"ℹ {msg}")
-        else:
-            st.sidebar.error(f"✗ {msg}")
+        # Result of the last update (the "offline" and "up to date" cases are not errors).
+        if status:
+            message = status.get("message", "")
+            if status.get("status") == "success":
+                st.success(f"✓ {message}")
+            elif status.get("status") in ("up_to_date", "offline"):
+                st.info(f"ℹ {message}")
+            else:
+                st.error(f"✗ {message}")
 
-    st.sidebar.divider()
-
-    # Tracked Universe Telemetry
-    st.sidebar.markdown("#### 🎯 Tracked Universe")
-    st.sidebar.markdown(
-        """
-    <div class="index-badge-card" style="border-left-color: #38bdf8;">
-        <strong>NIFTY 100</strong> · Large Cap Core (100)
-    </div>
-    <div class="index-badge-card" style="border-left-color: #a855f7;">
-        <strong>NIFTY Midcap 150</strong> · Growth Midcaps (150)
-    </div>
-    <div class="index-badge-card" style="border-left-color: #f59e0b;">
-        <strong>NIFTY Smallcap 250</strong> · High-Beta Smallcaps (250)
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    st.sidebar.divider()
-
-    # Quantitative Screeners Summary
-    st.sidebar.markdown("#### 📐 Quantitative Screeners")
-    st.sidebar.markdown(
-        """
-    <div class="sidebar-card">
-        <span style="color:#00f0ff; font-weight:700;">🌊 Swing + Volume</span><br/>
-        <span style="color:#94a3b8; font-size:0.75rem;">Breakout & Volume Expansion</span>
-    </div>
-    <div class="sidebar-card">
-        <span style="color:#a855f7; font-weight:700;">🚀 Swing With Momentum</span><br/>
-        <span style="color:#94a3b8; font-size:0.75rem;">Multi-Horizon Stage Growth</span>
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    st.sidebar.divider()
     st.sidebar.caption("NSE Screener Terminal v2.2 · Production")
