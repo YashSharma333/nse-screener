@@ -8,6 +8,8 @@ and RSI oscillator telemetry.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -18,12 +20,23 @@ def render_stock_inspector(
     df_with_indicators: pd.DataFrame,
     default_symbol: str | None = None,
     key_prefix: str = "inspector",
+    symbols: Sequence[str] | None = None,
 ) -> None:
-    """Renders interactive candlestick, volume, and momentum charts for a chosen equity."""
-    if df_with_indicators.empty or "symbol" not in df_with_indicators.columns:
-        return
+    """Renders interactive candlestick, volume, and momentum charts for a chosen equity.
 
-    all_symbols = sorted(df_with_indicators["symbol"].unique().tolist())
+    ``symbols`` limits (and orders) the ticker list, e.g. to the stocks a screener returned.
+    Without it every symbol in ``df_with_indicators`` is offered.
+    """
+    if symbols is not None:
+        all_symbols = list(symbols)
+        if not all_symbols:
+            st.markdown("### 🔍 Technical Stock Inspector")
+            st.info("No stocks to inspect: nothing passed this screener with the current settings.")
+            return
+    elif df_with_indicators.empty or "symbol" not in df_with_indicators.columns:
+        return
+    else:
+        all_symbols = sorted(df_with_indicators["symbol"].unique().tolist())
     if not all_symbols:
         return
 
@@ -102,8 +115,14 @@ def render_stock_inspector(
         dist_52w = ((latest["close"] - high_prev) / high_prev * 100.0) if high_prev else 0.0
         st.metric(label="Distance from 52W High", value=f"{dist_52w:+.1f}%")
     with m5:
-        idx_label = latest.get("index_name", "NSE Equity")
-        st.metric(label="Index Classification", value=str(idx_label))
+        # Last known market cap in the window (the newest session may not have one yet).
+        known_caps = stock_df["market_cap"].dropna() if "market_cap" in stock_df.columns else []
+        mcap_cr = known_caps.iloc[-1] / 1e7 if len(known_caps) else None
+        st.metric(
+            label="Market Cap",
+            value=f"₹{mcap_cr:,.0f} Cr" if mcap_cr else "—",
+            help="Last known market cap. NSE publishes it a few days after the price.",
+        )
 
     # Construct Plotly Chart: Panel 1 = Candlestick + MAs, Panel 2 = Volume, Panel 3 = RSI
     fig = make_subplots(
