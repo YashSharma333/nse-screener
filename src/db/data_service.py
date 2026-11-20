@@ -725,6 +725,7 @@ def clear_market_data_cache() -> None:
 __all__ = [
     "INDICATORS_CACHE_PATH",
     "INDICATORS_META_PATH",
+    "INDICATORS_SCHEMA_VERSION",
     "clear_market_data_cache",
     "compute_market_indicators",
     "ensure_data_initialized",

@@ -80,6 +80,12 @@ def _get_snapshot_cached(cache_token: tuple[float, str]) -> dict[str, Any]:
     else:
         snapshot, is_live, msg = pd.DataFrame(), False, ""
 
+    if isinstance(snapshot, pd.DataFrame) and not snapshot.empty:
+        # Task D11: UI shows market cap, no cap bucket
+        drop_cols = [c for c in ("cap_bucket", "index_name") if c in snapshot.columns]
+        if drop_cols:
+            snapshot = snapshot.drop(columns=drop_cols)
+
     return {
         "snapshot": snapshot,
         "is_live": is_live,
@@ -139,6 +145,61 @@ def get_market_data(
         "status_msg": snap_data["status_msg"],
         "message": snap_data["status_msg"],
     }
+
+
+def format_market_cap(val: Any) -> str:
+    """Format market cap in rupees to crore string (e.g. ₹1,234.56 Cr).
+
+    Missing values (None, NaN, or non-positive) return empty string (blank, never a guess).
+    """
+    if val is None or pd.isna(val):
+        return ""
+    try:
+        num = float(val)
+        if num <= 0:
+            return ""
+        crores = num / 1e7
+        return f"₹{crores:,.2f} Cr"
+    except (ValueError, TypeError):
+        return ""
+
+
+def filter_by_market_cap(
+    df: pd.DataFrame,
+    min_mcap_rupees: float | None = None,
+    max_mcap_rupees: float | None = None,
+    include_missing: bool = True,
+) -> pd.DataFrame:
+    """Filter DataFrame by market cap in rupees.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing 'market_cap'.
+    min_mcap_rupees : float, optional
+        Minimum market cap in rupees.
+    max_mcap_rupees : float, optional
+        Maximum market cap in rupees.
+    include_missing : bool, default True
+        Whether to keep stocks whose market cap is missing (e.g. before 2024-02-01).
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered DataFrame.
+    """
+    if df.empty or "market_cap" not in df.columns:
+        return df
+
+    mask = pd.Series(True, index=df.index)
+    is_missing = df["market_cap"].isna()
+
+    if min_mcap_rupees is not None:
+        mask &= (df["market_cap"] >= min_mcap_rupees) | (is_missing if include_missing else False)
+    if max_mcap_rupees is not None:
+        mask &= (df["market_cap"] <= max_mcap_rupees) | (is_missing if include_missing else False)
+
+    return df[mask]
 
 
 def render_uninitialized_prompt(custom_message: str | None = None) -> None:
