@@ -422,6 +422,76 @@ python scripts/check_nse_reports.py
 * **What it changes:** Upserts into `corporate_actions` and `symbol_changes` (safe to repeat) and writes raw files to `data/corporate_actions/` (git-ignored). It does not change any price or adjusted price by itself: run `--rebuild-adjusted` afterwards. `--dry-run` is refused because it writes.
 * **Expected output:** `Corporate actions: 22545 API rows -> 22537 stored (724 exact-factor events, 413 to review).` then `Symbol changes stored: 1080 (361 touch our stock_master). Listing master rows: 2632.`
 
+##### 14. Ingest Raw Bhavcopy Prices (`--load-prices`)
+```bash
+# Ingest official raw Bhavcopy prices from NSE archives (default: 2016-11-21 to yesterday)
+python run_pipeline.py --load-prices
+
+# Or across a specific historical window
+python run_pipeline.py --load-prices --from 2024-01-01 --to 2024-12-31
+```
+* **Why it exists:** Ingests official raw Bhavcopy prices for all regular series (`EQ`, `BE`, `BZ`, `SM`, `ST`) into `daily_prices`. Resumable, skips existing dates, and respects confirmed non-trading days.
+* **What it changes:** Upserts into `daily_prices`. Raw OHLCV columns remain strictly as published by NSE.
+
+##### 15. Ingest Market Cap from PR Bundles (`--load-mcap`)
+```bash
+# Ingest official market cap from NSE PR bundles (PRDDMMYY.zip) from 2024-02-01 onward
+python run_pipeline.py --load-mcap
+
+# Or for a specific date range
+python run_pipeline.py --load-mcap --from 2024-02-01 --to 2024-06-30
+```
+* **Why it exists:** NSE began publishing total market capitalization in Bhavcopy/PR bundles on 2024-02-01. Fills `daily_prices.market_cap` with exact published Decimal values; dates before 2024-02-01 remain strictly NULL (never guessed).
+* **What it changes:** Updates `market_cap` column in `daily_prices`.
+
+##### 16. Verify Price Accuracy (`--verify-prices`)
+```bash
+# Run independent price verification across ~48 random historical trading dates
+python run_pipeline.py --verify-prices
+```
+* **Why it exists:** Independent audit comparing database prices against freshly downloaded raw NSE Bhavcopies.
+* **What it changes:** Read-only operation. Writes audit discrepancies (if any) to `reports/verify_prices.csv`.
+
+##### 17. Load Securities Master (`--load-securities`)
+```bash
+# Ingest official equity listing master (EQUITY_L.csv) into securities table
+python run_pipeline.py --load-securities
+```
+* **Why it exists:** Tracks all listed equities, ISINs, listing dates, face values, and active trading status.
+* **What it changes:** Upserts into `securities` table.
+
+##### 18. Load Official Symbol Changes (`--load-renames`)
+```bash
+# Ingest official ticker rename history from symbolchange.csv
+python run_pipeline.py --load-renames
+```
+* **Why it exists:** Dynamically resolves ticker rename chains across all NSE historical changes.
+* **What it changes:** Upserts into `symbol_changes` table.
+
+##### 19. Cross-Check 52-Week High/Low (`--crosscheck-52w`)
+```bash
+# Cross-check adjusted prices against official NSE 52-week High/Low files for ~10 dates
+python run_pipeline.py --crosscheck-52w
+```
+* **Why it exists:** Audits split and bonus adjusted rolling 52-week High and Low against NSE's official `CM_52_wk_High_low_DDMMYYYY.csv`.
+* **What it changes:** Read-only operation. Writes discrepancies to `reports/adj_crosscheck.csv`. Differences are listed and never auto-fixed.
+
+##### 20. Single-Command Daily Routine (`--update`)
+```bash
+# Run the entire daily routine in order with fail-fast error handling
+python run_pipeline.py --update
+```
+* **Why it exists:** One command for the whole daily operational routine. Executes 8 steps in sequence, stopping immediately at the first failure with a clear error report:
+  1. `load_prices`: Day after last loaded date to yesterday (D5 logic)
+  2. `market_cap`: Ingests market cap for new dates (D6)
+  3. `refresh EQUITY_L and symbolchange.csv`: Updates securities and rename lineages (D8)
+  4. `refresh corporate actions`: Downloads official actions (splits, bonuses, dividends) (D10)
+  5. `prune dry run`: Scans for candidate bogus sessions; **NEVER deletes in `--update`**
+  6. `rebuild adjusted prices`: Recomputes adjustments for symbols with new rows or events
+  7. `rebuild indicator cache`: Rebuilds Parquet cache when DB max date or schema changes
+  8. `print summary`: Prints execution summary (new dates, rows added, symbols, warnings)
+* **What it changes:** Updates database tables incrementally, recomputes adjusted prices, refreshes Parquet indicators cache (`data/processed/indicators.parquet`), and logs a complete execution summary.
+
 ---
 
 #### 🌟 Recommended Order for a Fresh 10-Year Build

@@ -138,7 +138,7 @@ def _render_results_table(df: pd.DataFrame, csv_filename: str) -> None:
 
     cols_order = [
         "symbol",
-        "index_name",
+        "market_cap",
         "close",
         "pct_change_daily",
         "volume",
@@ -151,8 +151,11 @@ def _render_results_table(df: pd.DataFrame, csv_filename: str) -> None:
     ]
     available = [c for c in cols_order if c in res.columns]
     display_df = res[available].copy()
-    if "index_name" in display_df.columns:
-        display_df = display_df.rename(columns={"index_name": "Cap Bucket"})
+    if "market_cap" in display_df.columns:
+        display_df["Market Cap"] = display_df["market_cap"].apply(
+            lambda v: f"₹{float(v) / 1e7:,.2f} Cr" if pd.notna(v) and float(v) > 0 else ""
+        )
+        display_df = display_df.drop(columns=["market_cap"])
 
     st.dataframe(display_df, width="stretch", hide_index=True)
     st.download_button(

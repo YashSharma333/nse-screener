@@ -258,6 +258,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help=(
+            "Execute the single-command daily update routine (Task D11): load latest prices, "
+            "market cap, refresh securities & symbol changes, corporate actions, "
+            "prune dry run, adjust prices, and rebuild indicator cache."
+        ),
+    )
+    parser.add_argument(
         "--from",
         dest="from_date",
         type=str,
@@ -303,6 +312,13 @@ def main() -> None:
             "Remove --dry-run, or use it with --import-universe, --apply-symbol-aliases, "
             "--purge-bogus-sessions, --fill-missing-symbols or --detect-renames."
         )
+
+    # Single-command daily routine (task D11)
+    if args.update:
+        from src.etl.daily_update import run_daily_update
+
+        run_daily_update()
+        return
 
     # Official corporate actions do not need the Bhavcopy ETL object, so handle them first.
     if args.download_corporate_actions:

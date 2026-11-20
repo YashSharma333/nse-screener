@@ -22,6 +22,7 @@ logger = logging.getLogger("ui.dashboard")
 
 import contextlib
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -65,10 +66,18 @@ def run_incremental_update() -> None:
 
 def format_master_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Map raw technical indicator columns to clean presentation names."""
+    formatted = df.copy()
+
+    # Calculate market cap in crores for clean UI display (Task D11)
+    if "market_cap" in formatted.columns:
+        formatted["market_cap_cr"] = formatted["market_cap"].apply(
+            lambda v: (float(v) / 1e7) if pd.notna(v) and float(v) > 0 else np.nan
+        )
+
     col_mapping = {
         "date": "Date",
         "symbol": "Symbol",
-        "index_name": "Cap Bucket",
+        "market_cap_cr": "Market Cap",
         "close": "Close",
         "volume": "Volume",
         "pct_change_daily": "% Change Daily",
@@ -84,10 +93,11 @@ def format_master_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         "rsi_14": "RSI",
     }
 
-    formatted = df.copy()
+    # Retain raw market_cap for filtering behind the scenes
     existing_cols = [c for c in col_mapping if c in formatted.columns]
-    formatted = formatted[existing_cols].rename(columns=col_mapping)
-    return formatted
+    keep_cols = existing_cols + (["market_cap"] if "market_cap" in formatted.columns else [])
+    res = formatted[keep_cols].rename(columns=col_mapping)
+    return res
 
 
 def main() -> None:
@@ -145,14 +155,19 @@ def main() -> None:
         # Filters Row
         f1, f2 = st.columns([1.5, 4.5])
         with f1:
-            indices = sorted(formatted_df["Cap Bucket"].dropna().unique().tolist())
-            selected_indices = st.multiselect("Cap Bucket Filter", options=indices, default=indices)
+            min_mcap_cr = st.number_input(
+                "Min Market Cap (₹ Cr)",
+                min_value=0.0,
+                value=0.0,
+                step=500.0,
+                help="Filter stocks with market cap >= this value in crores (0 to show all)",
+            )
         with f2:
-            all_display_cols = list(formatted_df.columns)
+            all_display_cols = [c for c in formatted_df.columns if c != "market_cap"]
             primary_defaults = [
                 "Date",
                 "Symbol",
-                "Cap Bucket",
+                "Market Cap",
                 "Close",
                 "Volume",
                 "% Change Daily",
@@ -176,8 +191,11 @@ def main() -> None:
 
         # Apply Filters
         filtered_df = formatted_df.copy()
-        if selected_indices:
-            filtered_df = filtered_df[filtered_df["Cap Bucket"].isin(selected_indices)]
+        if min_mcap_cr > 0 and "market_cap" in filtered_df.columns:
+            min_mcap_rupees = min_mcap_cr * 1e7
+            filtered_df = filtered_df[
+                filtered_df["market_cap"].notna() & (filtered_df["market_cap"] >= min_mcap_rupees)
+            ]
 
         # Summary KPIs
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -206,13 +224,17 @@ def main() -> None:
         if not selected_cols:
             selected_cols = valid_defaults
 
-        display_view = filtered_df[selected_cols].copy()
+        display_view = filtered_df[[c for c in selected_cols if c in filtered_df.columns]].copy()
 
         # Formatting configurations
         column_config = {
             "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
             "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-            "Cap Bucket": st.column_config.TextColumn("Cap Bucket", width="medium"),
+            "Market Cap": st.column_config.NumberColumn(
+                "Market Cap (₹ Cr)",
+                format="₹%.2f Cr",
+                help="Official NSE Market Capitalization in Crores (blank if before 2024-02-01)",
+            ),
             "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
             "Volume": st.column_config.NumberColumn("Volume", format="%d"),
             "% Change Daily": st.column_config.NumberColumn("% Change Daily", format="%.2f%%"),
