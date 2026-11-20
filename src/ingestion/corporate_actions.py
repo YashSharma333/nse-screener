@@ -37,8 +37,6 @@ from config.settings import (
     NSE_API_BASE,
     NSE_ARCHIVES_BASE,
     NSE_CORP_ACTIONS_API_PATH,
-    NSE_LISTING_MASTER_PATH,
-    NSE_SYMBOL_CHANGE_PATH,
 )
 from src.ingestion.corporate_actions_parser import (
     ActionPart,
@@ -452,12 +450,50 @@ class NSEReportsDownloader:
 
     def fetch_symbol_changes(self) -> tuple[bytes, pd.DataFrame]:
         """Download ``symbolchange.csv``. Returns ``(raw_bytes, parsed_table)``."""
-        content = self._get(self.archives_base + NSE_SYMBOL_CHANGE_PATH).content
+        from src.ingestion.nse_files import SYMBOLCHANGE_URL, FetchFailed, NoFile
+        from src.ingestion.nse_files import fetch as d2_fetch
+
+        try:
+            content = d2_fetch(
+                SYMBOLCHANGE_URL,
+                session=self.get_session(),
+                timeout=self.request_timeout,
+                retries=self.max_retries,
+                sleep=self._sleep,
+                retry_wait=self.retry_wait,
+            )
+        except NoFile as exc:
+            raise NSEDownloadError(
+                f"404 for {SYMBOLCHANGE_URL}: NSE moved or removed this report."
+            ) from exc
+        except FetchFailed as exc:
+            raise NSEDownloadError(
+                f"{SYMBOLCHANGE_URL} failed after {self.max_retries} attempts: {exc}"
+            ) from exc
         return content, parse_symbol_changes(content)
 
     def fetch_listing_master(self) -> tuple[bytes, pd.DataFrame]:
         """Download ``EQUITY_L.csv``. Returns ``(raw_bytes, parsed_table)``."""
-        content = self._get(self.archives_base + NSE_LISTING_MASTER_PATH).content
+        from src.ingestion.nse_files import EQUITY_L_URL, FetchFailed, NoFile
+        from src.ingestion.nse_files import fetch as d2_fetch
+
+        try:
+            content = d2_fetch(
+                EQUITY_L_URL,
+                session=self.get_session(),
+                timeout=self.request_timeout,
+                retries=self.max_retries,
+                sleep=self._sleep,
+                retry_wait=self.retry_wait,
+            )
+        except NoFile as exc:
+            raise NSEDownloadError(
+                f"404 for {EQUITY_L_URL}: NSE moved or removed this report."
+            ) from exc
+        except FetchFailed as exc:
+            raise NSEDownloadError(
+                f"{EQUITY_L_URL} failed after {self.max_retries} attempts: {exc}"
+            ) from exc
         return content, parse_listing_master(content)
 
 

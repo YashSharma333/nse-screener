@@ -234,6 +234,21 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--load-securities",
+        action="store_true",
+        help=(
+            "Import official equity listing master (EQUITY_L.csv) into securities table (Task D8)."
+        ),
+    )
+    parser.add_argument(
+        "--load-renames",
+        action="store_true",
+        help=(
+            "Import official symbol change history (symbolchange.csv) into "
+            "symbol_changes table (Task D8)."
+        ),
+    )
+    parser.add_argument(
         "--from",
         dest="from_date",
         type=str,
@@ -312,6 +327,22 @@ def main() -> None:
             logger.error("Price verification failed with %d discrepancies.", diff_count)
             sys.exit(1)
         logger.info("Price verification succeeded with 0 discrepancies.")
+        return
+
+    # Ingest securities master from EQUITY_L.csv (task D8)
+    if args.load_securities:
+        from src.ingestion.securities import import_equity_l
+
+        count = import_equity_l()
+        logger.info("Imported %d securities into `securities` table.", count)
+        return
+
+    # Ingest symbol changes from symbolchange.csv (task D8)
+    if args.load_renames:
+        from src.ingestion.renames import load_renames
+
+        count = load_renames()
+        logger.info("Imported %d symbol changes into `symbol_changes` table.", count)
         return
 
     logger.info("Initializing Bhavcopy ETL pipeline...")
