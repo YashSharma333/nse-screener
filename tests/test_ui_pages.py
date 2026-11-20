@@ -142,3 +142,75 @@ class TestDashboardFilters(unittest.TestCase):
         self.assertFalse(at.exception)
         self.assertEqual(len(at.error), 0, [e.value for e in at.error])
         self.assertEqual(at.metric[0].value, "3")
+
+
+class TestSwingVolumePageSidebar(unittest.TestCase):
+    """Series tabs, EQ-only market cap filter and inspector list, on a crafted snapshot."""
+
+    def _snapshot(self):
+        import pandas as pd
+
+        def row(symbol, series, mcap_cr, volume):
+            return {
+                "symbol": symbol,
+                "series": series,
+                "market_cap": mcap_cr * 1e7 if mcap_cr else float("nan"),
+                "date": pd.Timestamp("2026-11-20").date(),
+                "open": 99.0,
+                "high": 101.0,
+                "low": 98.0,
+                "close": 100.0,
+                "pct_change_daily": 1.0,
+                "ema_20": 95.0,
+                "sma_50": 90.0,
+                "sma_200": 80.0,
+                "high_252d_prev": 105.0,
+                "volume": volume,
+                "volume_sma_20": 400_000.0,
+                "rsi_14": 60.0,
+            }
+
+        rows = [
+            row("AAA", "EQ", 1000, 900_000),  # passes
+            row("BBB", "EQ", 100, 900_000),  # passes but below 500 cr -> hidden
+            row("CCC", "SM", None, 900_000),  # passes; SME is never market cap filtered
+            row("DDD", "EQ", 1000, 100_000),  # fails only volume_surge -> near-miss
+        ]
+        far = row("EEE", "EQ", 1000, 100_000)
+        far.update(close=10.0, ema_20=1.0)  # fails several conditions
+        return pd.DataFrame([*rows, far])
+
+    def _run(self):
+        from unittest.mock import patch
+
+        fake = {"snapshot": self._snapshot(), "is_live": True, "status_msg": "", "message": ""}
+        patcher = patch("ui.components.screener_view.get_snapshot", return_value=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        at = AppTest.from_file(
+            str(PROJECT_ROOT / "ui" / "pages" / "2_swing_volume.py"), default_timeout=60
+        )
+        at.run()
+        return at
+
+    def test_tabs_per_series_and_market_cap_filter_is_eq_only(self):
+        at = self._run()
+        self.assertFalse(at.exception, f"Page raised: {at.exception}")
+        self.assertEqual([t.label for t in at.tabs], ["EQ · 1", "SM · 1"])
+        self.assertEqual(at.sidebar.number_input[0].value, 500.0)  # default
+
+    def test_inspector_lists_only_the_results_on_the_page(self):
+        """Regression: the ticker list must be passing + near-miss, not every stock."""
+        at = self._run()
+        select = next(s for s in at.selectbox if s.key == "swing_vol_stock_select")
+        self.assertEqual(select.options, ["AAA", "CCC", "DDD"])
+
+    def test_indicator_editor_changes_results_and_reset_restores(self):
+        at = self._run()
+        box = next(n for n in at.sidebar.number_input if n.label == "Vol multiplier")
+        box.set_value(0.1).run()  # a tiny multiplier lets DDD pass as well
+        select = next(s for s in at.selectbox if s.key == "swing_vol_stock_select")
+        self.assertIn("DDD", select.options)
+        self.assertEqual(next(t.label for t in at.tabs), "EQ · 2")
+        next(b for b in at.sidebar.button if "Reset" in b.label).click().run()
+        self.assertEqual(next(t.label for t in at.tabs), "EQ · 1")

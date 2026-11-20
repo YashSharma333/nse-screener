@@ -1,48 +1,81 @@
 """
 Reusable Screener View Component
 ================================
-Renders a standardized, high-performance UI view for any registered Screener,
-including condition-by-condition explainability, near-miss diagnostics,
-and CSV exports.
+Renders a standardized UI for any registered Screener: sidebar settings (market cap
+filter and indicator editor), KPI tiles, one result tab per NSE series, near-miss
+diagnostics, CSV exports and a stock inspector limited to the stocks shown.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
 from src.screeners.registry import get_screener
+from ui.components.dashboard_helpers import SERIES_LABELS
+from ui.components.screener_helpers import (
+    apply_market_cap_filter,
+    build_near_miss_table,
+    build_results_table,
+    group_by_series,
+    inspector_symbols,
+)
+from ui.components.screener_sidebar import render_indicator_settings, render_market_cap_filter
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 from ui.data import get_snapshot, render_uninitialized_prompt
 
 logger = logging.getLogger("ui.screener_view")
 
+COLUMN_CONFIG = {
+    "market_cap_cr": st.column_config.NumberColumn("Market Cap (₹ Cr)", format="₹%.0f Cr"),
+    "close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
+    "pct_change_daily": st.column_config.NumberColumn("% Change", format="%.2f%%"),
+    "volume": st.column_config.NumberColumn("Volume", format="%d"),
+    "vol_multiple": st.column_config.NumberColumn("Vol ×20D", format="%.2fx"),
+    "ema_20": st.column_config.NumberColumn("EMA 20", format="₹%.2f"),
+    "sma_50": st.column_config.NumberColumn("SMA 50", format="₹%.2f"),
+    "sma_200": st.column_config.NumberColumn("SMA 200", format="₹%.2f"),
+    "rsi_14": st.column_config.NumberColumn("RSI (14)", format="%.1f"),
+    "symbol": st.column_config.TextColumn("Symbol"),
+    "series": st.column_config.TextColumn("Series"),
+    "failed_condition": st.column_config.TextColumn("Failed condition (bottleneck)"),
+}
+
+
+def ribbon_html(chips: list[tuple[str, str]]) -> str:
+    """HTML for a row of condition chips; each chip is ``(css_color_name, text)``."""
+    spans = "".join(f'<span class="filter-chip chip-{c}">{t}</span>' for c, t in chips)
+    return f'<div class="filter-ribbon">{spans}</div>'
+
+
+def setup_page(page_title: str, icon: str = "⚡") -> None:
+    """Wide layout and the terminal theme (set_page_config may only run once per session)."""
+    with contextlib.suppress(Exception):
+        st.set_page_config(
+            page_title=f"{page_title} | Trading Terminal",
+            page_icon=icon,
+            layout="wide",
+            initial_sidebar_state="expanded",
+        )
+    apply_terminal_theme()
+
 
 def render_screener_page(
     screener_key: str,
     page_title: str,
     subtitle: str,
-    ribbon_html: str = "",
+    ribbon_builder: Callable[[dict[str, Any]], str] | None = None,
     key_prefix: str = "screener",
     csv_filename: str | None = None,
-    screener_params: dict[str, Any] | None = None,
 ) -> None:
-    """Render a comprehensive screener page."""
-    with contextlib.suppress(Exception):
-        st.set_page_config(
-            page_title=f"{page_title} | Trading Terminal",
-            page_icon="⚡",
-            layout="wide",
-            initial_sidebar_state="expanded",
-        )
-
-    apply_terminal_theme()
+    """Render a complete screener page for one fixed screener (Swing + Volume, ...)."""
+    setup_page(page_title)
 
     data = get_snapshot()
     snapshot = data["snapshot"]
@@ -54,137 +87,111 @@ def render_screener_page(
         status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
         is_live=is_live,
     )
-
     st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
     if snapshot.empty:
         render_uninitialized_prompt()
         return
 
-    if ribbon_html:
-        st.markdown(ribbon_html, unsafe_allow_html=True)
+    st.sidebar.markdown("### ⚙️ Screener settings")
+    min_cr = render_market_cap_filter(key_prefix)
+    overrides = render_indicator_settings(type(get_screener(screener_key)), key_prefix)
+    screener = get_screener(screener_key, **overrides)
 
-    screener = get_screener(screener_key, **(screener_params or {}))
-    explained = screener.explain(snapshot)
+    if ribbon_builder:
+        st.markdown(ribbon_builder(screener.params), unsafe_allow_html=True)
 
-    qualifying = explained[explained["passed"]].copy()
-    near_misses = explained[explained["near_miss"]].copy()
+    stem = (csv_filename or screener_key).removesuffix(".csv")
+    render_results(snapshot, screener, min_cr, stem, key_prefix)
 
-    # KPI Telemetry Banner
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    with kpi1:
-        st.metric("Qualifying Equities", f"{len(qualifying)}")
-    with kpi2:
-        st.metric("Near-Miss Equities (1 Miss)", f"{len(near_misses)}")
-    with kpi3:
-        hit_rate = (len(qualifying) / len(snapshot) * 100.0) if len(snapshot) > 0 else 0.0
-        st.metric("Hit Rate", f"{hit_rate:.1f}%")
-    with kpi4:
-        has_rsi = not qualifying.empty and "rsi_14" in qualifying.columns
-        avg_rsi = qualifying["rsi_14"].mean() if has_rsi else 0.0
-        st.metric("Average RSI (14)", f"{avg_rsi:.1f}")
 
-    st.markdown("---")
+def render_results(
+    snapshot: pd.DataFrame,
+    screener: Any,
+    min_market_cap_cr: float,
+    csv_stem: str,
+    key_prefix: str,
+) -> None:
+    """Filter, run the screener and draw KPIs, series tabs, diagnostics and the inspector."""
+    universe = apply_market_cap_filter(snapshot, min_market_cap_cr)
+    hidden = len(snapshot) - len(universe)
+    if hidden:
+        st.caption(f"{hidden:,} EQ stocks below ₹{min_market_cap_cr:,.0f} Cr are hidden.")
 
-    tab_pass, tab_near, tab_all = st.tabs(
-        ["🎯 Passing Equities", "🔍 Near-Miss Candidates", "📋 Full Universe Status"]
+    explained = screener.explain(universe)
+    qualifying = explained[explained["passed"]]
+    near_misses = explained[explained["near_miss"]]
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Qualifying", f"{len(qualifying):,}", help="Stocks passing every condition.")
+    k2.metric(
+        "Near-miss",
+        f"{len(near_misses):,}",
+        help="Stocks failing exactly one condition (the bottleneck).",
+    )
+    hit_rate = len(qualifying) / len(universe) * 100.0 if len(universe) else 0.0
+    k3.metric("Hit rate", f"{hit_rate:.1f}%", help=f"Of {len(universe):,} stocks screened.")
+    has_rsi = not qualifying.empty and "rsi_14" in qualifying.columns
+    k4.metric("Avg RSI (14)", f"{qualifying['rsi_14'].mean():.1f}" if has_rsi else "—")
+
+    st.divider()
+    _render_series_tabs(explained, csv_stem, key_prefix)
+
+    with st.expander("📋 Diagnostic matrix (every stock, condition by condition)"):
+        cond_cols = [c for c in explained.columns if c.startswith(("cond_", "pass_"))]
+        wanted = ["symbol", "series", "close", "conditions_passed", "conditions_total", "passed"]
+        shown = [c for c in [*wanted, "near_miss", *cond_cols] if c in explained.columns]
+        st.dataframe(explained[shown], width="stretch", hide_index=True)
+
+    st.divider()
+    symbols = inspector_symbols(explained)
+    render_stock_inspector(
+        explained,
+        default_symbol=symbols[0] if symbols else None,
+        key_prefix=key_prefix,
+        symbols=symbols,
     )
 
-    with tab_pass:
-        if qualifying.empty:
-            st.info(f"No stocks currently satisfy all conditions for {screener.name}.")
-        else:
-            _render_results_table(qualifying, csv_filename or f"{screener_key}.csv")
 
-    with tab_near:
-        if near_misses.empty:
-            st.info("No near-miss stocks (exactly 1 failed condition) found.")
-        else:
-            st.caption("Stocks that passed all screening criteria except for a single condition:")
-            _render_near_miss_table(near_misses)
+def _render_series_tabs(explained: pd.DataFrame, csv_stem: str, key_prefix: str) -> None:
+    """One tab per NSE series with that series' passing stocks (near-misses on a toggle)."""
+    groups = group_by_series(explained)
+    if not groups:
+        st.info("No stocks to screen with the current filters.")
+        return
 
-    with tab_all:
-        st.caption("Condition-level breakdown across the entire universe:")
-        _render_explanation_table(explained)
+    labels = [f"{name} · {int(group['passed'].sum())}" for name, group in groups]
+    for tab, (name, group) in zip(st.tabs(labels), groups, strict=True):
+        with tab:
+            passing = group[group["passed"]]
+            near = group[group["near_miss"]]
+            st.caption(
+                f"{SERIES_LABELS.get(name, name)}: {len(passing):,} passing "
+                f"of {len(group):,} stocks screened"
+            )
+            if passing.empty:
+                st.info("No stocks in this series satisfy all conditions.")
+            else:
+                table = build_results_table(passing)
+                _show_table(table)
+                st.download_button(
+                    "📥 Download (CSV)",
+                    data=table.to_csv(index=False),
+                    file_name=f"{csv_stem}_{name}.csv",
+                    mime="text/csv",
+                    key=f"{key_prefix}_dl_{name}",
+                )
+            if not near.empty and st.toggle(
+                f"Show near-miss candidates ({len(near):,})", key=f"{key_prefix}_near_{name}"
+            ):
+                st.caption("Stocks that passed everything except one condition:")
+                _show_table(build_near_miss_table(near))
 
-    st.markdown("---")
 
-    # Interactive Technical Stock Inspector
-    top_symbol = (
-        qualifying.iloc[0]["symbol"]
-        if not qualifying.empty
-        else (near_misses.iloc[0]["symbol"] if not near_misses.empty else None)
-    )
-    render_stock_inspector(snapshot, default_symbol=top_symbol, key_prefix=key_prefix)
-
-
-def _render_results_table(df: pd.DataFrame, csv_filename: str) -> None:
-    res = df.copy()
-    if (
-        "vol_multiple" not in res.columns
-        and "volume" in res.columns
-        and "volume_sma_20" in res.columns
-    ):
-        v_nz = res["volume_sma_20"].replace(0, np.nan)
-        res["vol_multiple"] = res["volume"] / v_nz
-
-    if (
-        "pct_from_52w_high" not in res.columns
-        and "high_252d_prev" in res.columns
-        and "close" in res.columns
-    ):
-        h_nz = res["high_252d_prev"].replace(0, np.nan)
-        res["pct_from_52w_high"] = ((res["close"] - res["high_252d_prev"]) / h_nz) * 100.0
-
-    cols_order = [
-        "symbol",
-        "market_cap",
-        "close",
-        "pct_change_daily",
-        "volume",
-        "volume_sma_20",
-        "vol_multiple",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "rsi_14",
-    ]
-    available = [c for c in cols_order if c in res.columns]
-    display_df = res[available].copy()
-    if "market_cap" in display_df.columns:
-        display_df["Market Cap"] = display_df["market_cap"].apply(
-            lambda v: f"₹{float(v) / 1e7:,.2f} Cr" if pd.notna(v) and float(v) > 0 else ""
-        )
-        display_df = display_df.drop(columns=["market_cap"])
-
-    st.dataframe(display_df, width="stretch", hide_index=True)
-    st.download_button(
-        label="📥 Download Passing Equities (CSV)",
-        data=display_df.to_csv(index=False),
-        file_name=csv_filename,
-        mime="text/csv",
+def _show_table(table: pd.DataFrame) -> None:
+    st.dataframe(
+        table,
         width="stretch",
+        hide_index=True,
+        column_config={k: v for k, v in COLUMN_CONFIG.items() if k in table.columns},
     )
-
-
-def _render_near_miss_table(df: pd.DataFrame) -> None:
-    cols = ["symbol", "close", "near_miss_on", "conditions_passed", "conditions_total"]
-    available = [c for c in cols if c in df.columns]
-    display_df = df[available].copy()
-    display_df = display_df.rename(columns={"near_miss_on": "Failed Condition (Bottleneck)"})
-    st.dataframe(display_df, width="stretch", hide_index=True)
-
-
-def _render_explanation_table(df: pd.DataFrame) -> None:
-    cond_cols = [c for c in df.columns if c.startswith("cond_") or c.startswith("pass_")]
-    cols = [
-        "symbol",
-        "close",
-        "conditions_passed",
-        "conditions_total",
-        "passed",
-        "near_miss",
-        *cond_cols,
-    ]
-    available = [c for c in cols if c in df.columns]
-    st.dataframe(df[available], width="stretch", hide_index=True)
