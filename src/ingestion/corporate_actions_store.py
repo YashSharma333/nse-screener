@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from config.settings import (
     CORP_ACTIONS_HISTORY_YEARS,
     CORP_ACTIONS_MAX_UNPARSED_SHARE,
 )
-from src.db.models import CorporateAction, StockMaster, SymbolChange
+from src.db.models import CorporateAction, DailyPrice, StockMaster, SymbolChange
 from src.db.upsert import upsert_rows
 from src.ingestion.corporate_actions import (
     NSEFormatChangedError,
@@ -50,6 +51,7 @@ from src.ingestion.corporate_actions_parser import (
     STATUS_REVIEW,
     unparsed_price_share,
 )
+from src.ingestion.renames import load_chains_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -142,29 +144,60 @@ def _symbol_changes_touching_universe(session: Session, frame: pd.DataFrame) -> 
 # The reader for the price-adjustment code
 # ---------------------------------------------------------------------------
 def get_price_adjustment_events(
-    session: Session, start: date | None = None, end: date | None = None
+    session: Session,
+    start: date | Sequence[str] | None = None,
+    end: date | None = None,
+    symbols: Sequence[str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Read official corporate actions in the shape the adjustment code needs.
+
+    Maps events under former names to the stock's stored price symbols so adjustments
+    apply across rename boundaries.
 
     Returns ``(events, review)``:
 
     * ``events``: one row per ``(symbol, date)`` with columns ``symbol, date, factor, kinds,
       n_parts``. ``factor`` is the PRODUCT of every exact split, bonus and consolidation
-      factor on that ex-date (split 10 to 2 and bonus 1:1 on one day: 0.2 * 0.5 = 0.1), and
-      is what you multiply earlier prices by.
+      factor on that ex-date, and is what you multiply earlier prices by.
     * ``review``: ``symbol, date, action_type, subject`` for actions that may move the price
       but have no exact factor (rights, mergers, demergers, unreadable text). They are never
       applied automatically.
-
-    This does not change any adjusted price yet; wiring it into the adjustment is a
-    separate step.
     """
+    actual_symbols = symbols
+    actual_start: date | None = None
+    actual_end: date | None = end
+
+    if isinstance(start, (list, tuple, set)):
+        actual_symbols = list(start)
+    elif isinstance(start, str):
+        actual_symbols = [start]
+    elif isinstance(start, date):
+        actual_start = start
+
+    chains = load_chains_from_db(session)
+
+    target_symbols: set[str] = set()
+    if actual_symbols is not None:
+        for s in actual_symbols:
+            sym_norm = s.strip().upper()
+            curr = chains.get_current(sym_norm)
+            target_symbols.add(sym_norm)
+            target_symbols.add(curr)
+            target_symbols.update(chains.get_former(curr))
+
+    if target_symbols:
+        stored_stmt = (
+            select(DailyPrice.symbol).where(DailyPrice.symbol.in_(target_symbols)).distinct()
+        )
+    else:
+        stored_stmt = select(DailyPrice.symbol).distinct()
+    stored_symbols = set(session.execute(stored_stmt).scalars().all())
 
     def _window(stmt: Any) -> Any:
-        if start is not None:
-            stmt = stmt.where(CorporateAction.ex_date >= start)
-        if end is not None:
-            stmt = stmt.where(CorporateAction.ex_date <= end)
+        if actual_start is not None:
+            stmt = stmt.where(CorporateAction.ex_date >= actual_start)
+        if actual_end is not None:
+            stmt = stmt.where(CorporateAction.ex_date <= actual_end)
         return stmt
 
     exact_stmt = _window(
@@ -180,8 +213,32 @@ def get_price_adjustment_events(
             CorporateAction.action_type.in_(PRICE_ACTION_TYPES),
         )
     )
+    if actual_symbols is not None and target_symbols:
+        exact_stmt = exact_stmt.where(CorporateAction.symbol.in_(target_symbols))
+
+    raw_exact_rows = session.execute(exact_stmt).all()
+    mapped_exact: list[tuple[str, date, str, str, int, float]] = []
+    for row in raw_exact_rows:
+        sym = row.symbol.strip().upper()
+        curr = chains.get_current(sym)
+        formers = chains.get_former(curr)
+        family = {curr, sym, *formers}
+        stock_stored = family & stored_symbols if stored_symbols else {sym}
+        targets = stock_stored if stock_stored else {sym}
+        for target_sym in targets:
+            mapped_exact.append(
+                (
+                    target_sym,
+                    row.ex_date,
+                    row.action_type,
+                    row.subject_hash,
+                    row.part_no,
+                    float(row.price_factor),
+                )
+            )
+
     exact = pd.DataFrame(
-        [tuple(row) for row in session.execute(exact_stmt).all()],
+        mapped_exact,
         columns=["symbol", "date", "kind", "subject_hash", "part_no", "factor"],
     )
     if exact.empty:
@@ -210,10 +267,27 @@ def get_price_adjustment_events(
             CorporateAction.subject,
         ).where(CorporateAction.parse_status == STATUS_REVIEW)
     )
+    if actual_symbols is not None and target_symbols:
+        review_stmt = review_stmt.where(CorporateAction.symbol.in_(target_symbols))
+
+    raw_review_rows = session.execute(review_stmt).all()
+    mapped_review: list[tuple[str, date, str, str]] = []
+    for row in raw_review_rows:
+        sym = row.symbol.strip().upper()
+        curr = chains.get_current(sym)
+        formers = chains.get_former(curr)
+        family = {curr, sym, *formers}
+        stock_stored = family & stored_symbols if stored_symbols else {sym}
+        targets = stock_stored if stock_stored else {sym}
+        for target_sym in targets:
+            mapped_review.append((target_sym, row.ex_date, row.action_type, row.subject))
+
     review = pd.DataFrame(
-        [tuple(row) for row in session.execute(review_stmt).all()],
+        mapped_review,
         columns=["symbol", "date", "action_type", "subject"],
     )
+    if not review.empty:
+        review = review.drop_duplicates(["symbol", "date", "action_type", "subject"])
     review = review.sort_values(["symbol", "date"]).reset_index(drop=True)
     return events, review
 
@@ -228,6 +302,7 @@ def run_corporate_actions_download(
     session: Session | None = None,
     output_dir: Path | None = None,
     today: date | None = None,
+    fetch_fn: Callable[..., bytes] | None = None,
 ) -> dict[str, Any]:
     """Download the three NSE reports, check them, keep the raw files, and store them.
 
@@ -242,7 +317,7 @@ def run_corporate_actions_download(
     start = start or default_start
     end = end or default_end
     out_dir = output_dir or CORP_ACTIONS_DIR
-    fetcher = downloader or NSEReportsDownloader()
+    fetcher = downloader or NSEReportsDownloader(fetch_fn=fetch_fn)
     fetched_at = datetime.now().replace(microsecond=0)
 
     # 1. Download everything (no database yet).

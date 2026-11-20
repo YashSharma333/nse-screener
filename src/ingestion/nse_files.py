@@ -291,6 +291,12 @@ def bhavcopy_url(d: date) -> str:
     return bhavcopy_old_url(d)
 
 
+def cm_52_wk_url(d: date) -> str:
+    """Return official adjusted 52-week High/Low CSV URL: CM_52_wk_High_low_DDMMYYYY.csv."""
+    ddmmyyyy = f"{d.day:02d}{d.month:02d}{d.year:04d}"
+    return f"{NSE_ARCHIVES_BASE}/content/CM_52_wk_High_low_{ddmmyyyy}.csv"
+
+
 # ---------------------------------------------------------------------------
 # Registry of official NSE data sources
 # ---------------------------------------------------------------------------
@@ -346,6 +352,12 @@ FILE_REGISTRY: dict[str, FileSource] = {
         url_builder=symbolchange_url,
         host=NSE_ARCHIVES_HOST,
         frequency_note="symbol change history (cumulative file)",
+    ),
+    "cm_52_wk": FileSource(
+        name="cm_52_wk",
+        url_builder=cm_52_wk_url,
+        host=NSE_ARCHIVES_HOST,
+        frequency_note="daily adjusted 52-week high/low report (CM_52_wk_High_low_DDMMYYYY.csv)",
     ),
 }
 

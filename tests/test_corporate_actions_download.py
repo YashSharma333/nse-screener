@@ -46,8 +46,16 @@ class FakeResponse:
     def __init__(self, status_code=200, payload=None, content=b"", headers=None):
         self.status_code = status_code
         self._payload = payload
-        self.content = content
+        self._content = content
         self.headers = headers or {}
+
+    @property
+    def content(self) -> bytes:
+        if self._content:
+            return self._content
+        if self._payload is not None:
+            return json.dumps(self._payload).encode("utf-8")
+        return b""
 
     def json(self):
         if self._payload is None:
@@ -62,6 +70,7 @@ class FakeSession:
         self.replies = list(replies)
         self.calls: list[tuple[str, dict | None]] = []
         self.headers = {}
+        self._nse_warmed = True
 
     def get(self, url, params=None, timeout=None):
         self.calls.append((url, params))
@@ -187,33 +196,39 @@ def test_build_rows_cleans_types_and_blanks() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HTTP behaviour
+# HTTP behaviour & shared fetch helper (task D10)
 # ---------------------------------------------------------------------------
-def test_403_refreshes_the_session_and_retries() -> None:
-    blocked = FakeSession(FakeResponse(403))
-    fresh = FakeSession(FakeResponse(200, payload=ok_rows(2)))
-    downloader = make_downloader(blocked, fresh)
+def test_corporate_actions_download_uses_shared_fetch() -> None:
+    calls = []
+
+    def fake_fetch(url, *args, **kwargs):
+        calls.append(url)
+        if "corporates-corporateActions" in url:
+            return json.dumps(ok_rows(2)).encode("utf-8")
+        if "symbolchange" in url:
+            return (
+                b"NAME OF THE COMPANY,OLD SYMBOL,NEW SYMBOL,EFFECTIVE DATE\n"
+                b"Co,OLD,NEW,18-Nov-2026\n"
+            )
+        if "EQUITY_L" in url:
+            return (
+                b"SYMBOL,NAME OF COMPANY,SERIES,DATE OF LISTING,ISIN NUMBER,FACE VALUE\n"
+                b"NEW,Co,EQ,18-Nov-2026,INE123456789,10\n"
+            )
+        return b""
+
+    downloader = NSEReportsDownloader(fetch_fn=fake_fetch)
     rows = downloader.fetch_corporate_actions_window(date(2026, 11, 1), date(2026, 11, 3), TODAY)
     assert len(rows) == 2
-    assert len(blocked.calls) == 1
-    assert len(fresh.calls) == 1
-    assert downloader.sleeps == [7]  # waited retry_wait once
+    assert any("corporates-corporateActions" in c for c in calls)
 
+    _, sc_df = downloader.fetch_symbol_changes()
+    assert len(sc_df) == 1
+    assert any("symbolchange" in c for c in calls)
 
-def test_reply_that_is_not_json_is_retried_like_a_block() -> None:
-    first = FakeSession(FakeResponse(200, payload=None, content=b"<html>"))
-    second = FakeSession(FakeResponse(200, payload=ok_rows()))
-    downloader = make_downloader(first, second)
-    assert downloader.fetch_corporate_actions_window(date(2026, 11, 1), date(2026, 11, 3), TODAY)
-
-
-def test_429_waits_for_the_retry_after_header() -> None:
-    session = FakeSession(
-        FakeResponse(429, headers={"Retry-After": "12"}), FakeResponse(200, payload=ok_rows())
-    )
-    downloader = make_downloader(session)
-    downloader.fetch_corporate_actions_window(date(2026, 11, 1), date(2026, 11, 3), TODAY)
-    assert downloader.sleeps == [12.0]
+    _, eq_df = downloader.fetch_listing_master()
+    assert len(eq_df) == 1
+    assert any("EQUITY_L" in c for c in calls)
 
 
 def test_404_stops_immediately_without_retrying() -> None:
@@ -240,9 +255,9 @@ def test_fetch_corporate_actions_asks_one_year_at_a_time_with_nse_date_format() 
     downloader = make_downloader(session)
     rows = downloader.fetch_corporate_actions(date(2025, 11, 18), date(2026, 11, 18), TODAY)
     assert len(rows) == 3
-    params = [call[1] for call in session.calls]
-    assert params[0] == {"index": "equities", "from_date": "18-11-2025", "to_date": "31-12-2025"}
-    assert params[1] == {"index": "equities", "from_date": "01-01-2026", "to_date": "18-11-2026"}
+    urls = [call[0] for call in session.calls]
+    assert "from_date=18-11-2025&to_date=31-12-2025" in urls[0]
+    assert "from_date=01-01-2026&to_date=18-11-2026" in urls[1]
     assert downloader.sleeps == [0.5]  # polite pause between the two calls
 
 

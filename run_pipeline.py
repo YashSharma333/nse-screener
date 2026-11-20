@@ -249,6 +249,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--crosscheck-52w",
+        action="store_true",
+        help=(
+            "Cross-check adjusted prices against official NSE 52-week High/Low files "
+            "(CM_52_wk_High_low_DDMMYYYY.csv) for ~10 dates and write "
+            "reports/adj_crosscheck.csv (Task D10)."
+        ),
+    )
+    parser.add_argument(
         "--from",
         dest="from_date",
         type=str,
@@ -343,6 +352,14 @@ def main() -> None:
 
         count = load_renames()
         logger.info("Imported %d symbol changes into `symbol_changes` table.", count)
+        return
+
+    # Official 52-week cross-check (task D10)
+    if args.crosscheck_52w:
+        from scripts.crosscheck_52w import crosscheck_52w
+
+        res = crosscheck_52w()
+        logger.info("52-week cross-check completed with %d comparisons.", len(res))
         return
 
     logger.info("Initializing Bhavcopy ETL pipeline...")
