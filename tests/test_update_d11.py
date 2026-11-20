@@ -378,30 +378,36 @@ def test_ui_data_returns_market_cap_not_bucket() -> None:
 # 8. README command list matches run_pipeline.py --help
 # ---------------------------------------------------------------------------
 def test_readme_command_list_matches_help() -> None:
-    """README documents every command option available in run_pipeline.py --help."""
-    readme_path = PROJECT_ROOT / "README.md"
-    assert readme_path.exists()
-    readme_text = readme_path.read_text(encoding="utf-8")
+    """Every flag in `run_pipeline.py --help` is in the README; removed flags are not."""
+    import re
+    import subprocess
+    import sys
 
-    # Critical operational commands that must be documented in README
-    required_commands = [
-        "--update",
-        "--load-prices",
-        "--load-mcap",
-        "--verify-prices",
-        "--load-securities",
-        "--load-renames",
-        "--crosscheck-52w",
-        "--download-corporate-actions",
-        "--rebuild-adjusted",
+    readme_text = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    help_text = subprocess.run(
+        [sys.executable, "run_pipeline.py", "--help"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    cli_flags = set(re.findall(r"^\s+(--[a-z0-9][a-z0-9-]*)", help_text, flags=re.MULTILINE))
+
+    # The daily and loading commands must really exist (guards against an empty parse).
+    assert {"--update", "--load-prices", "--benchmarks", "--rebuild-adjusted"} <= cli_flags
+
+    for flag in sorted(cli_flags - {"--help"}):
+        assert flag in readme_text, f"{flag} is in run_pipeline.py --help but not in README.md"
+
+    # Flags of the removed old ETL must not come back in the docs as commands.
+    removed = [
         "--import-universe",
         "--apply-symbol-aliases",
         "--fill-missing-symbols",
         "--purge-bogus-sessions",
-        "--benchmarks",
-        "--refresh-cache",
+        "--backfill",
+        "--incremental",
+        "--detect-renames",
     ]
-
-    for cmd in required_commands:
-        msg = f"Command '{cmd}' is in run_pipeline.py but missing from README.md"
-        assert cmd in readme_text, msg
+    for flag in removed:
+        assert f"python run_pipeline.py {flag}" not in readme_text, f"{flag} was removed in D13"

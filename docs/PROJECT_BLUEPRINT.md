@@ -5,7 +5,7 @@
 `CLAUDE.md` says HOW to work. This file says WHAT we are building, WHY, what exists today,
 and in what order the rest gets built.
 
-**Last updated:** 19 Nov 2026 (after task P1, the read-only data audit). If something here disagrees with the code,
+**Last updated:** 21 Nov 2026 (after D13, the removal of the old ETL). Sections 0a and 13 are history; sections 5, 6 and 13a describe today. If something here disagrees with the code,
 the code wins. Say so in your PR and fix this file.
 
 ---
@@ -20,8 +20,9 @@ the code wins. Say so in your PR and fix this file.
   more), screener rules with no hard-coded numbers, an honest backtester that answers "does
   this strategy make money and how deep is the worst drawdown", then a Chartink-style
   no-code scanner builder.
-- **Where we are:** the data foundation is nearly finished (clean data, universe, stock
-  master, rename handling, MCP tooling). The screener refactor, RS Rating, history backend,
+- **Where we are:** the data foundation is rebuilt and finished (official raw prices from
+  2016-11-21, market cap, securities, renames, official corporate actions, one daily
+  `--update` command; see 13a). The screener refactor, RS Rating, history backend,
   backtest engine, experiment lab, analytics, UI rebuild, automation and scanner builder are
   still to do.
 - **How work is done:** the owner works with a Lead Architect (a separate chat) who writes
@@ -136,14 +137,19 @@ after a backup, following section 7a of `CLAUDE.md`.
 ## 5. Architecture at a glance
 
 ```
-NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
-        |                                   |
-        v                                   v
-  src/ingestion/  --->  src/etl/pipeline.py  (probe every calendar day, validate date,
-        |                 adjust.py (corporate actions -> adjusted prices))
+NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolchange,
+              index files (benchmarks), corporate-actions API
+        |
         v
-   MySQL: daily_prices, adj_factors, benchmark_prices, index_membership,
-          stock_master, symbol_alias, technical_indicators
+  src/ingestion/nse_files.py  (the one polite download helper: retries, date check)
+  price_loader / mcap_loader / securities / renames / benchmark / corporate_actions*
+        |
+        v
+   MySQL: daily_prices, securities, symbol_changes, corporate_actions, adj_factors,
+          benchmark_prices
+        |
+        v
+  src/etl/adjust.py  (official corporate actions -> adj_* columns; raw prices never change)
         |
         v
   src/computation/indicators/calculator.py  ->  Parquet indicator cache
@@ -156,24 +162,29 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
         |
         v
   ui/ (Streamlit: Dashboard, Swing Volume, Swing Momentum, Screener Explorer)
+
+  src/etl/daily_update.py runs the whole chain in order: `python run_pipeline.py --update`
+  (9 steps, stops at the first failure). `scripts/run_app.sh` = update, then the dashboard.
 ```
 
 ### Key files
 
 | Path | Role |
 |---|---|
-| `run_pipeline.py` | The CLI. Every data operation is a flag here. |
-| `src/etl/pipeline.py` (about 3,100 lines) | Ingestion, universe import, aliases, rename detection, purge, fill-missing. Big: split it when touched for a task, never as a side effect. |
+| `run_pipeline.py` | The CLI. Every data operation is a flag here; no flag prints help. |
+| `scripts/run_app.sh` | Runs `--update`, then opens the dashboard (on the last good data if the update fails). |
+| `src/etl/daily_update.py` | The 9-step daily routine (load prices, market cap, securities and renames, corporate actions, bogus-session check, benchmarks, adjust, indicator cache, summary). |
 | `src/etl/adjust.py` | Adjusted prices from the OFFICIAL corporate actions (`build_events`), owner overrides, and a report-only list of unexplained price jumps. No price-based guessing. |
-| `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`, `corporate_actions.py` (official NSE reports downloader), `corporate_actions_parser.py` (action text to exact price factors), `corporate_actions_store.py` (storage and the adjustment-ready reader). |
+| `src/etl/bogus_sessions.py` | Read-only check for dates that copy the previous session. Never deletes. |
+| `src/ingestion/` | `nse_files.py` (download helper), `bhavcopy_parser.py`, `price_loader.py`, `mcap_loader.py`, `securities.py`, `renames.py` (`prices_for`), `benchmark.py` (index closes for RS), `corporate_actions*.py` (official reports, parser, store and the adjustment reader). |
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
-| `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners, about 1,000 lines), `declarative.py` (JSON screeners). |
+| `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners), `declarative.py` (JSON screeners). |
 | `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
-| `config/` | `settings.py`, `costs.json`, `universe_overrides.csv`, `symbol_aliases.csv`. |
-| `migrations/versions/` | Alembic 001 to 008. |
+| `config/` | `settings.py`, `costs.json`, `adjustment_overrides.csv`. |
+| `migrations/versions/` | Alembic 001 to 010. |
 | `ui/` | Streamlit pages and components. |
-| `tests/` | About 250 offline tests. |
+| `tests/` | Offline tests only (SQLite and `tmp_path`). |
 
 ## 6. The data layer (hard-won rules, never undo)
 
@@ -181,69 +192,54 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
    (for example Diwali Muhurat).
 2. **NSE serves another day's file on non-trading days.** The date inside each file
    (DATE1, TIMESTAMP, "Index Date") must equal the requested date, otherwise the file is
-   rejected. This created 197 fake sessions once; they were purged (T64b). The DB is now a
-   clean 776 dates with exactly the 7 genuine weekend sessions.
+   rejected.
 3. **A 404 within the last 3 calendar days is never cached as a holiday** (the file may not
    be published yet).
 4. **After inserting historical rows, rebuild adjusted prices** for those symbols
    (`rebuild_adjusted`).
 5. **Corporate-action detection keeps its cross-sectional guard**: if 90% or more of symbols
    have an event on one date, it is a data problem, not a market event.
-6. **Never delete price history** when a stock leaves the universe. Change its status.
-7. **Destructive commands default to dry-run**, need `--yes`, back up what they remove, and
-   print a summary first.
+6. **Raw prices are immutable and price history is never deleted.** No code path deletes
+   `daily_prices` rows; the bogus-session check only reports.
+7. **Two Bhavcopy formats:** old (`cm<DD><MON><YYYY>bhav.csv.zip`) until 2023-12-29, UDiFF
+   from 2024-01-01. Stored series: EQ, BE, BZ, SM, ST.
 
 ### Tables
 
 | Table | What it holds |
 |---|---|
-| `daily_prices` | Raw and adjusted OHLCV per symbol per date, plus PREV_CLOSE and `index_name` (in universe mode this holds the cap bucket). |
-| `adj_factors` | Detected corporate actions (splits, bonuses) and factors. |
-| `benchmark_prices` | NSE index closes (NIFTY 50, 100, 500, Midcap 150, Smallcap 250 today). |
-| `index_membership` | Constituent lists of NSE indices. |
-| `stock_master` | One row per symbol: company name, sector, industry, cap bucket, market cap (cr), status, `in_universe`, `renamed_to`, benchmark, source. About 2,301 rows. |
-| `symbol_alias` | Renames: old_symbol, new_symbol, effective_date, status, implied_ratio, note. |
-| `corporate_actions` | Official NSE corporate actions, one row per action part, with exact `price_factor` for splits, bonuses and consolidations (`parse_status` exact / needs_review / info). About 22,500 rows, 2016-11 to 2027-02. See `docs/corporate_actions.md`. |
-| `symbol_changes` | Official NSE symbol changes (evidence only; renames still go through `symbol_alias`). 1,080 rows. |
-| `technical_indicators` | Older DB indicator table; the Parquet cache is what the UI reads. |
+| `daily_prices` | Raw OHLCV per symbol per date (`series`, `isin`, `prev_close`, `market_cap` from 2024-02-01) plus the adjusted `adj_*` columns. About 5.2 million rows, 4,661 symbols including delisted, 2016-11-21 onward. |
+| `securities` | The official listing master (`EQUITY_L.csv`): symbol, ISIN, name, series, listing date, status. |
+| `symbol_changes` | Official NSE renames (`symbolchange.csv`). Evidence only: raw rows are never relabelled; `prices_for` joins old and new names at read time. |
+| `corporate_actions` | Official NSE corporate actions, one row per action part, with exact `price_factor` for splits, bonuses and consolidations (`parse_status` exact / needs_review / info). See `docs/corporate_actions.md`. |
+| `adj_factors` | The factors actually applied by `--rebuild-adjusted`. |
+| `benchmark_prices` | NSE index closes (NIFTY 50, 100, 500, Midcap 150, Smallcap 250). |
 
-### Universe (decided)
+Removed in D13 (migration 010): `stock_master`, `symbol_alias`, `index_membership`,
+`technical_indicators`, `daily_prices.index_name`.
 
-- Source: a manually placed Excel export of the Chartink "Market Cap >= 100 cr" scan, kept at
-  `data/universe/m-cap_1.xlsx` (git-ignored). Refreshed manually, about twice a year, aligned
-  with NSE's own market-cap list.
-- Rule: enter at >= 500 cr, stay while >= 490 cr (hysteresis). Below that the stock is
-  flagged `below_threshold`, never deleted.
-- Statuses: `active`, `below_threshold`, `not_in_file`, `renamed`.
-- Overrides in `config/universe_overrides.csv` (force_include: GESHIP, HEXT, PIRAMALFIN,
-  which the Chartink file misses) are applied after hysteresis.
-- Result of the real import on 18 Nov 2026: **1,811 active, 489 below threshold, 1 not in
-  file** (ICICIPRULI, waiting for the rename alias).
-- Survivorship bias: `index_membership` holds one snapshot (2 Nov 2026, audit P1, #65) and
-  only today's active stocks have prices (#63). For older dates, backtests apply today's
-  membership backward. **Every backtest result must carry a
-  `survivorship_biased` flag.**
+### Which stocks are screened
+
+All regular-series stocks are loaded, delisted ones included, so history has no
+survivorship gap in the prices themselves. The dashboard filters by series and by a minimum
+market cap (default 500 cr, EQ only; NULL market cap before 2024-02-01 is never guessed).
+There is no stored "universe". **Every backtest result must still carry a
+`survivorship_biased` flag** until a per-date tradable universe exists.
 
 ### Symbol renames
 
-A rename splits a stock's history (SMA200, 252-day high and RS all break). Aliases are
-applied only after a continuity check: the new symbol's first raw PREV_CLOSE vs the old
-symbol's close on the last trading day before. Classifications: `verified_exact`,
-`verified_close`, `ratio_mismatch`, `date_gap`, `overlap`. Gaps in dates do not matter.
-Splits and mergers show `ratio_mismatch` and must NOT be merged blindly. IPO listing days
-give false positives (PREV_CLOSE is the issue price). Only apply aliases confirmed by
-company name. State today: `ICICIPRULI -> ICICILIFE` verified and to be applied;
-`PEL -> PIRAMALFIN` is a candidate needing a cache check; `SASTASUNDR -> HEALTHX` plausible,
-needs a name check; GATI, GET&D, SUNDARMHLD, RAMBHAJO look like IPO false positives.
+Raw `daily_prices.symbol` is never changed. Renames come from the official
+`symbolchange.csv` (`symbol_changes`) and are joined at read time by `prices_for` in
+`src/ingestion/renames.py` (chains `A -> B -> C`, cycle detection, `verify_rename_by_isin`).
+Mergers and demergers (TATAMOTORS to TMPV, SRTRANSFIN to SHRIRAMFIN) are a separate
+question when building a continuous series; the owner decides per case.
 
 ### CLI (all in `run_pipeline.py`)
 
-`--backfill`, `--incremental`, `--refresh-cache`, `--rebuild-adjusted`, `--benchmarks
---start --end`, `--recheck-non-trading --start --end`, `--purge-bogus-sessions [--yes]`,
-`--import-universe PATH [--yes]`, `--universe-overrides`, `--import-symbol-aliases [--yes]`,
-`--apply-symbol-aliases [--yes]`, `--detect-renames`, `--fill-missing-symbols`,
-`--download-corporate-actions [--start --end]` (no `--dry-run`),
-`--add-threshold`, `--keep-threshold`, `--dry-run`. Check `--help` for the truth.
+`--update`, `--load-prices`, `--load-mcap`, `--load-securities`, `--load-renames`,
+`--download-corporate-actions`, `--rebuild-adjusted`, `--benchmarks`, `--refresh-cache`,
+`--verify-prices`, `--crosscheck-52w`, with `--from/--to` and `--start/--end` for ranges.
+Check `--help` for the truth.
 
 ## 7. Indicators and cache design
 
@@ -360,7 +356,30 @@ IndianAPI plan: about 500 calls per month, one stock per call. Never use it for 
 industry, never in tests or loops. Intended only for fundamentals of stocks that pass scans
 (Prompt K), cached because fundamentals change quarterly.
 
-## 13. Status as of 18 Nov 2026
+## 13a. Status as of 21 Nov 2026 (the D-series data rebuild)
+
+An audit on 19 Nov showed the earlier data was unsafe (relabelled prices, guessed
+adjustments, missing delisted stocks, gaps). The database was rebuilt from official NSE files:
+
+| Task | What | PR |
+|---|---|---|
+| D2 | `nse_files.py`: one polite download helper and file registry | #73 |
+| D3 | Parsers for both Bhavcopy formats | #74 |
+| D4 | Clean raw-first schema (migration 009) | #75 |
+| D5 | All raw prices from 2016-11-21 (series EQ, BE, BZ, SM, ST) | #76 |
+| D6, D7 | Market cap from PR bundles; independent price verification | #77 |
+| D8 | Securities list and official renames (`prices_for`) | #78 |
+| D9 | The "3-day drop rule" was dropped on purpose (it would delete history) | - |
+| D10 | Corporate actions on the shared fetch; 52-week cross-check | #79 |
+| D11 | The single daily `--update` command; UI shows market cap | #80 |
+| D12 | Removed the screener scaffold, conditions package and old scripts | #81 |
+| UI1 to UI4 | Dashboard series selector, KPIs, screener sidebars, Sync button runs the full update | #83 to #86 |
+| D13 | Removed the old ETL (`BhavcopyETL`, universe, aliases, index constituents), added the benchmark step to `--update`, `scripts/run_app.sh`, migration 010 | this PR |
+
+Most of the old data issues (#43, #60 to #63, #65, #68, #69) described the removed design
+and were closed in D13.
+
+## 13. Status as of 18 Nov 2026 (history, before the D-series)
 
 **Done and merged:** Phases 0 to 2 (ingestion, adjustments, benchmarks, indicator cache,
 screener platform, hardening F1 to F12); T64 (special sessions); T64b (fake-session
@@ -437,7 +456,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
 | P2 | **B1 Fixes PR**: H1 to H11, (`conditions/` and `scaffold.py` already deleted in D12), merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
-| P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
+| P4 | **B3 Updates PR**: T46 finish (industry and sector import; `stock_master` no longer exists, so it needs a new table via a migration), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
 | P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
 | P6 | Experiment lab (parameter sweeps, walk-forward, run registry) | P5 | every run stores its parameters |
 | P7 | Quant analytics (CAGR, max drawdown, Sharpe and Sortino, expectancy, MAE and MFE, regime split, survivorship flag) | P5 | |
@@ -458,8 +477,7 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
   crossover, then screeners). No `conditions.py`.
 - Parser moves to `src/screeners/rules.py`; registry merges into `base.py`;
   `declarative.py` stays; `conditions/` and `scaffold.py` were deleted in D12.
-- Universe 500 cr enter, 490 stay; below threshold is flagged, not deleted.
-- Ingest all EQ stocks, use `stock_master` to decide what is screened.
+- No stored universe: load every regular series, filter in the dashboard (series, minimum market cap). Price history is never deleted.
 - Monthly Chartink market-cap refresh is dropped; twice-yearly list is enough.
 - Pre-compute only 1 to 2 years of indicators. Full history on demand.
 - Streamlit now; private deployment only; no static IP; no paid data.
@@ -468,13 +486,17 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 
 ## 16. Open items and known risks
 
-1. Verify `index_name IS NULL` count on the first real daily MySQL update (the MySQL path
-   is not fully proven).
-2. Ruff SIM102 warning at `pipeline.py` about line 1773 (newer Ruff than CI's pinned one).
-3. `pipeline.py` is over 3,000 lines. Split in a dedicated refactor task, not by accident.
-4. PEL to PIRAMALFIN history lives only in the Bhavcopy cache. Verify, then apply the alias.
-5. Survivorship bias before 20 Mar 2026 (see section 6).
-6. Possible NSE blocking of server IPs at deployment.
+1. Benchmarks miss a few special-session dates (issue #64); the daily `--update` now keeps
+   them current for new days.
+2. Tests must never touch the network (issue #82 was one that did) or the real cache and
+   reports (issue #66).
+3. Unexplained price jumps and missing official actions still need owner review (#58, #57, #55).
+4. Survivorship bias: prices include delisted stocks, but there is no per-date tradable
+   universe yet. Keep the `survivorship_biased` flag on backtests.
+5. NSE's corporate-actions API is undocumented and `robots.txt` disallows `/api/` (#54);
+   possible blocking of server IPs at deployment.
+6. The cause of the dashboard appearing offline right after a cold start was not proven;
+   D13 stops caching empty results and the launcher updates first. Watch for a repeat.
 
 ## 17. How an agent should work here (short)
 
