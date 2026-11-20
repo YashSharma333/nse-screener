@@ -252,6 +252,24 @@ class BhavcopyETL:
                 tmp_path.unlink(missing_ok=True)
         return sorted(to_remove)
 
+    def load_prices(
+        self,
+        start: date | str | None = None,
+        end: date | str | None = None,
+        session: Session | None = None,
+    ) -> Any:
+        """Load official raw Bhavcopy prices (task D5) into daily_prices."""
+        from src.ingestion.price_loader import load_raw_prices
+
+        return load_raw_prices(
+            start=start,
+            end=end,
+            session=session,
+            cache_dir=getattr(self, "cache_dir", None),
+            non_trading_path=getattr(self, "non_trading_path", None),
+            pause_seconds=getattr(self, "download_delay", 0.3),
+        )
+
     def get_stored_dates(self, session: Session | None = None) -> set[date]:
         """Retrieve distinct dates already stored in daily_prices."""
         query = text("SELECT DISTINCT date FROM daily_prices")
