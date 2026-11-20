@@ -28,7 +28,7 @@ python run_pipeline.py --help                                      # every data 
 
 Gotchas:
 - Tests run offline against SQLite and `tmp_path`. Fake data must use real column types (Arrow `date32` dates), and any SQL written for MySQL needs a compile test or the MySQL CI job, because SQLite is not MySQL (PR #41).
-- Running the tests overwrites `reports/adj_events_review.csv` and `reports/adj_events_uncertain.csv` (the adjustment code writes them to the working directory). Copy real reports elsewhere before running pytest.
+- Tests never touch the real indicator cache or `reports/*.csv`: an autouse fixture in `tests/conftest.py` redirects `INDICATORS_CACHE_PATH`, `INDICATORS_META_PATH` and `REPORTS_DIR` to a temp folder (issue #66). A new function that writes under `data/` or `reports/` must read its default path at call time (not as a default argument), or the fixture cannot redirect it.
 - MCP date columns come back one day early (UTC shift): use `CAST(date AS CHAR)` in queries.
 
 ## Architecture

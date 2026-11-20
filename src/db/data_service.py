@@ -239,10 +239,11 @@ def get_db_cache_metadata(connection: Any = None) -> dict[str, Any]:
 
 def save_indicator_parquet_cache(
     df: pd.DataFrame,
-    cache_path: Path = INDICATORS_CACHE_PATH,
+    cache_path: Path | None = None,
     meta_dict: dict[str, Any] | None = None,
 ) -> None:
     """Atomically write processed indicator DataFrame and sidecar metadata JSON."""
+    cache_path = cache_path or INDICATORS_CACHE_PATH
     if df.empty:
         return
 
@@ -360,7 +361,7 @@ def _date_literal(schema: Any, value: Any) -> Any:
 def load_indicator_snapshot(
     use_adjusted: bool = True,
     force_refresh: bool = False,
-    cache_path: Path = INDICATORS_CACHE_PATH,
+    cache_path: Path | None = None,
     snapshot_only: bool = False,
     history_years: int | None = INDICATOR_HISTORY_YEARS,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool, str]:
@@ -372,6 +373,7 @@ def load_indicator_snapshot(
     Recomputes and updates cache if any metric differs.
     When snapshot_only=True, loads ONLY the latest date rows via PyArrow dataset filter.
     """
+    cache_path = cache_path or INDICATORS_CACHE_PATH
     meta_path = cache_path.with_suffix(".meta.json")
 
     # 1. Check if cache and metadata exist and are fresh
@@ -529,7 +531,7 @@ def load_indicator_snapshot(
 
 def refresh_indicator_cache(
     use_adjusted: bool = True,
-    cache_path: Path = INDICATORS_CACHE_PATH,
+    cache_path: Path | None = None,
     history_years: int | None = INDICATOR_HISTORY_YEARS,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool, str]:
     """Force recomputing and saving indicators and sidecar metadata."""
@@ -590,13 +592,14 @@ def load_indicator_history(
     symbols: Sequence[str] | None = None,
     start: date | None = None,
     end: date | None = None,
-    cache_path: Path = INDICATORS_CACHE_PATH,
+    cache_path: Path | None = None,
 ) -> pd.DataFrame:
     """Load indicator history with PyArrow column projection and predicate pushdown filters.
 
     Ensures the backend queries only the requested columns and symbols/dates without
     loading the entire multi-year historical dataset into memory.
     """
+    cache_path = cache_path or INDICATORS_CACHE_PATH
     if not cache_path.exists():
         _snapshot, full, _live, _msg = load_indicator_snapshot(cache_path=cache_path)
         if full.empty:

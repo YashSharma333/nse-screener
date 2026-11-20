@@ -488,8 +488,8 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 
 1. Benchmarks miss a few special-session dates (issue #64); the daily `--update` now keeps
    them current for new days.
-2. Tests must never touch the network (issue #82 was one that did) or the real cache and
-   reports (issue #66).
+2. Tests must never touch the network (issue #82 was one that did). They also no longer
+   touch the real cache or reports (issue #66, fixed in D13 by an autouse fixture).
 3. Unexplained price jumps and missing official actions still need owner review (#58, #57, #55).
 4. Survivorship bias: prices include delisted stocks, but there is no per-date tradable
    universe yet. Keep the `survivorship_biased` flag on backtests.
