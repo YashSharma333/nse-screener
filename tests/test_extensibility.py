@@ -1,5 +1,5 @@
 """
-Tests for Screener Scaffolding and Declarative JSON Extensibility (E1, E3).
+Tests for Declarative JSON Screener Extensibility (E3).
 """
 
 from __future__ import annotations
@@ -7,36 +7,12 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from src.screeners.declarative import create_declarative_screener, load_custom_screeners
 from src.screeners.registry import get_screener
-from src.screeners.scaffold import main as scaffold_main
-from src.screeners.scaffold import scaffold_screener
-
-
-def test_scaffold_generator():
-    """Verify that scaffold_screener generates valid Python code and tests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root_path = Path(tmpdir)
-        mod_p, test_p = scaffold_screener(
-            key="custom_trend_burst",
-            name="Trend Burst",
-            category="breakout",
-            description="Testing scaffold generation.",
-            status="experimental",
-            root_dir=root_path,
-        )
-
-        assert mod_p.exists()
-        assert test_p.exists()
-        content = mod_p.read_text(encoding="utf-8")
-        assert "class CustomTrendBurstScreener" in content
-        assert 'key = "custom_trend_burst"' in content
-        assert "@register_screener" in content
 
 
 def test_declarative_screener_creation_and_execution():
@@ -106,25 +82,3 @@ def test_load_custom_screeners_from_directory():
         loaded = load_custom_screeners(p)
         assert len(loaded) == 1
         assert loaded[0].key == "custom_disk_screener"
-
-
-def test_scaffold_cli_main(capsys: pytest.CaptureFixture[str]):
-    """Verify CLI entry point for scaffold generator."""
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        patch(
-            "sys.argv",
-            [
-                "scaffold",
-                "--key",
-                "cli_screener",
-                "--name",
-                "CLI Screener",
-                "--root-dir",
-                tmpdir,
-            ],
-        ),
-    ):
-        scaffold_main()
-        captured = capsys.readouterr().out
-        assert "Created Screener module" in captured

@@ -14,34 +14,24 @@ This guide walks you through building, testing, and registering a new systematic
 
 ## Approach 1: Python-Coded Screener (Recommended for Complex Setups)
 
-### 1. Scaffold the New Screener
+### 1. Create the Files
 
-Use the built-in generator CLI to create the screener module and companion unit test:
+Create the screener module and its companion test by hand (copy a small existing screener in `src/screeners/catalog.py` as a starting point):
 
-```bash
-python -m src.screeners.scaffold \
-  --key my_breakout \
-  --name "My Volume Breakout" \
-  --category breakout \
-  --description "High volume breakout above 50-day moving average" \
-  --status experimental
-```
-
-This generates:
 - `src/screeners/my_breakout.py`
 - `tests/test_screener_my_breakout.py`
 
 ### 2. Implement the Screening Conditions
 
-Open `src/screeners/my_breakout.py` and organize your conditions strictly by nature:
+In `src/screeners/my_breakout.py`, build your conditions from the helpers in `src/screeners/catalog.py` (the single home of all conditions):
 
 ```python
 from dataclasses import dataclass
 from typing import Literal
 import pandas as pd
 from src.screeners.base import Screener
-from src.screeners.conditions.price import cond_above_sma
-from src.screeners.conditions.volume import cond_volume_surge
+from src.screeners.catalog import _cond_above_sma as cond_above_sma
+from src.screeners.catalog import _cond_volume_surge as cond_volume_surge
 from src.screeners.registry import register_screener
 
 

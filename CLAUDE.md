@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NSE (India) end-of-day stock screener, strategy engine and backtester on daily Bhavcopy data. Long-only, delivery, no F&O. The owner is a Python beginner learning through this project: plain names, short functions, and a short comment explaining WHY wherever logic is not obvious.
 
-Read [docs/PROJECT_BLUEPRINT.md](docs/PROJECT_BLUEPRINT.md) before starting: it holds the goal, history, current status and roadmap. If it disagrees with the code, the code wins; say so in your PR and fix the blueprint. The README project tree is partly outdated (for example `src/screeners/conditions/` and `scaffold.py` are slated for deletion).
+Read [docs/PROJECT_BLUEPRINT.md](docs/PROJECT_BLUEPRINT.md) before starting: it holds the goal, history, current status and roadmap. If it disagrees with the code, the code wins; say so in your PR and fix the blueprint. The README project tree is partly outdated.
 
 Words have exact meanings: **Screener** = a filter list. **Strategy** = a complete trading plan. **Signal** = entry condition true at the close of day `t`. **Trade** = a signal that was taken (filled at the open of `t+1`).
 

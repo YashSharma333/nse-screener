@@ -22,8 +22,7 @@ from src.computation.indicators.calculator import TechnicalCalculator
 from src.db.models import Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
 from src.screeners.base import MissingIndicatorError
-from src.screeners.conditions.crossover import cond_golden_cross
-from src.screeners.conditions.price import cond_sma_trending_up
+from src.screeners.catalog import cond_golden_cross, cond_sma_trending_up
 from src.screeners.registry import get_screener
 from tests.official_actions import add_official_action
 

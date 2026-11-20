@@ -168,7 +168,7 @@ NSE Bhavcopy (daily zip/csv)   NSE index files (benchmarks, constituents)
 | `src/ingestion/` | `downloader.py` (Bhavcopy), `benchmark.py` (index prices), `index_constituents.py`, `corporate_actions.py` (official NSE reports downloader), `corporate_actions_parser.py` (action text to exact price factors), `corporate_actions_store.py` (storage and the adjustment-ready reader). |
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
-| `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners, about 1,000 lines), `declarative.py` (JSON screeners), `scaffold.py` (to be deleted), `conditions/` (to be deleted). |
+| `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners, about 1,000 lines), `declarative.py` (JSON screeners). |
 | `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
 | `config/` | `settings.py`, `costs.json`, `universe_overrides.csv`, `symbol_aliases.csv`. |
 | `migrations/versions/` | Alembic 001 to 008. |
@@ -435,7 +435,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P0 | DOCS-2: move rules, skills, commands to Claude Code | none | docs PR |
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
-| P2 | **B1 Fixes PR**: H1 to H11, delete `conditions/` and `scaffold.py`, merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
+| P2 | **B1 Fixes PR**: H1 to H11, (`conditions/` and `scaffold.py` already deleted in D12), merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
 | P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
@@ -457,7 +457,7 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 - One file for conditions: `catalog.py`, with section headers (price, volume, momentum,
   crossover, then screeners). No `conditions.py`.
 - Parser moves to `src/screeners/rules.py`; registry merges into `base.py`;
-  `declarative.py` stays; `conditions/` and `scaffold.py` are deleted.
+  `declarative.py` stays; `conditions/` and `scaffold.py` were deleted in D12.
 - Universe 500 cr enter, 490 stay; below threshold is flagged, not deleted.
 - Ingest all EQ stocks, use `stock_master` to decide what is screened.
 - Monthly Chartink market-cap refresh is dropped; twice-yearly list is enough.
