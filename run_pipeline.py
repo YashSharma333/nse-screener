@@ -210,6 +210,30 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--load-prices",
+        action="store_true",
+        help=(
+            "Ingest official raw Bhavcopy prices (all regular trading series: EQ, BE, BZ, SM, ST) "
+            "from NSE archives into daily_prices. Resumable, polite, and verified."
+        ),
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Start date in YYYY-MM-DD format for --load-prices (default: 2016-11-21)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="End date in YYYY-MM-DD format for --load-prices (default: yesterday)",
+    )
+    parser.add_argument(
         "--start",
         type=str,
         default=None,
@@ -243,6 +267,15 @@ def main() -> None:
     # Official corporate actions do not need the Bhavcopy ETL object, so handle them first.
     if args.download_corporate_actions:
         run_corporate_actions_command(args)
+        return
+
+    # Ingest raw Bhavcopy prices (task D5)
+    if args.load_prices:
+        from src.ingestion.price_loader import load_raw_prices
+
+        start_str = args.from_date or args.start
+        end_str = args.to_date or args.end
+        load_raw_prices(start=start_str, end=end_str)
         return
 
     logger.info("Initializing Bhavcopy ETL pipeline...")
