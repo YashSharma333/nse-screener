@@ -174,13 +174,9 @@ The project features an extensible, pluggable screener platform (`src/screeners/
 
 ---
 
-### 2. Grouped Conditions Architecture
+### 2. Conditions Live in One File
 
-Screening conditions are decoupled from screeners and modularized in `src/screeners/conditions/` by their nature:
-- **`price.py`**: Moving average alignment, price boundaries, 52-week proximity, volatility, and ATR contraction.
-- **`volume.py`**: Volume surges, liquidity floors, and volume dry-up ratios.
-- **`crossover.py`**: Golden Cross, Death Cross, MACD crossovers, and recent crossing events (10-session lookback).
-- **`momentum.py`**: RSI support/extremes, benchmark relative strength, cross-sectional percentile rankings, and return velocity caps/floors.
+All screening conditions and the built-in screeners live in `src/screeners/catalog.py`. JSON screeners in `screeners/custom/` are loaded by `src/screeners/declarative.py`.
 
 ### 3. Programmatic Usage Example
 
@@ -879,11 +875,6 @@ nse-screener/
 │   └── screeners/                # Extensible Screener Platform
 │       ├── base.py               # Screener abstract base class & explainability
 │       ├── registry.py           # Pluggable screener registry & discovery
-│       ├── conditions/           # Screening conditions grouped by nature:
-│       │   ├── price.py          # Price-based screening conditions
-│       │   ├── volume.py         # Volume & liquidity screening conditions
-│       │   ├── crossover.py      # Line crossing & transition conditions
-│       │   └── momentum.py       # RSI, RS & return velocity conditions
 │       ├── swing.py              # Capstone Swing + Volume & Swing With Momentum
 │       ├── classic.py            # 11 classic technical filter screens
 │       └── strategies.py         # 6 systematic strategies (Minervini, VCP, etc.)
