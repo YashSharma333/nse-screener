@@ -218,6 +218,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--load-mcap",
+        action="store_true",
+        help=(
+            "Fill daily_prices.market_cap from official NSE PR bundles (PRDDMMYY.zip) "
+            "for trading days from 2024-02-01 onward (Task D6)."
+        ),
+    )
+    parser.add_argument(
+        "--verify-prices",
+        action="store_true",
+        help=(
+            "Independent accuracy check (Task D7): re-downloads ~48 trading dates fresh from NSE, "
+            "compares them against daily_prices, and writes reports/verify_prices.csv."
+        ),
+    )
+    parser.add_argument(
         "--from",
         dest="from_date",
         type=str,
@@ -276,6 +292,26 @@ def main() -> None:
         start_str = args.from_date or args.start
         end_str = args.to_date or args.end
         load_raw_prices(start=start_str, end=end_str)
+        return
+
+    # Ingest market cap from PR bundles (task D6)
+    if args.load_mcap:
+        from src.ingestion.mcap_loader import load_market_caps
+
+        start_str = args.from_date or args.start
+        end_str = args.to_date or args.end
+        load_market_caps(start=start_str, end=end_str)
+        return
+
+    # Independent price accuracy check (task D7)
+    if args.verify_prices:
+        from scripts.verify_prices import verify_prices
+
+        diff_count, _ = verify_prices()
+        if diff_count > 0:
+            logger.error("Price verification failed with %d discrepancies.", diff_count)
+            sys.exit(1)
+        logger.info("Price verification succeeded with 0 discrepancies.")
         return
 
     logger.info("Initializing Bhavcopy ETL pipeline...")
