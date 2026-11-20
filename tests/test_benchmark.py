@@ -161,3 +161,35 @@ def test_nse_index_source_cache_hit(tmp_path: Path):
         prices = source.fetch_prices(d)
         assert prices is not None
         assert prices[NIFTY_500] == 21500.0
+
+
+def test_benchmark_loader_rejects_mismatched_index_date(tmp_path: Path):
+    """Benchmark loader must reject index close file if Index Date does not match requested date."""
+    sunday = date(2024, 10, 27)
+    # Index file with Friday's date
+    csv_text = (
+        "Index Name,Index Date,Open Index Value,High Index Value,"
+        "Low Index Value,Closing Index Value\n"
+        "Nifty 50,25-10-2024,24418.05,24440.25,24073.9,24180.8\n"
+        "Nifty 100,25-10-2024,25305.3,25326.6,24897.2,25022.2\n"
+    )
+
+    mock_session = MagicMock()
+    mock_resp = MagicMock(status_code=200, text=csv_text)
+    mock_session.get.return_value = mock_resp
+
+    test_non_trading = tmp_path / "benchmark_non_trading.json"
+    with (
+        patch("src.ingestion.benchmark.BENCHMARK_CACHE_DIR", tmp_path),
+        patch("src.ingestion.benchmark.NON_TRADING_DAYS_FILE", test_non_trading),
+    ):
+        src = NSEIndexSource(session=mock_session)
+        prices = src.fetch_prices(sunday)
+
+        # Mismatch must return None
+        assert prices is None
+        # Must not write cache file
+        assert not (tmp_path / f"{sunday.isoformat()}.parquet").exists()
+        # Must record Sunday as non-trading day
+        cached_days = load_non_trading_days()
+        assert sunday.isoformat() in cached_days

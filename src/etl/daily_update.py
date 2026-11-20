@@ -1,7 +1,7 @@
 """
 Daily Routine Orchestrator (Task D11)
 =====================================
-Provides `run_daily_update()`: a single, idempotent routine running the 8 daily steps
+Provides `run_daily_update()`: a single, idempotent routine running the 9 daily steps
 in strict sequential order, stopping at the first failure with a clear error report.
 
 Steps in order:
@@ -9,10 +9,11 @@ Steps in order:
  2. market cap for the new dates (D6)
  3. refresh EQUITY_L and symbolchange.csv (D8)
  4. refresh corporate actions (D10)
- 5. prune dry run: print candidates only; NEVER deletes in --update
- 6. rebuild adjusted prices for symbols with new events or new rows
- 7. rebuild the indicator cache (rebuilds itself when DB max date changed)
- 8. print one summary: new dates, rows added, new/renamed/dropped symbols, warnings
+ 5. check for bogus duplicate sessions: report only, nothing is ever deleted
+ 6. refresh benchmark index closes (needed by the relative-strength indicators)
+ 7. rebuild adjusted prices for symbols with new events or new rows
+ 8. rebuild the indicator cache (rebuilds itself when DB max date changed)
+ 9. print one summary: new dates, rows added, new/renamed/dropped symbols, warnings
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ class DailyUpdateSummary:
     dropped_symbols: list[str] = field(default_factory=list)
     adjusted_rows: int = 0
     bogus_sessions_flagged: int = 0
+    benchmark_rows_saved: int = 0
     warnings: list[str] = field(default_factory=list)
     step_results: dict[str, Any] = field(default_factory=dict)
 
@@ -84,7 +86,7 @@ class DailyUpdateSummary:
         return (
             "\n"
             "====================================================================\n"
-            "                     DAILY UPDATE SUMMARY (D11)                     \n"
+            "                     DAILY UPDATE SUMMARY                     \n"
             "====================================================================\n"
             f"• New trading dates loaded : {dates_str}\n"
             f"• Price rows inserted      : {self.rows_added:,}\n"
@@ -92,8 +94,9 @@ class DailyUpdateSummary:
             f"• Active securities added  : {new_sym_str}\n"
             f"• Symbol renames tracked   : {renamed_str}\n"
             f"• Inactive/dropped symbols : {dropped_str}\n"
+            f"• Benchmark rows saved     : {self.benchmark_rows_saved:,}\n"
             f"• Adjusted rows recomputed : {self.adjusted_rows:,}\n"
-            f"• Bogus sessions (dry-run) : {self.bogus_sessions_flagged} flagged (0 deleted)\n"
+            f"• Bogus sessions flagged   : {self.bogus_sessions_flagged} (report only, 0 deleted)\n"
             f"• Warnings & notices:\n{warn_str}\n"
             "===================================================================="
         )
@@ -104,10 +107,11 @@ STEP_NAMES = {
     2: "market_cap",
     3: "refresh_securities_and_renames",
     4: "refresh_corporate_actions",
-    5: "prune_dry_run",
-    6: "rebuild_adjusted_prices",
-    7: "rebuild_indicator_cache",
-    8: "summary",
+    5: "check_bogus_sessions",
+    6: "refresh_benchmarks",
+    7: "rebuild_adjusted_prices",
+    8: "rebuild_indicator_cache",
+    9: "summary",
 }
 
 
@@ -332,40 +336,71 @@ def run_daily_update(
         _run_step(4, _step_4)
 
         # ---------------------------------------------------------------------
-        # Step 5: prune dry run: print candidates only; NEVER deletes in --update
+        # Step 5: check for bogus sessions (report only; --update never deletes)
         # ---------------------------------------------------------------------
         def _step_5() -> dict[str, Any]:
-            from src.etl.pipeline import BhavcopyETL
+            from src.etl.bogus_sessions import report_bogus_sessions
 
-            etl = BhavcopyETL()
-            # Enforce dry_run=True, confirm=False. Update NEVER deletes.
-            purge_res = etl.purge_bogus_sessions(
-                dry_run=True,
-                confirm=False,
-                session=s,
-            )
-            bogus_count = purge_res.get("bogus_count", 0)
+            # Report only: this module has no code that deletes rows, so --update can
+            # never remove price history.
+            result = report_bogus_sessions(session=s)
+            bogus_count = result.get("bogus_count", 0)
             summary.bogus_sessions_flagged = bogus_count
 
             if bogus_count > 0:
-                flagged_dates = [str(d) for d in purge_res.get("purged_dates", [])]
+                flagged_dates = [str(d) for d in result.get("flagged_dates", [])]
                 msg = (
                     f"{bogus_count} bogus duplicate/holiday session(s) detected: {flagged_dates}. "
-                    "Dry-run only; no rows were deleted."
+                    "Report only; no rows were deleted."
                 )
                 logger.warning(msg)
                 summary.warnings.append(msg)
             else:
                 logger.info("Prune check: 0 bogus sessions detected.")
 
-            return purge_res
+            return result
 
         _run_step(5, _step_5)
 
         # ---------------------------------------------------------------------
-        # Step 6: rebuild adjusted prices for symbols with new events or new rows
+        # Step 6: refresh benchmark index closes (feed relative-strength indicators)
         # ---------------------------------------------------------------------
         def _step_6() -> dict[str, Any]:
+            from src.db.models import BenchmarkPrice
+            from src.ingestion.benchmark import load_benchmarks
+
+            last_bench = s.scalar(select(func.max(BenchmarkPrice.date)))
+            if last_bench is None:
+                msg = (
+                    "No benchmark history stored; run "
+                    "`python run_pipeline.py --benchmarks --start 2016-11-21` once."
+                )
+                logger.warning(msg)
+                summary.warnings.append(msg)
+                return {"saved_rows": 0}
+
+            # Only price dates newer than the last benchmark date: the few dates NSE never
+            # published an index file for are not retried on every run.
+            new_dates = s.scalars(
+                select(DailyPrice.date)
+                .distinct()
+                .where(DailyPrice.date > last_bench, DailyPrice.date <= yesterday)
+                .order_by(DailyPrice.date)
+            ).all()
+            if not new_dates:
+                logger.info("Benchmarks already up to date (last %s).", last_bench)
+                return {"saved_rows": 0}
+
+            saved = load_benchmarks(list(new_dates), session=s)
+            summary.benchmark_rows_saved = saved
+            return {"saved_rows": saved}
+
+        _run_step(6, _step_6)
+
+        # ---------------------------------------------------------------------
+        # Step 7: rebuild adjusted prices for symbols with new events or new rows
+        # ---------------------------------------------------------------------
+        def _step_7() -> dict[str, Any]:
             from src.etl.adjust import adjust_new_rows
 
             # 1. If new trading dates were added, retrieve those rows and incrementally adjust
@@ -397,12 +432,12 @@ def run_daily_update(
             summary.adjusted_rows = updated_count
             return {"updated_rows": updated_count}
 
-        _run_step(6, _step_6)
+        _run_step(7, _step_7)
 
         # ---------------------------------------------------------------------
-        # Step 7: rebuild indicator cache (rebuilds when DB max date changed)
+        # Step 8: rebuild indicator cache (rebuilds when DB max date changed)
         # ---------------------------------------------------------------------
-        def _step_7() -> dict[str, Any]:
+        def _step_8() -> dict[str, Any]:
             from src.db.data_service import load_indicator_snapshot
 
             # load_indicator_snapshot automatically checks if cache is stale:
@@ -419,18 +454,18 @@ def run_daily_update(
             )
             return {"snapshot_len": len(snapshot), "is_live": is_live, "message": msg}
 
-        _run_step(7, _step_7)
+        _run_step(8, _step_8)
 
         # ---------------------------------------------------------------------
-        # Step 8: print one summary
+        # Step 9: print one summary
         # ---------------------------------------------------------------------
-        def _step_8() -> DailyUpdateSummary:
+        def _step_9() -> DailyUpdateSummary:
             summary_text = summary.format_text()
             print(summary_text)  # noqa: T201
             logger.info("Daily update completed successfully.")
             return summary
 
-        _run_step(8, _step_8)
+        _run_step(9, _step_9)
 
         return summary
 

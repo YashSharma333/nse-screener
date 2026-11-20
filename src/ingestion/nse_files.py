@@ -61,6 +61,19 @@ HEADERS: dict[str, str] = {
     "Referer": "https://www.nseindia.com/",
 }
 
+# Headers for the NSE website JSON API (corporate actions): same browser identity,
+# but the API answers HTML/JSON, so Accept differs from the file downloads above.
+NSE_HEADERS: dict[str, str] = {
+    **HEADERS,
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+}
+
+# Retry / throttle defaults shared by the corporate-actions downloader.
+MAX_RETRIES = 3
+RETRY_WAIT = 6  # seconds between retries
+REQUEST_TIMEOUT = 25  # seconds per HTTP request
+REQUEST_DELAY = 0.8  # polite delay between downloads
+
 
 # ---------------------------------------------------------------------------
 # Exceptions

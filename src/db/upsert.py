@@ -154,7 +154,7 @@ def upsert_rows(
     update_columns: Sequence[str] | None = None,
     index_elements: Sequence[str] | None = None,
     batch_size: int = UPSERT_BATCH_SIZE,
-    coalesce_columns: Sequence[str] | None = ("index_name",),
+    coalesce_columns: Sequence[str] | None = None,
 ) -> int:
     """Upsert a list of dictionary records into the database.
 
@@ -176,7 +176,7 @@ def upsert_rows(
         Chunk size for batched execution.
     coalesce_columns : Sequence[str] | None
         Columns that should NEVER be overwritten by NULL if the stored value
-        in the database is non-NULL (default: ('index_name',)).
+        in the database is non-NULL (default: none).
 
     Returns
     -------
@@ -187,7 +187,7 @@ def upsert_rows(
         return 0
 
     # Filter out keys that do not exist on the target model table
-    # (e.g. legacy columns like index_name passed to DailyPrice)
+    # (e.g. a column that exists in a parsed file but not in the table)
     table_cols = {c.name for c in model.__table__.columns} if hasattr(model, "__table__") else None
     if table_cols is not None:
         filtered_rows = [{k: v for k, v in r.items() if k in table_cols} for r in rows]

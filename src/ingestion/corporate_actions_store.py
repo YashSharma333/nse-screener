@@ -37,7 +37,7 @@ from config.settings import (
     CORP_ACTIONS_HISTORY_YEARS,
     CORP_ACTIONS_MAX_UNPARSED_SHARE,
 )
-from src.db.models import CorporateAction, DailyPrice, StockMaster, SymbolChange
+from src.db.models import CorporateAction, DailyPrice, Security, SymbolChange
 from src.db.upsert import upsert_rows
 from src.ingestion.corporate_actions import (
     NSEFormatChangedError,
@@ -133,9 +133,9 @@ def _count_rows_not_seen(
     return len(gone)
 
 
-def _symbol_changes_touching_universe(session: Session, frame: pd.DataFrame) -> int:
-    """How many official symbol changes involve a symbol that is in our stock_master."""
-    ours = set(session.execute(select(StockMaster.symbol)).scalars().all())
+def _symbol_changes_touching_securities(session: Session, frame: pd.DataFrame) -> int:
+    """How many official symbol changes involve a symbol in our ``securities`` table."""
+    ours = set(session.execute(select(Security.symbol)).scalars().all())
     touching = frame["old_symbol"].isin(ours) | frame["new_symbol"].isin(ours)
     return int(touching.sum())
 
@@ -344,7 +344,7 @@ def run_corporate_actions_download(
         not_seen = _count_rows_not_seen(db, action_rows, start, end)
         stored = store_corporate_actions(db, action_rows)
         changes_stored = store_symbol_changes(db, symbol_changes)
-        touching = _symbol_changes_touching_universe(db, symbol_changes)
+        touching = _symbol_changes_touching_securities(db, symbol_changes)
 
     by_type = Counter(row["action_type"] for row in action_rows)
     exact_events = {
@@ -360,7 +360,7 @@ def run_corporate_actions_download(
         "unparsed_price_share": round(unparsed_share, 4),
         "not_seen_in_window": not_seen,
         "symbol_changes_stored": changes_stored,
-        "symbol_changes_touching_universe": touching,
+        "symbol_changes_touching_securities": touching,
         "listing_rows": len(listing),
     }
     logger.info("Corporate actions download complete: %s", summary)

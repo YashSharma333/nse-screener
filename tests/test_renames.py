@@ -7,7 +7,6 @@ and read-only continuity price querying. All tests run offline with SQLite.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
@@ -17,7 +16,6 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, DailyPrice, Security, SymbolChange
-from src.etl.dry_run import dry_run_is_supported
 from src.ingestion.renames import (
     build_rename_chains,
     current_symbol,
@@ -204,21 +202,6 @@ def test_prices_for_joins_old_and_new_rows_in_date_order_and_price_rows_never_mo
     assert after_rows[0].symbol == "TATAGLOBAL"
     assert after_rows[1].symbol == "TATACONSUM"
     assert after_rows[2].symbol == "TATACONSUM"
-
-
-def test_dry_run_flag_refused_for_load_renames() -> None:
-    """Refuses --dry-run when --load-renames is invoked."""
-    args = argparse.Namespace(
-        load_securities=False,
-        load_renames=True,
-        dry_run=True,
-        import_universe=None,
-        apply_symbol_aliases=False,
-        purge_bogus_sessions=False,
-        fill_missing_symbols=False,
-        detect_renames=False,
-    )
-    assert not dry_run_is_supported(args)
 
 
 def test_load_renames_idempotent(sqlite_session: Session) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 from datetime import date, datetime
@@ -13,8 +12,7 @@ import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from src.db.models import Base, CorporateAction, StockMaster, SymbolChange
-from src.etl.dry_run import DRY_RUN_COMMANDS, dry_run_is_supported
+from src.db.models import Base, CorporateAction, Security, SymbolChange
 from src.ingestion.corporate_actions import (
     NSEDownloadError,
     NSEFormatChangedError,
@@ -164,14 +162,7 @@ def test_reader_on_an_empty_table_returns_empty_frames(session) -> None:
 # The whole job
 # ---------------------------------------------------------------------------
 def test_full_job_writes_files_and_tables(session, tmp_path) -> None:
-    session.add(
-        StockMaster(
-            symbol="ICICILIFE",
-            company_name="ICICI Life",
-            status="active",
-            added_on=date(2026, 1, 1),
-        )
-    )
+    session.add(Security(symbol="ICICILIFE", name="ICICI Life", status="active"))
     session.commit()
 
     summary = run_corporate_actions_download(
@@ -187,7 +178,7 @@ def test_full_job_writes_files_and_tables(session, tmp_path) -> None:
     assert summary["rows_stored"] == count(session, CorporateAction)
     assert summary["by_type"]["BONUS"] == 7
     assert summary["symbol_changes_stored"] == 2
-    assert summary["symbol_changes_touching_universe"] == 1  # only ICICILIFE is in stock_master
+    assert summary["symbol_changes_touching_securities"] == 1  # only ICICILIFE is in securities
     assert summary["listing_rows"] == 1
     assert summary["unparsed_price_share"] < 0.2
 
@@ -265,15 +256,3 @@ def test_a_failing_report_leaves_the_database_untouched(session, tmp_path) -> No
         )
     assert count(session, CorporateAction) == 0
     assert count(session, SymbolChange) == 0
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-def test_download_command_refuses_dry_run_because_it_writes() -> None:
-    args = argparse.Namespace(dry_run=True, download_corporate_actions=True)
-    for name in DRY_RUN_COMMANDS:
-        setattr(args, name, False)
-    assert not dry_run_is_supported(args)
-    args.dry_run = False
-    assert dry_run_is_supported(args)

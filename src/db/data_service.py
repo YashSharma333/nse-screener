@@ -19,123 +19,18 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from config.settings import INDICATOR_HISTORY_YEARS, INDICATOR_WARMUP_BARS, setup_logging
 from src.computation.indicators import INDICATORS_SCHEMA_VERSION, TechnicalCalculator
-from src.db.models import StockMaster
-from src.db.session import check_connection, engine, get_db
+from src.db.session import check_connection, engine
 from src.ingestion.benchmark import canonical_index_code
-from src.ingestion.index_constituents import get_index_constituents
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 INDICATORS_CACHE_PATH = Path("data/processed/indicators.parquet")
 INDICATORS_META_PATH = Path("data/processed/indicators.meta.json")
-
-
-def get_universe_cap_buckets(session: Session | None = None) -> dict[str, str]:
-    """Retrieve active universe symbols mapped to their cap_bucket from ``stock_master``.
-
-    Returns
-    -------
-    dict[str, str]
-        Dictionary mapping ticker symbol -> cap_bucket (e.g. 'largecap', 'midcap', 'smallcap').
-        If cap_bucket is empty or NULL, values default to 'Unknown'.
-        If ``stock_master`` table is empty (0 records), logs a warning and returns an empty dict.
-    """
-    if session is None and not check_connection():
-        logger.warning("Database offline; cannot query stock_master universe.")
-        return {}
-
-    def _query(s: Session) -> dict[str, str]:
-        total_count = s.scalar(select(func.count()).select_from(StockMaster)) or 0
-        if total_count == 0:
-            logger.warning("stock_master table is empty; falling back to NIFTY-constituent filter.")
-            return {}
-
-        stmt = select(StockMaster.symbol, StockMaster.cap_bucket).where(
-            StockMaster.in_universe.is_(True),
-            StockMaster.status != "renamed",
-        )
-        return {
-            str(row[0]): (str(row[1]).strip() if row[1] and str(row[1]).strip() else "Unknown")
-            for row in s.execute(stmt).all()
-        }
-
-    try:
-        if session is not None:
-            return _query(session)
-        with get_db() as s:
-            return _query(s)
-    except Exception as exc:
-        logger.warning("Error querying stock_master cap buckets (%s); falling back.", exc)
-        return {}
-
-
-def get_universe_symbols(session: Session | None = None) -> set[str]:
-    """Retrieve active universe symbols from ``stock_master``.
-
-    Returns
-    -------
-    set[str]
-        Set of ticker symbols where ``in_universe == True``. If ``stock_master``
-        table is empty (0 records), logs a warning and returns an empty set.
-    """
-    cap_buckets = get_universe_cap_buckets(session=session)
-    return set(cap_buckets.keys())
-
-
-def get_symbol_aliases(session: Session | None = None) -> dict[str, str]:
-    """Retrieve mapping of old_symbol -> new_symbol for applied aliases and renames.
-
-    Returns
-    -------
-    dict[str, str]
-        Dictionary mapping old_symbol -> new_symbol.
-    """
-    if session is None and not check_connection():
-        logger.warning("Database offline; cannot query symbol aliases.")
-        return {}
-
-    def _query(s: Session) -> dict[str, str]:
-        aliases: dict[str, str] = {}
-        # 1. From stock_master renamed_to
-        try:
-            sm_stmt = select(StockMaster.symbol, StockMaster.renamed_to).where(
-                StockMaster.renamed_to.is_not(None)
-            )
-            for row in s.execute(sm_stmt).all():
-                if row[0] and row[1]:
-                    aliases[str(row[0]).strip().upper()] = str(row[1]).strip().upper()
-        except Exception:
-            pass
-
-        # 2. From symbol_alias table
-        try:
-            from src.db.models import SymbolAlias
-
-            alias_stmt = select(SymbolAlias.old_symbol, SymbolAlias.new_symbol).where(
-                SymbolAlias.status.in_(["applied", "verified_exact", "verified_close"])
-            )
-            for row in s.execute(alias_stmt).all():
-                if row[0] and row[1]:
-                    aliases[str(row[0]).strip().upper()] = str(row[1]).strip().upper()
-        except Exception:
-            pass
-
-        return aliases
-
-    try:
-        if session is not None:
-            return _query(session)
-        with get_db() as s:
-            return _query(s)
-    except Exception as exc:
-        logger.warning("Error querying symbol aliases (%s); returning empty dict.", exc)
-        return {}
 
 
 def load_raw_market_data(
@@ -211,10 +106,6 @@ def load_raw_market_data(
                 True,
                 "MySQL connected, but table 'daily_prices' is empty.",
             )
-
-        # Legacy backward-compatibility for UI until D12
-        if "index_name" not in df.columns:
-            df["index_name"] = None
 
         df["date"] = pd.to_datetime(df["date"]).dt.date
         numeric_cols = [
@@ -755,12 +646,8 @@ __all__ = [
     "ensure_data_initialized",
     "get_benchmark_returns",
     "get_db_cache_metadata",
-    "get_index_constituents",
     "get_latest_market_snapshot",
     "get_market_data",
-    "get_symbol_aliases",
-    "get_universe_cap_buckets",
-    "get_universe_symbols",
     "load_indicator_history",
     "load_indicator_snapshot",
     "load_raw_market_data",

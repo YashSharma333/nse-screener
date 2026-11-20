@@ -364,8 +364,8 @@ def test_rerun_is_idempotent(sqlite_session: Session, tmp_path: Path):
     assert s2.rows_inserted == 0  # Pre-query skipped already loaded days
 
 
-def test_dry_run_flag_refused():
-    """CLI refuses --dry-run when passed with --load-prices."""
+def test_dry_run_flag_is_not_accepted():
+    """--dry-run no longer exists: the CLI refuses it instead of silently writing."""
     proc = subprocess.run(
         [sys.executable, "run_pipeline.py", "--load-prices", "--dry-run"],
         capture_output=True,
@@ -373,4 +373,4 @@ def test_dry_run_flag_refused():
         check=False,
     )
     assert proc.returncode == 2
-    assert "--dry-run is not supported by this command" in proc.stderr
+    assert "unrecognized arguments: --dry-run" in proc.stderr

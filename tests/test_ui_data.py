@@ -66,8 +66,8 @@ def test_get_market_data_uses_cache_token(tmp_path):
         assert mock_fetch.call_count == 2  # Invalidation fired!
 
 
-def test_empty_database_ui_does_not_trigger_downloader():
-    """Verify that visiting empty dashboard does not trigger pipeline download."""
+def test_empty_database_ui_does_not_trigger_update():
+    """Visiting an empty dashboard must not start a data update by itself."""
     empty_result = {
         "snapshot": pd.DataFrame(),
         "indicators": pd.DataFrame(),
@@ -75,10 +75,10 @@ def test_empty_database_ui_does_not_trigger_downloader():
         "message": "offline",
     }
 
-    mock_downloader_cls = MagicMock()
+    mock_update = MagicMock()
     with (
         patch("ui.data._fetch_market_data", return_value=empty_result),
-        patch("src.ingestion.downloader.NSEBhavcopyDownloader", mock_downloader_cls),
+        patch("ui.data.run_full_update", mock_update),
     ):
         from streamlit.testing.v1 import AppTest
 
@@ -86,6 +86,6 @@ def test_empty_database_ui_does_not_trigger_downloader():
 
         at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=10)
         at.run()
-        # Verify no unprompted download occurred
-        mock_downloader_cls.assert_not_called()
+        # Verify no unprompted update occurred
+        mock_update.assert_not_called()
         assert not at.exception
