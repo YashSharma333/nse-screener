@@ -202,6 +202,38 @@ def filter_by_market_cap(
     return df[mask]
 
 
+def run_full_update() -> dict[str, str]:
+    """Run the full daily update for the UI buttons and return a ``status``/``message`` dict.
+
+    Why: the old button used ``BhavcopyETL.run_incremental``, which keeps only Nifty-500
+    symbols when ``stock_master`` is empty, so the newest day had 495 stocks instead of all.
+    ``run_daily_update`` loads every EQ-family row, market cap, corporate actions, adjusted
+    prices and the indicator cache, and stops with a clear message at the failing step.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from src.etl.daily_update import DailyUpdateError, run_daily_update
+
+    try:
+        summary = run_daily_update()
+    except (DailyUpdateError, SQLAlchemyError, OSError) as exc:
+        logger.error("Full update failed: %s", exc, exc_info=True)
+        return {"status": "error", "message": str(exc)}
+
+    # Streamlit caches the snapshot for 5 minutes; drop it so new data shows immediately.
+    st.cache_data.clear()
+    if not summary.new_dates:
+        return {"status": "up_to_date", "message": "Market data is already up to date."}
+    warnings = f" ({len(summary.warnings)} warnings, see logs)" if summary.warnings else ""
+    return {
+        "status": "success",
+        "message": (
+            f"Loaded {len(summary.new_dates)} new trading day(s), "
+            f"{summary.rows_added:,} price rows{warnings}."
+        ),
+    }
+
+
 def render_uninitialized_prompt(custom_message: str | None = None) -> None:
     """Render a friendly callout when the market database has not been initialized."""
     msg = custom_message or (
@@ -221,21 +253,13 @@ def render_uninitialized_prompt(custom_message: str | None = None) -> None:
     if "is_initializing_etl" not in st.session_state:
         st.session_state.is_initializing_etl = False
 
+    failed = st.session_state.get("init_status")
+    if failed and failed.get("status") == "error":
+        st.error(f"Initialisation failed: {failed['message']}")
+
     if st.button("Initialise Data", disabled=st.session_state.is_initializing_etl):
         st.session_state.is_initializing_etl = True
-        with st.spinner("Fetching initial market data..."):
-            try:
-                from src.etl.pipeline import BhavcopyETL
-
-                etl = BhavcopyETL()
-                res = etl.run_incremental()
-                st.session_state.init_status = res
-                st.cache_data.clear()
-            except Exception as exc:
-                st.session_state.init_status = {
-                    "status": "error",
-                    "message": f"Initialization failed: {exc}",
-                }
-            finally:
-                st.session_state.is_initializing_etl = False
-                st.rerun()
+        with st.spinner("Running the full daily update (this can take several minutes)..."):
+            st.session_state.init_status = run_full_update()
+        st.session_state.is_initializing_etl = False
+        st.rerun()
