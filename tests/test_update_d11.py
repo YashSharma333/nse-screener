@@ -190,6 +190,9 @@ def test_update_is_idempotent_when_no_new_day(sqlite_session: Session) -> None:
         session=sqlite_session,
         today=today,
         step_handlers={
+            # Step 2 must be stubbed too: its default downloads a PR bundle from NSE,
+            # and tests must never touch the network.
+            2: lambda: {},
             3: lambda: {},
             4: lambda: {},
             5: lambda: {},
