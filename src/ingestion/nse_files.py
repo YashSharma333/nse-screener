@@ -137,6 +137,7 @@ def fetch(
     timeout: int | float = 30,
     retries: int = 3,
     sleep: Callable[[float], Any] = time.sleep,
+    retry_wait: float | None = None,
 ) -> bytes:
     """Download raw bytes from URL with retry, exponential backoff, and NSE warm-up.
 
@@ -152,6 +153,8 @@ def fetch(
         Number of fetch attempts before raising FetchFailed.
     sleep : callable, default time.sleep
         Sleep function for backoff (can be replaced in unit tests).
+    retry_wait : float, optional
+        Fixed backoff duration in seconds. If None, uses exponential backoff (2**attempt).
     """
     if session is None:
         session = requests.Session()
@@ -169,11 +172,12 @@ def fetch(
         session._nse_warmed = True
 
     for attempt in range(retries):
+        wait_duration = retry_wait if retry_wait is not None else 2**attempt
         try:
             r = session.get(url, timeout=timeout)
         except (requests.ConnectionError, requests.Timeout):
             if attempt < retries - 1:
-                sleep(2**attempt)
+                sleep(wait_duration)
                 continue
             break
 
@@ -185,7 +189,7 @@ def fetch(
         # Temporary rate limiting (429), access block (403), or server errors (5xx)
         if r.status_code in (403, 429) or r.status_code >= 500:
             if attempt < retries - 1:
-                sleep(2**attempt)
+                sleep(wait_duration)
                 continue
             break
 
@@ -196,7 +200,7 @@ def fetch(
 
         # Any other unexpected HTTP status code
         if attempt < retries - 1:
-            sleep(2**attempt)
+            sleep(wait_duration)
             continue
         break
 
