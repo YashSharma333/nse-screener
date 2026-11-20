@@ -16,9 +16,6 @@ CRORE = 1e7  # 1 crore rupees; market cap is stored in rupees
 DEFAULT_MIN_MARKET_CAP_CR = 500.0
 MARKET_CAP_SERIES = "EQ"  # the market cap rule only applies to this series
 
-# Parameters that make no sense in the editor (the universe is chosen by series now).
-HIDDEN_PARAMS = {"enforce_universe"}
-
 
 def apply_market_cap_filter(df: pd.DataFrame, min_cr: float) -> pd.DataFrame:
     """Drop EQ stocks below ``min_cr`` crore; other series (SM, BE, ...) are never filtered.
@@ -46,13 +43,11 @@ def group_by_series(df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
 
 
 def editable_params(default_params: dict[str, Any]) -> dict[str, int | float]:
-    """Numeric screener parameters the sidebar editor can change (bools and hidden ones skipped)."""
+    """Numeric screener parameters the sidebar editor can change (bools are skipped)."""
     return {
         name: value
         for name, value in default_params.items()
-        if name not in HIDDEN_PARAMS
-        and isinstance(value, int | float)
-        and not isinstance(value, bool)
+        if isinstance(value, int | float) and not isinstance(value, bool)
     }
 
 

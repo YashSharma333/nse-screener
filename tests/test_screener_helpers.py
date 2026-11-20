@@ -58,7 +58,6 @@ def test_editable_params_follow_each_screener_defaults():
     assert set(volume) == {"vol_multiplier", "min_volume", "max_pct_from_high"}
     momentum = editable_params(SwingMomentumScreener.default_params)
     assert "max_return_60d" in momentum
-    assert "enforce_universe" not in momentum  # hidden and a bool
 
 
 def test_changed_params_only_returns_differences():

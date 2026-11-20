@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from ui.data import get_cache_invalidation_token, get_market_data
+from ui.data import get_cache_invalidation_token, get_market_data, get_snapshot
 
 
 def test_cache_invalidation_token_computation(tmp_path):
@@ -64,6 +64,27 @@ def test_get_market_data_uses_cache_token(tmp_path):
         res3 = get_market_data(parquet_path=parquet_file, meta_path=meta_file)
         assert res3["snapshot"].iloc[0]["symbol"] == "TCS"
         assert mock_fetch.call_count == 2  # Invalidation fired!
+
+
+def test_empty_snapshot_is_not_kept_for_the_cache_ttl(tmp_path):
+    """An empty result (DB hiccup, update still running) must be retried on the next run."""
+    parquet_file = tmp_path / "indicators.parquet"
+    meta_file = tmp_path / "indicators.meta.json"
+    parquet_file.write_text("x")
+    meta_file.write_text(json.dumps({"v": "empty-retry"}))
+
+    empty = {"snapshot": pd.DataFrame(), "is_live": False, "message": "MySQL offline"}
+    full = {
+        "snapshot": pd.DataFrame([{"symbol": "TCS", "close": 3500.0}]),
+        "is_live": True,
+        "message": "ok",
+    }
+
+    with patch("ui.data._fetch_market_data", side_effect=[empty, full]) as mock_fetch:
+        assert get_snapshot(parquet_file, meta_file)["snapshot"].empty
+        # Same files, same token: a cached empty result would be returned again.
+        assert not get_snapshot(parquet_file, meta_file)["snapshot"].empty
+        assert mock_fetch.call_count == 2
 
 
 def test_empty_database_ui_does_not_trigger_update():

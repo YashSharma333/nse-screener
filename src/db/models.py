@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     Column,
     Date,
     DateTime,
@@ -105,55 +104,6 @@ class Security(Base):
 
 
 # ---------------------------------------------------------------------------
-# Technical indicator model (UNUSED: legacy table preserved for schema compatibility)
-# ---------------------------------------------------------------------------
-class TechnicalIndicator(Base):
-    """Pre-computed technical indicators per stock per day.
-
-    Columns will be added as the computation layer is built out
-    (e.g. ``sma_50``, ``sma_200``, ``rsi``, ``is_52w_high``).
-    """
-
-    __tablename__ = "technical_indicators"
-
-    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
-    symbol = Column(String(20), nullable=False, index=True)
-    date = Column(Date, nullable=False, index=True)
-
-    # Moving averages
-    sma_50 = Column(Numeric(10, 2), nullable=True)
-    sma_200 = Column(Numeric(10, 2), nullable=True)
-    ema_12 = Column(Numeric(10, 2), nullable=True)
-    ema_26 = Column(Numeric(10, 2), nullable=True)
-
-    # Momentum
-    rsi_14 = Column(Numeric(10, 4), nullable=True)
-
-    # Range
-    high_52w = Column(Numeric(10, 2), nullable=True)
-    low_52w = Column(Numeric(10, 2), nullable=True)
-
-    # Bollinger Bands
-    bb_upper = Column(Numeric(10, 2), nullable=True)
-    bb_middle = Column(Numeric(10, 2), nullable=True)
-    bb_lower = Column(Numeric(10, 2), nullable=True)
-
-    # MACD
-    macd_line = Column(Numeric(10, 4), nullable=True)
-    macd_signal = Column(Numeric(10, 4), nullable=True)
-    macd_histogram = Column(Numeric(10, 4), nullable=True)
-
-    # Volatility
-    daily_returns = Column(Numeric(10, 6), nullable=True)
-    volatility_20 = Column(Numeric(10, 6), nullable=True)
-
-    __table_args__ = (UniqueConstraint("symbol", "date", name="uq_indicator_symbol_date"),)
-
-    def __repr__(self) -> str:
-        return f"<TechnicalIndicator(symbol={self.symbol!r}, date={self.date})>"
-
-
-# ---------------------------------------------------------------------------
 # Corporate-action adjustment factors
 # ---------------------------------------------------------------------------
 class AdjFactor(Base):
@@ -201,102 +151,6 @@ class BenchmarkPrice(Base):
         return (
             f"<BenchmarkPrice(index={self.index_code!r}, date={self.date}, "
             f"close={self.close}, source={self.source!r})>"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Historical index membership
-# ---------------------------------------------------------------------------
-class IndexMembership(Base):
-    """Historical point-in-time snapshot and validity range of index constituents."""
-
-    __tablename__ = "index_membership"
-
-    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
-    symbol = Column(String(20), nullable=False, index=True)
-    index_code = Column(String(50), nullable=False, index=True)
-    valid_from = Column(Date, nullable=False, index=True)
-    valid_to = Column(Date, nullable=True)
-    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint(
-            "symbol",
-            "index_code",
-            "valid_from",
-            name="uq_membership_symbol_code_valid_from",
-        ),
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"<IndexMembership(symbol={self.symbol!r}, index={self.index_code!r}, "
-            f"valid_from={self.valid_from}, valid_to={self.valid_to})>"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Stock master and universe model
-# ---------------------------------------------------------------------------
-class StockMaster(Base):
-    """Master registry of stocks, classifications, and universe inclusion status.
-
-    Tracks market capitalization, sector, industry, cap bucket, and universe
-    membership with hysteresis thresholds.
-    """
-
-    __tablename__ = "stock_master"
-
-    symbol = Column(String(50), primary_key=True)
-    company_name = Column(String(255), nullable=False)
-    sector = Column(String(100), nullable=True)
-    industry = Column(String(100), nullable=True)
-    cap_bucket = Column(String(50), nullable=True)
-    market_cap_cr = Column(Numeric(14, 2), nullable=True)
-    market_cap_asof = Column(Date, nullable=True)
-    in_universe = Column(
-        Boolean, nullable=False, default=False, server_default=text("0"), index=True
-    )
-    status = Column(String(30), nullable=False, index=True)
-    added_on = Column(Date, nullable=False)
-    flagged_on = Column(Date, nullable=True)
-    benchmark_index = Column(String(50), nullable=True)
-    source = Column(String(100), nullable=True)
-    renamed_to = Column(String(50), nullable=True)
-
-    def __repr__(self) -> str:
-        return (
-            f"<StockMaster(symbol={self.symbol!r}, company={self.company_name!r}, "
-            f"in_universe={self.in_universe}, status={self.status!r}, "
-            f"market_cap_cr={self.market_cap_cr})>"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Symbol alias and rename mapping model
-# ---------------------------------------------------------------------------
-class SymbolAlias(Base):
-    """Symbol rename and alias mapping.
-
-    Tracks corporate symbol changes (e.g. ICICIPRULI -> ICICILIFE) with continuity
-    verification status and implied price ratio.
-    """
-
-    __tablename__ = "symbol_alias"
-
-    old_symbol = Column(String(50), primary_key=True)
-    new_symbol = Column(String(50), primary_key=True)
-    effective_date = Column(Date, nullable=True)
-    status = Column(
-        String(30), nullable=False, default="candidate", server_default=text("'candidate'")
-    )
-    implied_ratio = Column(Numeric(14, 4), nullable=True)
-    note = Column(String(255), nullable=True)
-
-    def __repr__(self) -> str:
-        return (
-            f"<SymbolAlias(old={self.old_symbol!r}, new={self.new_symbol!r}, "
-            f"status={self.status!r}, ratio={self.implied_ratio})>"
         )
 
 
@@ -358,8 +212,8 @@ class CorporateAction(Base):
 class SymbolChange(Base):
     """Official NSE symbol change (``symbolchange.csv``), e.g. ICICIPRULI -> ICICILIFE.
 
-    This is evidence only. It does not merge any price history: renames are applied
-    through ``symbol_alias`` after the price-continuity check.
+    This is evidence only. Raw prices are never relabelled: a renamed stock's history is
+    joined at read time by ``src.ingestion.renames.prices_for``.
     """
 
     __tablename__ = "symbol_changes"

@@ -90,14 +90,14 @@ def test_migration_has_single_head():
     script = ScriptDirectory.from_config(config)
     heads = script.get_heads()
     assert len(heads) == 1
-    assert heads[0] == "094ee0ad95bf"
+    assert heads[0] == "5e2b8c4d7a10"  # 010: drop legacy tables and index_name
 
 
 def test_downgrade_exists():
     """Every migration file in migrations/versions must define upgrade and downgrade callables."""
     versions_dir = PROJECT_ROOT / "migrations" / "versions"
     migration_files = list(versions_dir.glob("*.py"))
-    assert len(migration_files) >= 9
+    assert len(migration_files) >= 10
 
     for file_path in migration_files:
         if file_path.name.startswith("__"):
