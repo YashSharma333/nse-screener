@@ -214,10 +214,17 @@ def apply_terminal_theme() -> None:
         font-weight: 600;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 1.45rem;
+        font-size: 1.25rem;
         font-weight: 800;
         color: #f8fafc;
         font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    }
+
+    /* Never cut a KPI value with "..."; wrap it instead */
+    div[data-testid="stMetricValue"] > div {
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
     }
 
     /* Filter Ribbon & Parameter Badges (Zero Verbose Text) */

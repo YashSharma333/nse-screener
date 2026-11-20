@@ -83,3 +83,13 @@ class TestStreamlitPages(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDashboardSingleUpdateButton(unittest.TestCase):
+    def test_update_button_only_in_sidebar(self):
+        """The data sync button must exist once (sidebar), not twice (regression)."""
+        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=30)
+        at.run()
+        labels = [b.label for b in at.button]
+        self.assertEqual(sum("Sync Market Data" in label for label in labels), 1)
+        self.assertFalse(any("Update Latest Market Data" in label for label in labels))

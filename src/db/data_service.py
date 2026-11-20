@@ -431,6 +431,24 @@ def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame
     return latest
 
 
+def fill_missing_market_cap(snapshot: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    """Fill empty ``market_cap`` in the latest rows with each symbol's last known value.
+
+    Why: NSE's market cap arrives a few days after the price, so the newest session has none.
+    ``get_latest_market_snapshot`` already behaves this way (``groupby.last`` skips NaN), so
+    the fast ``snapshot_only`` path must match it. ``history`` needs ``symbol``, ``date`` and
+    ``market_cap`` columns; the snapshot is returned unchanged if they are missing.
+    """
+    needed = {"symbol", "date", "market_cap"}
+    if snapshot.empty or not needed.issubset(snapshot.columns) or not needed.issubset(history):
+        return snapshot
+    known = history.dropna(subset=["market_cap"]).sort_values("date")
+    last_known = known.groupby("symbol")["market_cap"].last()
+    filled = snapshot.copy()
+    filled["market_cap"] = filled["market_cap"].fillna(filled["symbol"].map(last_known))
+    return filled
+
+
 def _date_literal(schema: Any, value: Any) -> Any:
     """Convert ``value`` to an Arrow scalar matching the type of the cache's ``date`` column.
 
@@ -517,6 +535,12 @@ def load_indicator_snapshot(
                         snapshot = table.to_pandas()
                         if not snapshot.empty and "date" in snapshot.columns:
                             snapshot["date"] = pd.to_datetime(snapshot["date"]).dt.date
+                        if "market_cap" in snapshot.columns and snapshot["market_cap"].isna().any():
+                            # Only 3 narrow columns are read, so this stays light on memory.
+                            mcap_history = pq.read_table(
+                                cache_path, columns=["symbol", "date", "market_cap"]
+                            ).to_pandas()
+                            snapshot = fill_missing_market_cap(snapshot, mcap_history)
                         tag = " (Offline)" if not is_live else ""
                         msg = (
                             f"Parquet Cache{tag}: {len(snapshot)} symbols (as of {max_cache_date})"
