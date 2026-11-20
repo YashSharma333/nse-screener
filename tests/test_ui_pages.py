@@ -93,3 +93,52 @@ class TestDashboardSingleUpdateButton(unittest.TestCase):
         labels = [b.label for b in at.button]
         self.assertEqual(sum("Sync Market Data" in label for label in labels), 1)
         self.assertFalse(any("Update Latest Market Data" in label for label in labels))
+
+
+class TestDashboardFilters(unittest.TestCase):
+    """Dashboard filters, run against a small fake snapshot so they work offline and in CI."""
+
+    def _run_dashboard(self, snapshot):
+        from unittest.mock import patch
+
+        fake = {"snapshot": snapshot, "is_live": True, "status_msg": "", "message": ""}
+        # Keep the patch alive until the test ends: widget changes re-run the script.
+        patcher = patch("ui.data.get_snapshot", return_value=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=60)
+        at.run()
+        return at
+
+    def _snapshot(self):
+        import pandas as pd
+
+        return pd.DataFrame(
+            {
+                "symbol": ["AAA", "BBB", "CCC"],
+                "series": ["EQ", "EQ", "SM"],
+                "date": [pd.Timestamp("2026-11-20").date()] * 3,
+                "close": [100.0, 50.0, 20.0],
+                "volume": [1000, 2000, 3000],
+                "pct_change_daily": [1.0, -2.0, 0.5],
+                "rsi_14": [55.0, 45.0, 50.0],
+            }
+        )
+
+    def test_series_selector_defaults_to_eq_and_has_no_market_cap_filter(self):
+        at = self._run_dashboard(self._snapshot())
+        self.assertFalse(at.exception, f"Dashboard raised: {at.exception}")
+        series = next(m for m in at.multiselect if m.label == "Series")
+        self.assertEqual(series.value, ["EQ"])
+        self.assertEqual(at.metric[0].value, "2")  # Stocks shown: the 2 EQ rows
+        self.assertFalse(any("Market Cap" in n.label for n in at.number_input))
+
+        series.set_value(["EQ", "SM"]).run()
+        self.assertEqual(at.metric[0].value, "3")
+
+    def test_dashboard_survives_cache_without_series_column(self):
+        """Regression: an older cache has no series column; the page must not crash."""
+        at = self._run_dashboard(self._snapshot().drop(columns=["series"]))
+        self.assertFalse(at.exception)
+        self.assertEqual(len(at.error), 0, [e.value for e in at.error])
+        self.assertEqual(at.metric[0].value, "3")

@@ -22,10 +22,18 @@ logger = logging.getLogger("ui.dashboard")
 
 import contextlib
 
-import numpy as np
-import pandas as pd
 import streamlit as st
 
+from ui.components.dashboard_helpers import (
+    COLUMN_PRESETS,
+    SERIES_LABELS,
+    color_change,
+    compute_dashboard_kpis,
+    default_series,
+    filter_by_series,
+    filter_by_symbol,
+    rename_for_display,
+)
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 from ui.data import get_snapshot, render_uninitialized_prompt
 
@@ -48,40 +56,32 @@ def initialize_session_state() -> None:
         st.session_state.is_updating_etl = False
 
 
-def format_master_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Map raw technical indicator columns to clean presentation names."""
-    formatted = df.copy()
+COLUMN_CONFIG = {
+    "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
+    "Volume": st.column_config.NumberColumn("Volume", format="%d"),
+    "% Change Daily": st.column_config.NumberColumn("% Change Daily", format="%.2f%%"),
+    "% Change 1M": st.column_config.NumberColumn("% Change 1M", format="%.2f%%"),
+    "% Change 3M": st.column_config.NumberColumn("% Change 3M", format="%.2f%%"),
+    "% Change 6M": st.column_config.NumberColumn("% Change 6M", format="%.2f%%"),
+    "% Change 12M": st.column_config.NumberColumn("% Change 12M", format="%.2f%%"),
+    "% From 52W High": st.column_config.NumberColumn("% From 52W High", format="%.1f%%"),
+    "SMA 50": st.column_config.NumberColumn("SMA 50", format="₹%.2f"),
+    "SMA 200": st.column_config.NumberColumn("SMA 200", format="₹%.2f"),
+    "EMA 12": st.column_config.NumberColumn("EMA 12", format="₹%.2f"),
+    "EMA 20": st.column_config.NumberColumn("EMA 20", format="₹%.2f"),
+    "EMA 26": st.column_config.NumberColumn("EMA 26", format="₹%.2f"),
+    "RSI": st.column_config.NumberColumn("RSI (14)", format="%.1f"),
+}
+PERCENT_COLUMNS = [c for c in COLUMN_CONFIG if c.startswith("% Change")]
 
-    # Calculate market cap in crores for clean UI display (Task D11)
-    if "market_cap" in formatted.columns:
-        formatted["market_cap_cr"] = formatted["market_cap"].apply(
-            lambda v: (float(v) / 1e7) if pd.notna(v) and float(v) > 0 else np.nan
-        )
 
-    col_mapping = {
-        "date": "Date",
-        "symbol": "Symbol",
-        "market_cap_cr": "Market Cap",
-        "close": "Close",
-        "volume": "Volume",
-        "pct_change_daily": "% Change Daily",
-        "pct_change_1m": "% Change 1M",
-        "pct_change_3m": "% Change 3M",
-        "pct_change_6m": "% Change 6M",
-        "pct_change_12m": "% Change 12M",
-        "sma_50": "SMA 50",
-        "sma_200": "SMA 200",
-        "ema_12": "EMA 12",
-        "ema_20": "EMA 20",
-        "ema_26": "EMA 26",
-        "rsi_14": "RSI",
-    }
-
-    # Retain raw market_cap for filtering behind the scenes
-    existing_cols = [c for c in col_mapping if c in formatted.columns]
-    keep_cols = existing_cols + (["market_cap"] if "market_cap" in formatted.columns else [])
-    res = formatted[keep_cols].rename(columns=col_mapping)
-    return res
+def render_kpis(kpis: list[tuple[str, str, str]]) -> None:
+    """Draw the KPI tiles in rows of four (rows wrap nicely on narrow screens)."""
+    for start in range(0, len(kpis), 4):
+        for column, (label, value, help_text) in zip(
+            st.columns(4), kpis[start : start + 4], strict=False
+        ):
+            column.metric(label, value, help=help_text)
 
 
 def main() -> None:
@@ -108,135 +108,68 @@ def main() -> None:
                 "Demo data fallback has been removed."
             )
 
-        # The data update button lives in the sidebar (one place, on every page).
-
         if snapshot.empty:
             render_uninitialized_prompt()
             return
 
-        formatted_df = format_master_dataframe(snapshot)
+        as_of = snapshot["date"].max() if "date" in snapshot.columns else "unknown"
+        st.caption(f"Data as of **{as_of}** · prices are split/bonus adjusted")
 
-        # Filters Row
-        f1, f2 = st.columns([1.5, 4.5])
+        # Filters: which series (EQ, SME, ...), a symbol search and a column preset.
+        # An older cache may lack the series column; then the selector is skipped.
+        has_series = "series" in snapshot.columns
+        available = sorted(snapshot["series"].dropna().unique().tolist()) if has_series else []
+        f1, f2, f3 = st.columns([2.5, 1.5, 2])
         with f1:
-            min_mcap_cr = st.number_input(
-                "Min Market Cap (₹ Cr)",
-                min_value=0.0,
-                value=0.0,
-                step=500.0,
-                help="Filter stocks with market cap >= this value in crores (0 to show all)",
-            )
+            if has_series:
+                chosen_series = st.multiselect(
+                    "Series",
+                    options=available,
+                    default=default_series(available),
+                    format_func=lambda s: SERIES_LABELS.get(s, s),
+                    help="NSE series: EQ is normal equity; SM/ST are SME stocks; BE/BZ are "
+                    "restricted.",
+                )
+            else:
+                chosen_series = []
+                st.caption("Series information is missing in the cache; showing all rows.")
         with f2:
-            all_display_cols = [c for c in formatted_df.columns if c != "market_cap"]
-            primary_defaults = [
-                "Date",
-                "Symbol",
-                "Market Cap",
-                "Close",
-                "Volume",
-                "% Change Daily",
-                "% Change 1M",
-                "% Change 3M",
-                "% Change 6M",
-                "% Change 12M",
-                "SMA 50",
-                "SMA 200",
-                "EMA 12",
-                "EMA 20",
-                "EMA 26",
-                "RSI",
-            ]
-            valid_defaults = [c for c in primary_defaults if c in all_display_cols]
-            selected_cols = st.multiselect(
-                "Columns to Display",
-                options=all_display_cols,
-                default=valid_defaults,
+            search = st.text_input("Search symbol", placeholder="e.g. RELIANCE")
+        with f3:
+            preset = st.radio("Columns", [*COLUMN_PRESETS, "Custom"], horizontal=True, index=0)
+
+        by_series = filter_by_series(snapshot, chosen_series) if has_series else snapshot
+        filtered = filter_by_symbol(by_series, search)
+        table = rename_for_display(filtered)
+
+        render_kpis(compute_dashboard_kpis(filtered, total_rows=len(snapshot)))
+        st.divider()
+
+        if preset == "Custom":
+            chosen_cols = st.multiselect(
+                "Columns to display", options=list(table.columns), default=COLUMN_PRESETS["Basic"]
             )
+        else:
+            chosen_cols = COLUMN_PRESETS[preset]
+        shown_cols = [c for c in chosen_cols if c in table.columns] or list(table.columns)
+        display_view = table[shown_cols]
 
-        # Apply Filters
-        filtered_df = formatted_df.copy()
-        if min_mcap_cr > 0 and "market_cap" in filtered_df.columns:
-            min_mcap_rupees = min_mcap_cr * 1e7
-            filtered_df = filtered_df[
-                filtered_df["market_cap"].notna() & (filtered_df["market_cap"] >= min_mcap_rupees)
-            ]
-
-        # Summary KPIs
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        with kpi1:
-            st.metric("Displayed Equities", len(filtered_df))
-        with kpi2:
-            avg_daily_change = (
-                filtered_df["% Change Daily"].mean() if "% Change Daily" in filtered_df else 0.0
-            )
-            st.metric("Mean Daily Change", f"{avg_daily_change:+.2f}%")
-        with kpi3:
-            advances = (
-                (filtered_df["% Change Daily"] > 0).sum() if "% Change Daily" in filtered_df else 0
-            )
-            declines = (
-                (filtered_df["% Change Daily"] < 0).sum() if "% Change Daily" in filtered_df else 0
-            )
-            st.metric("Advance / Decline", f"{advances} / {declines}")
-        with kpi4:
-            median_rsi = filtered_df["RSI"].median() if "RSI" in filtered_df else 0.0
-            st.metric("Median 14D RSI", f"{median_rsi:.1f}")
-
-        st.markdown("---")
-
-        # Master Data Table
-        if not selected_cols:
-            selected_cols = valid_defaults
-
-        display_view = filtered_df[[c for c in selected_cols if c in filtered_df.columns]].copy()
-
-        # Formatting configurations
-        column_config = {
-            "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-            "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-            "Market Cap": st.column_config.NumberColumn(
-                "Market Cap (₹ Cr)",
-                format="₹%.2f Cr",
-                help="Official NSE Market Capitalization in Crores (blank if before 2024-02-01)",
-            ),
-            "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
-            "Volume": st.column_config.NumberColumn("Volume", format="%d"),
-            "% Change Daily": st.column_config.NumberColumn("% Change Daily", format="%.2f%%"),
-            "% Change 1M": st.column_config.NumberColumn("% Change 1M", format="%.2f%%"),
-            "% Change 3M": st.column_config.NumberColumn("% Change 3M", format="%.2f%%"),
-            "% Change 6M": st.column_config.NumberColumn("% Change 6M", format="%.2f%%"),
-            "% Change 12M": st.column_config.NumberColumn("% Change 12M", format="%.2f%%"),
-            "SMA 50": st.column_config.NumberColumn("SMA 50", format="₹%.2f"),
-            "SMA 200": st.column_config.NumberColumn("SMA 200", format="₹%.2f"),
-            "EMA 12": st.column_config.NumberColumn("EMA 12", format="₹%.2f"),
-            "EMA 20": st.column_config.NumberColumn("EMA 20", format="₹%.2f"),
-            "EMA 26": st.column_config.NumberColumn("EMA 26", format="₹%.2f"),
-            "RSI": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
-        }
-
+        # Green/red text for % changes; number formats come from COLUMN_CONFIG.
+        percent_shown = [c for c in PERCENT_COLUMNS if c in display_view.columns]
+        styled = display_view.style.map(color_change, subset=percent_shown)
         st.dataframe(
-            display_view,
+            styled,
             width="stretch",
             hide_index=True,
-            column_config={k: v for k, v in column_config.items() if k in display_view.columns},
+            column_config={k: v for k, v in COLUMN_CONFIG.items() if k in display_view.columns},
         )
 
         st.download_button(
-            label="📥 Download Filtered Master Snapshot (CSV)",
+            label="📥 Download table (CSV)",
             data=display_view.to_csv(index=False),
             file_name="nse_master_screener_snapshot.csv",
             mime="text/csv",
         )
-
-        st.markdown("---")
-
-        # # Interactive Technical Stock Inspector Drilldown
-        # default_sym = (
-        #     display_view["Symbol"].iloc[0]
-        #     if not display_view.empty and "Symbol" in display_view.columns
-        #     else None
-        # )
-        # render_stock_inspector(snapshot, default_symbol=default_sym, key_prefix="dash")
 
     except Exception as exc:
         logger.error("Dashboard page crash: %s", exc, exc_info=True)
