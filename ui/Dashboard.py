@@ -26,7 +26,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.etl.pipeline import BhavcopyETL
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
 from ui.data import get_snapshot, render_uninitialized_prompt
 
@@ -46,21 +45,6 @@ def initialize_session_state() -> None:
     if "etl_status" not in st.session_state:
         st.session_state.etl_status = None
     if "is_updating_etl" not in st.session_state:
-        st.session_state.is_updating_etl = False
-
-
-def run_incremental_update() -> None:
-    """Execute non-blocking incremental ETL update without freezing UI."""
-    st.session_state.is_updating_etl = True
-    try:
-        with st.spinner("Fetching latest NSE Bhavcopy and updating MySQL..."):
-            etl = BhavcopyETL()
-            result = etl.run_incremental()
-            st.session_state.etl_status = result
-    except Exception as exc:
-        logger.error("Incremental ETL trigger error: %s", exc, exc_info=True)
-        st.session_state.etl_status = {"status": "error", "message": str(exc)}
-    finally:
         st.session_state.is_updating_etl = False
 
 
@@ -124,27 +108,7 @@ def main() -> None:
                 "Demo data fallback has been removed."
             )
 
-        # Top Control Bar with Update Trigger
-        _col_ctrl1, col_ctrl2 = st.columns([3, 1])
-        with col_ctrl2:
-            if st.button(
-                "🔄 Update Latest Market Data",
-                disabled=st.session_state.is_updating_etl,
-                width="stretch",
-                help="Incrementally fetch and upsert today's Bhavcopy into MySQL",
-            ):
-                run_incremental_update()
-                st.rerun()
-
-        if st.session_state.etl_status:
-            status = st.session_state.etl_status.get("status")
-            msg = st.session_state.etl_status.get("message", "")
-            if status == "success":
-                st.success(f"✓ {msg}")
-            elif status in ("up_to_date", "offline"):
-                st.info(f"ℹ {msg}")
-            else:
-                st.error(f"✗ Update failed: {msg}")
+        # The data update button lives in the sidebar (one place, on every page).
 
         if snapshot.empty:
             render_uninitialized_prompt()

@@ -249,3 +249,39 @@ def test_data_service_db_path_with_sqlite(tmp_path: Path):
         mdata = get_market_data(use_adjusted=True)
         assert "snapshot" in mdata
         clear_market_data_cache()
+
+
+def test_fill_missing_market_cap_uses_last_known_value():
+    """Newest session has no market cap yet: use each symbol's last known one (regression)."""
+    import pandas as pd
+
+    from src.db.data_service import fill_missing_market_cap
+
+    history = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA", "AAA", "BBB"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-05"]).date,
+            "market_cap": [1.0, 2.0, None, None],
+        }
+    )
+    snapshot = pd.DataFrame(
+        {
+            "symbol": ["AAA", "BBB"],
+            "date": [history["date"].iloc[2]] * 2,
+            "market_cap": [None, None],
+        }
+    )
+    result = fill_missing_market_cap(snapshot, history)
+    assert result.loc[result.symbol == "AAA", "market_cap"].iloc[0] == 2.0
+    assert pd.isna(result.loc[result.symbol == "BBB", "market_cap"].iloc[0])
+
+
+def test_fill_missing_market_cap_keeps_existing_values():
+    import pandas as pd
+
+    from src.db.data_service import fill_missing_market_cap
+
+    day = pd.Timestamp("2026-01-05").date()
+    snapshot = pd.DataFrame({"symbol": ["AAA"], "date": [day], "market_cap": [9.0]})
+    history = pd.DataFrame({"symbol": ["AAA"], "date": [day], "market_cap": [5.0]})
+    assert fill_missing_market_cap(snapshot, history)["market_cap"].iloc[0] == 9.0
