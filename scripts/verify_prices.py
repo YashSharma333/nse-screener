@@ -283,6 +283,7 @@ def verify_prices(
                     "missing_in_db": missing_in_db,
                     "extra_in_db": extra_in_db,
                     "changed_values": changed_values,
+                    "details": "; ".join(mismatch_details[:5]),
                     "status": status,
                 }
             )

@@ -137,6 +137,7 @@ def test_changed_close_is_reported_with_symbol_and_date(
     assert diff_count >= 1
     assert report_df["status"].iloc[0] == "FAIL"
     assert report_df["changed_values"].iloc[0] == 1
+    assert "INFY.close" in report_df["details"].iloc[0]
     assert "INFY.close" in caplog.text
 
 
