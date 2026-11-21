@@ -37,3 +37,4 @@ reports/*.csv
 .streamlit/
 .coverage
 htmlcov/
+.agents/
