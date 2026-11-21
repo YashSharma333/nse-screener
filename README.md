@@ -543,7 +543,16 @@ Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
    step 3) should show as connected.
 
 **Backups:** `bash scripts/backup_db.sh` writes a compressed dump of the database to
-`~/Documents/backups` (outside the repo). The agent runs it before any database change.
+`~/nse-backups` (the ONE backup folder: outside the repo and outside iCloud-synced folders like
+Documents or Desktop). It checks the file is a valid gzip, then keeps only the newest 5 dumps
+(`KEEP_BACKUPS=10 bash scripts/backup_db.sh` keeps more; `BACKUP_DIR=...` uses another folder).
+Wait for the prompt to come back: pressing Ctrl+C removes the half-written file. The agent runs
+it before any database change.
+
+**Where files live (one place each):** reports in `reports/` (git-ignored), caches and downloads
+under `data/` (git-ignored), logs in `logs/`, database backups in `~/nse-backups`. The folders are
+defined once in `config/settings.py`; the test suite fails if any test changes a real file under
+`data/` or `reports/`.
 
 ### Using the MySQL server in Antigravity
 
@@ -658,7 +667,7 @@ nse-screener/
 │       └── 4_screener_explorer.py # Interactive Screener Explorer & Diagnostics
 ├── scripts/
 │   ├── run_app.sh               # Daily update, then the dashboard
-│   ├── backup_db.sh             # Compressed mysqldump to ~/Documents/backups
+│   ├── backup_db.sh             # Compressed mysqldump to ~/nse-backups (keeps the newest 5)
 │   ├── verify_prices.py         # Independent price accuracy check (--verify-prices)
 │   ├── crosscheck_52w.py        # 52-week High/Low cross-check (--crosscheck-52w)
 │   └── check_nse_reports.py     # Live, read-only health check of NSE report formats

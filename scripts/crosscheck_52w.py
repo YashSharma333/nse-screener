@@ -22,7 +22,8 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from config.settings import PROJECT_ROOT, REGULAR_SERIES
+from config import settings
+from config.settings import REGULAR_SERIES
 from src.db.models import DailyPrice
 from src.db.session import get_db
 from src.ingestion.nse_files import cm_52_wk_url, fetch
@@ -30,7 +31,6 @@ from src.ingestion.renames import RenameChains, load_chains_from_db
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REPORT_PATH = PROJECT_ROOT / "reports" / "adj_crosscheck.csv"
 CROSSCHECK_COLUMNS = ["date", "symbol", "metric", "official", "ours", "difference_pct"]
 
 
@@ -207,7 +207,7 @@ def crosscheck_52w(
 
     Differences are never auto-fixed.
     """
-    target_path = report_path or DEFAULT_REPORT_PATH
+    target_path = report_path or (settings.REPORTS_DIR / "adj_crosscheck.csv")
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _execute(s: Session) -> pd.DataFrame:

@@ -18,6 +18,23 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOGS_DIR / "screener.log"
 
 # ---------------------------------------------------------------------------
+# Where output files live: ONE definition per folder (task D14)
+# ---------------------------------------------------------------------------
+# Code must read these as ``settings.REPORTS_DIR`` when a function runs (not copy them at
+# import time). Then the tests can point every writer at a temporary folder by changing this
+# one value, and no test can overwrite the owner's real reports.
+# (Database backups are the only files outside the repo: ~/nse-backups, see
+# scripts/backup_db.sh.)
+REPORTS_DIR: Path = PROJECT_ROOT / "reports"
+# Raw benchmark index closes and the benchmark's own list of non-trading days.
+BENCHMARK_CACHE_DIR: Path = PROJECT_ROOT / "data" / "raw" / "benchmark_cache"
+BENCHMARK_NON_TRADING_DAYS_FILE: Path = BENCHMARK_CACHE_DIR / "non_trading_days.json"
+# Days where NSE has no Bhavcopy (holidays), learned from 404s by the price loader.
+PRICE_NON_TRADING_DAYS_FILE: Path = (
+    PROJECT_ROOT / "data" / "raw" / "bhavcopy_cache" / "non_trading_days.json"
+)
+
+# ---------------------------------------------------------------------------
 # Logging configuration
 # ---------------------------------------------------------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

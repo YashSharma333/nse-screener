@@ -23,7 +23,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from config.settings import BHAVCOPY_ALL_DIR, REGULAR_SERIES
+from config import settings
+from config.settings import REGULAR_SERIES
 from src.ingestion.nse_files import BadFile, check_zip
 
 logger = logging.getLogger(__name__)
@@ -204,7 +205,7 @@ def write_cache(
     The date column is preserved as PyArrow date32.
     """
     if cache_dir is None:
-        cache_dir = BHAVCOPY_ALL_DIR
+        cache_dir = settings.BHAVCOPY_ALL_DIR
     target_date = d if isinstance(d, date) else _parse_file_date(str(d))
     target_path = cache_dir / f"{target_date.isoformat()}.parquet"
     target_path.parent.mkdir(parents=True, exist_ok=True)

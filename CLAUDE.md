@@ -22,13 +22,14 @@ alembic upgrade head                                               # schema; hea
 scripts/run_app.sh                                                 # daily update, then the dashboard (opens on last good data if the update fails)
 streamlit run ui/Dashboard.py                                      # dashboard only, no update
 python -m src.strategies.cli list|validate <json>|signals <json>   # strategy engine CLI
-bash scripts/backup_db.sh                                          # compressed mysqldump to ~/Documents/backups
+bash scripts/backup_db.sh                                          # compressed mysqldump to ~/nse-backups (keeps 5)
 python run_pipeline.py --help                                      # every data operation is a flag here (see README for examples)
 ```
 
 Gotchas:
 - Tests run offline against SQLite and `tmp_path`. Fake data must use real column types (Arrow `date32` dates), and any SQL written for MySQL needs a compile test or the MySQL CI job, because SQLite is not MySQL (PR #41).
-- Tests never touch the real indicator cache or `reports/*.csv`: an autouse fixture in `tests/conftest.py` redirects `INDICATORS_CACHE_PATH`, `INDICATORS_META_PATH` and `REPORTS_DIR` to a temp folder (issue #66). A new function that writes under `data/` or `reports/` must read its default path at call time (not as a default argument), or the fixture cannot redirect it.
+- Tests never touch real files: an autouse fixture in `tests/conftest.py` redirects the output folders in `config/settings.py` (`REPORTS_DIR`, `BHAVCOPY_ALL_DIR`, `MCAP_DIR`, `CORP_ACTIONS_DIR`, the cache and non-trading-days paths) and the indicator cache paths to a temp folder (issues #66, D14), and a session guard (`tests/real_files_guard.py`) fails the run if any file under `data/` or `reports/` changed. Every output folder is defined ONCE in `config/settings.py` and read as `settings.X` when a function runs (never copied at import or used as a default argument), or the fixture cannot redirect it. Do not run a pipeline command while the tests run: its writes would trip the guard.
+- Files live in one place each: reports in `reports/`, caches under `data/`, logs in `logs/`, DB backups only in `~/nse-backups` (`scripts/backup_db.sh` keeps the newest 5). Do not create another reports or backups folder.
 - MCP date columns come back one day early (UTC shift): use `CAST(date AS CHAR)` in queries.
 
 ## Architecture

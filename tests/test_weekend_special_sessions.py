@@ -147,8 +147,8 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(sqlite_db, 
     mock_session.get.side_effect = mock_get
 
     with (
-        patch("src.ingestion.benchmark.BENCHMARK_CACHE_DIR", benchmark_cache_dir),
-        patch("src.ingestion.benchmark.NON_TRADING_DAYS_FILE", benchmark_non_trading_file),
+        patch("config.settings.BENCHMARK_CACHE_DIR", benchmark_cache_dir),
+        patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", benchmark_non_trading_file),
     ):
         source = NSEIndexSource(session=mock_session)
 

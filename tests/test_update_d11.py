@@ -130,7 +130,7 @@ def test_update_never_deletes(
 ) -> None:
     """Step 5 flags a duplicated session but leaves every price row in place."""
     # Keep the CSV report out of the real reports/ folder.
-    monkeypatch.setattr("src.etl.bogus_sessions.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("config.settings.REPORTS_DIR", tmp_path / "reports")
 
     day1, day2 = date(2026, 11, 16), date(2026, 11, 17)
     for day in (day1, day2):  # identical close and volume on both days

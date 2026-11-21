@@ -63,7 +63,7 @@ def test_nse_index_source_handles_404_gracefully(tmp_path: Path):
     mock_session.get.return_value = mock_resp
 
     test_file = tmp_path / "non_trading_days.json"
-    with patch("src.ingestion.benchmark.NON_TRADING_DAYS_FILE", test_file):
+    with patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", test_file):
         source = NSEIndexSource(session=mock_session)
         d = date(2024, 10, 26)
         prices = source.fetch_prices(d)
@@ -140,7 +140,7 @@ def test_load_benchmarks_sqlite():
 def test_record_and_load_non_trading_day(tmp_path: Path):
     """Test JSON serialization and loading of non-trading days."""
     test_file = tmp_path / "non_trading_days.json"
-    with patch("src.ingestion.benchmark.NON_TRADING_DAYS_FILE", test_file):
+    with patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", test_file):
         d = date(2024, 1, 26)
         record_non_trading_day(d)
         res = load_non_trading_days()
@@ -180,8 +180,8 @@ def test_benchmark_loader_rejects_mismatched_index_date(tmp_path: Path):
 
     test_non_trading = tmp_path / "benchmark_non_trading.json"
     with (
-        patch("src.ingestion.benchmark.BENCHMARK_CACHE_DIR", tmp_path),
-        patch("src.ingestion.benchmark.NON_TRADING_DAYS_FILE", test_non_trading),
+        patch("config.settings.BENCHMARK_CACHE_DIR", tmp_path),
+        patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", test_non_trading),
     ):
         src = NSEIndexSource(session=mock_session)
         prices = src.fetch_prices(sunday)
