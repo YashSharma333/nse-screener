@@ -374,7 +374,8 @@ adjustments, missing delisted stocks, gaps). The database was rebuilt from offic
 | D11 | The single daily `--update` command; UI shows market cap | #80 |
 | D12 | Removed the screener scaffold, conditions package and old scripts | #81 |
 | UI1 to UI4 | Dashboard series selector, KPIs, screener sidebars, Sync button runs the full update | #83 to #86 |
-| D13 | Removed the old ETL (`BhavcopyETL`, universe, aliases, index constituents), added the benchmark step to `--update`, `scripts/run_app.sh`, migration 010 | this PR |
+| D13 | Removed the old ETL (`BhavcopyETL`, universe, aliases, index constituents), added the benchmark step to `--update`, `scripts/run_app.sh`, migration 010 | #87 |
+| D14 | One location per kind of file (folders defined once in `config/settings.py`, backups only in `~/nse-backups` with rotation), and a test guard that fails if any test changes a real file under `data/` or `reports/` | this PR |
 
 Most of the old data issues (#43, #60 to #63, #65, #68, #69) described the removed design
 and were closed in D13.
@@ -489,7 +490,7 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 1. Benchmarks miss a few special-session dates (issue #64); the daily `--update` now keeps
    them current for new days.
 2. Tests must never touch the network (issue #82 was one that did). They also no longer
-   touch the real cache or reports (issue #66, fixed in D13 by an autouse fixture).
+   touch the real cache or reports (issue #66, fixed in D13; D14 added a session guard that fails the run if any real file under `data/` or `reports/` changes).
 3. Unexplained price jumps and missing official actions still need owner review (#58, #57, #55).
 4. Survivorship bias: prices include delisted stocks, but there is no per-date tradable
    universe yet. Keep the `survivorship_biased` flag on backtests.

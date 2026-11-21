@@ -26,6 +26,7 @@ import pandas as pd
 import requests
 from sqlalchemy.orm import Session
 
+from config import settings
 from src.db.models import BenchmarkPrice
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
@@ -56,8 +57,7 @@ def parse_trade_date(val: object) -> date | None:
     return None if pd.isna(parsed) else parsed.date()
 
 
-BENCHMARK_CACHE_DIR = Path("data/raw/benchmark_cache")
-NON_TRADING_DAYS_FILE = BENCHMARK_CACHE_DIR / "non_trading_days.json"
+# The cache folder and the non-trading-days file are defined once, in config/settings.py.
 
 # Canonical index names as stored in the database
 NIFTY_50 = "NIFTY 50"
@@ -97,15 +97,15 @@ def canonical_index_code(code: str) -> str:
 
 def _ensure_cache_dir() -> Path:
     """Ensure benchmark cache directory exists on demand."""
-    BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return BENCHMARK_CACHE_DIR
+    settings.BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return settings.BENCHMARK_CACHE_DIR
 
 
 def load_non_trading_days() -> set[str]:
     """Load cached non-trading days from JSON file."""
-    if NON_TRADING_DAYS_FILE.exists():
+    if settings.BENCHMARK_NON_TRADING_DAYS_FILE.exists():
         try:
-            with NON_TRADING_DAYS_FILE.open("r", encoding="utf-8") as f:
+            with settings.BENCHMARK_NON_TRADING_DAYS_FILE.open("r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     return set(data)
@@ -128,7 +128,7 @@ def record_non_trading_days(dates: Sequence[date]) -> None:
             updated = True
     if updated:
         try:
-            with NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
+            with settings.BENCHMARK_NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
                 json.dump(sorted(existing), f, indent=2)
         except Exception as exc:
             logger.warning("Failed saving benchmark non-trading days: %s", exc)
@@ -160,7 +160,7 @@ def clear_non_trading_days(start: date, end: date) -> list[date]:
     if to_remove:
         try:
             _ensure_cache_dir()
-            with NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
+            with settings.BENCHMARK_NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
                 json.dump(sorted(remaining), f, indent=2)
         except Exception as exc:
             logger.warning("Failed saving benchmark non-trading days: %s", exc)

@@ -15,7 +15,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from config.settings import PROJECT_ROOT
+from config import settings
 from src.db.models import DailyPrice
 from src.db.session import get_db
 
@@ -145,7 +145,7 @@ def report_bogus_sessions(
     session: Session | None = None,
 ) -> dict:
     """Write ``reports/bogus_sessions.csv`` and return the flagged dates. Never deletes."""
-    out_dir = reports_dir or (PROJECT_ROOT / "reports")
+    out_dir = reports_dir or settings.REPORTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     report_file = out_dir / "bogus_sessions.csv"
 

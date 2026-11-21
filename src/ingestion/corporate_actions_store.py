@@ -31,8 +31,8 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from config import settings
 from config.settings import (
-    CORP_ACTIONS_DIR,
     CORP_ACTIONS_FORWARD_DAYS,
     CORP_ACTIONS_HISTORY_YEARS,
     CORP_ACTIONS_MAX_UNPARSED_SHARE,
@@ -316,7 +316,7 @@ def run_corporate_actions_download(
     )
     start = start or default_start
     end = end or default_end
-    out_dir = output_dir or CORP_ACTIONS_DIR
+    out_dir = output_dir or settings.CORP_ACTIONS_DIR
     fetcher = downloader or NSEReportsDownloader(fetch_fn=fetch_fn)
     fetched_at = datetime.now().replace(microsecond=0)
 

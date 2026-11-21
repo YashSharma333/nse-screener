@@ -25,15 +25,13 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from config.settings import PROJECT_ROOT
+from config import settings
 from src.db.models import DailyPrice
 from src.db.session import get_db
 from src.ingestion.bhavcopy_parser import parse_bhavcopy
 from src.ingestion.nse_files import bhavcopy_url, fetch
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_REPORT_PATH = PROJECT_ROOT / "reports" / "verify_prices.csv"
 
 
 def select_check_dates(
@@ -139,7 +137,7 @@ def verify_prices(
     tuple[int, pd.DataFrame]
         Total number of differences found, and DataFrame summary per date.
     """
-    rep_path = report_path or DEFAULT_REPORT_PATH
+    rep_path = report_path or (settings.REPORTS_DIR / "verify_prices.csv")
     rep_path.parent.mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict[str, Any]] = []

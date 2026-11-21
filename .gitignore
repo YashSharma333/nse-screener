@@ -16,7 +16,6 @@ data/raw/*
 data/processed/*
 data/universe/*.xlsx
 data/corporate_actions/*
-data/backups/*
 !data/corporate_actions/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep

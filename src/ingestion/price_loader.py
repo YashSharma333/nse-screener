@@ -32,11 +32,8 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from config.settings import (
-    BHAVCOPY_ALL_DIR,
-    NSE_HISTORY_START,
-    PROJECT_ROOT,
-)
+from config import settings
+from config.settings import NSE_HISTORY_START
 from src.db.models import DailyPrice
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
@@ -45,10 +42,7 @@ from src.ingestion.nse_files import BadFile, NoFile, bhavcopy_url, fetch
 
 logger = logging.getLogger(__name__)
 
-# Default location for confirmed non-trading days (reused from existing ETL cache)
-DEFAULT_NON_TRADING_PATH = (
-    PROJECT_ROOT / "data" / "raw" / "bhavcopy_cache" / "non_trading_days.json"
-)
+# The confirmed non-trading days file is defined once, in config/settings.py.
 
 # Recent buffer: dates within the last 3 days are never permanently cached as holidays
 RECENT_NON_TRADING_BUFFER_DAYS: int = 3
@@ -72,7 +66,7 @@ def load_non_trading_days(path: Path | None = None) -> set[date]:
 
     Why: Avoids issuing thousands of known-failing HTTP requests to NSE on holidays.
     """
-    target = path or DEFAULT_NON_TRADING_PATH
+    target = path or settings.PRICE_NON_TRADING_DAYS_FILE
     if not target.exists():
         return set()
     try:
@@ -88,7 +82,7 @@ def record_non_trading_day(d: date, path: Path | None = None) -> None:
 
     Why: Uses a .tmp file replacement to guarantee atomic updates without corrupting JSON.
     """
-    target = path or DEFAULT_NON_TRADING_PATH
+    target = path or settings.PRICE_NON_TRADING_DAYS_FILE
     existing = load_non_trading_days(target)
     if d in existing:
         return
@@ -184,9 +178,9 @@ def load_raw_prices(
         )
         return summary
 
-    target_cache_dir = cache_dir or BHAVCOPY_ALL_DIR
+    target_cache_dir = cache_dir or settings.BHAVCOPY_ALL_DIR
     target_cache_dir.mkdir(parents=True, exist_ok=True)
-    target_nt_path = non_trading_path or DEFAULT_NON_TRADING_PATH
+    target_nt_path = non_trading_path or settings.PRICE_NON_TRADING_DAYS_FILE
 
     # Load known non-trading days once into memory for fast lookup
     non_trading_days = load_non_trading_days(target_nt_path)

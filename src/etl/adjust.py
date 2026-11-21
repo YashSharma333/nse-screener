@@ -28,6 +28,7 @@ import pandas as pd
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
+from config import settings
 from config.settings import (
     ADJUSTMENT_OVERRIDES_FILE,
     SPLIT_GUARD_FRACTION,
@@ -41,8 +42,6 @@ from src.db.upsert import upsert_rows
 from src.ingestion.corporate_actions_store import get_price_adjustment_events
 
 logger = logging.getLogger("src.etl.adjust")
-
-REPORTS_DIR = Path("reports")
 
 # Columns of the applied-events table (one row per symbol and ex-date).
 EVENT_COLUMNS = ["symbol", "date", "factor", "ratio_kind", "source", "kinds"]
@@ -500,20 +499,22 @@ def save_events_report(
     gaps_path: Path | None = None,
 ) -> None:
     """Save applied events, unexplained jumps, and big gap moves to CSV reports for the owner."""
-    target_path = file_path or (REPORTS_DIR / "adj_events_review.csv")
+    target_path = file_path or (settings.REPORTS_DIR / "adj_events_review.csv")
     target_path.parent.mkdir(parents=True, exist_ok=True)
     events_df.to_csv(target_path, index=False)
     logger.info("Saved %d applied events to %s", len(events_df), target_path)
 
     if review_df is not None:
-        uncertain_path = review_path or (REPORTS_DIR / "adj_events_uncertain.csv")
+        uncertain_path = review_path or (settings.REPORTS_DIR / "adj_events_uncertain.csv")
+        uncertain_path.parent.mkdir(parents=True, exist_ok=True)
         review_df.to_csv(uncertain_path, index=False)
         logger.info(
             "Saved %d unexplained price jumps (NOT applied) to %s", len(review_df), uncertain_path
         )
 
     if gaps_df is not None:
-        target_gaps = gaps_path or (REPORTS_DIR / "adj_gaps.csv")
+        target_gaps = gaps_path or (settings.REPORTS_DIR / "adj_gaps.csv")
+        target_gaps.parent.mkdir(parents=True, exist_ok=True)
         gaps_df.to_csv(target_gaps, index=False)
         logger.info("Saved %d big gap moves to %s", len(gaps_df), target_gaps)
 

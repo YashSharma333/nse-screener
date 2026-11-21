@@ -33,7 +33,8 @@ import pandas as pd
 from sqlalchemy import bindparam, select
 from sqlalchemy.orm import Session
 
-from config.settings import FIRST_MCAP_DATE, MCAP_DIR
+from config import settings
+from config.settings import FIRST_MCAP_DATE
 from src.db.models import DailyPrice
 from src.db.session import get_db
 from src.ingestion.nse_files import BadFile, NoFile, check_zip, fetch, pr_bundle_url
@@ -170,7 +171,7 @@ def write_mcap_cache(
     cache_dir: Path | None = None,
 ) -> Path:
     """Save parsed market cap DataFrame to Parquet cache."""
-    target_dir = cache_dir or MCAP_DIR
+    target_dir = cache_dir or settings.MCAP_DIR
     target_date = d if isinstance(d, date) else _parse_mcap_date(str(d))
     target_path = target_dir / f"{target_date.isoformat()}.parquet"
     target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,7 +243,7 @@ def load_market_caps(
         )
         return summary
 
-    target_cache_dir = cache_dir or MCAP_DIR
+    target_cache_dir = cache_dir or settings.MCAP_DIR
     target_cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _execute(s: Session) -> None:
