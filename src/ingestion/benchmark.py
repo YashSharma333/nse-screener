@@ -19,7 +19,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -29,9 +29,32 @@ from sqlalchemy.orm import Session
 from src.db.models import BenchmarkPrice
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
-from src.ingestion.downloader import parse_trade_date
 
 logger = logging.getLogger("src.ingestion.benchmark")
+
+
+def parse_trade_date(val: object) -> date | None:
+    """Parse a trade date string or object into a ``datetime.date`` (None if not a date)."""
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, pd.Timestamp):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    val_str = str(val).strip()
+    if not val_str:
+        return None
+    for fmt_str in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(val_str, fmt_str).date()
+        except ValueError:
+            continue
+    try:
+        parsed = pd.to_datetime(val_str, dayfirst=True)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return None if pd.isna(parsed) else parsed.date()
+
 
 BENCHMARK_CACHE_DIR = Path("data/raw/benchmark_cache")
 NON_TRADING_DAYS_FILE = BENCHMARK_CACHE_DIR / "non_trading_days.json"
@@ -329,3 +352,21 @@ def load_benchmarks(
             time.sleep(delay)
 
     return total_saved
+
+
+def load_benchmark_range(
+    start: date,
+    end: date,
+    session: Session | None = None,
+) -> int:
+    """Download benchmark closes for every calendar day in [start, end].
+
+    Every day is probed, not just weekdays, because NSE holds weekend and holiday special
+    sessions (Diwali Muhurat, Budget Saturdays). Days NSE has no index file for are
+    remembered in the non-trading-days cache and skipped next time.
+    """
+    all_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+    known_non_trading = load_non_trading_days()
+    dates = [d for d in all_days if d.isoformat() not in known_non_trading]
+    logger.info("Loading benchmark history for %d dates (%s -> %s)", len(dates), start, end)
+    return load_benchmarks(dates, session=session)

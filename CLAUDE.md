@@ -19,7 +19,8 @@ MYSQL_HOST=127.0.0.1 MYSQL_PORT=1 pytest tests/test_adjust.py::test_detect_bonus
 pytest -m mysql                                                    # the MySQL-only test; needs a live MySQL (CI runs it)
 ruff check . && ruff format --check .                              # ruff is pinned to 0.17.3 (CI and .pre-commit-config.yaml)
 alembic upgrade head                                               # schema; heads must stay chained in migrations/versions/
-streamlit run ui/Dashboard.py                                      # UI
+scripts/run_app.sh                                                 # daily update, then the dashboard (opens on last good data if the update fails)
+streamlit run ui/Dashboard.py                                      # dashboard only, no update
 python -m src.strategies.cli list|validate <json>|signals <json>   # strategy engine CLI
 bash scripts/backup_db.sh                                          # compressed mysqldump to ~/Documents/backups
 python run_pipeline.py --help                                      # every data operation is a flag here (see README for examples)
@@ -27,23 +28,22 @@ python run_pipeline.py --help                                      # every data 
 
 Gotchas:
 - Tests run offline against SQLite and `tmp_path`. Fake data must use real column types (Arrow `date32` dates), and any SQL written for MySQL needs a compile test or the MySQL CI job, because SQLite is not MySQL (PR #41).
-- Running the tests overwrites `reports/adj_events_review.csv` and `reports/adj_events_uncertain.csv` (the adjustment code writes them to the working directory). Copy real reports elsewhere before running pytest.
-- `--dry-run` is only honoured by `--import-universe`, `--apply-symbol-aliases`, `--purge-bogus-sessions`, `--fill-missing-symbols` and `--detect-renames`; the CLI refuses it elsewhere (`src/etl/dry_run.py`). `--fill-missing-symbols` and `--rebuild-adjusted` WRITE by default.
+- Tests never touch the real indicator cache or `reports/*.csv`: an autouse fixture in `tests/conftest.py` redirects `INDICATORS_CACHE_PATH`, `INDICATORS_META_PATH` and `REPORTS_DIR` to a temp folder (issue #66). A new function that writes under `data/` or `reports/` must read its default path at call time (not as a default argument), or the fixture cannot redirect it.
 - MCP date columns come back one day early (UTC shift): use `CAST(date AS CHAR)` in queries.
 
 ## Architecture
 
 Data flows one way:
 
-`src/ingestion/` (Bhavcopy and index downloaders, raw cache in `data/raw/bhavcopy_cache/*.parquet`) -> `src/etl/pipeline.py` (`BhavcopyETL`: ingestion, universe import, aliases, backfill, purge; about 3,100 lines, split it only in a dedicated task) -> MySQL (`src/db/models.py`: `daily_prices`, `adj_factors`, `benchmark_prices`, `index_membership`, `stock_master`, `symbol_alias`) -> `src/etl/adjust.py` (adjusted prices) -> `src/db/data_service.py` + `src/computation/indicators/calculator.py` (indicators into `data/processed/indicators.parquet` plus `indicators.meta.json`) -> `src/screeners/` -> `src/strategies/` -> `ui/` (Streamlit, reads only the Parquet cache via `ui/data.py`). The backtest engine is not built yet (see the blueprint roadmap).
+`src/ingestion/` (`nse_files.py` is the one polite download helper; `price_loader.py` Bhavcopy prices, `mcap_loader.py` PR-bundle market cap, `securities.py`, `renames.py`, `benchmark.py`, `corporate_actions*.py`) -> MySQL (`src/db/models.py`: `daily_prices`, `securities`, `symbol_changes`, `corporate_actions`, `adj_factors`, `benchmark_prices`) -> `src/etl/adjust.py` (adjusted prices) -> `src/db/data_service.py` + `src/computation/indicators/calculator.py` (indicators into `data/processed/indicators.parquet` plus `indicators.meta.json`) -> `src/screeners/` -> `src/strategies/` -> `ui/` (Streamlit, reads only the Parquet cache via `ui/data.py`). `src/etl/daily_update.py` runs the whole chain in order (`python run_pipeline.py --update`, 9 steps, stops at the first failure). The old `BhavcopyETL`, universe/alias tables and index-constituent code were removed in D13: do not recreate them. The backtest engine is not built yet (see the blueprint roadmap).
 
 What takes several files to understand:
 
 - **Settings:** `config/settings.py` holds all tunable numbers (indicator window, `SPLIT_*` corporate-action thresholds, file paths). Logic never hardcodes periods, thresholds or ratios; they are parameters with one default location.
 - **Indicator cache:** only the last `INDICATOR_HISTORY_YEARS` (2) are cached, plus `INDICATOR_WARMUP_BARS` (300) of warm-up so every cached row is valid. The cache rebuilds itself when the DB max date, adjustment factors, benchmark date or schema change. **Bump `INDICATORS_SCHEMA_VERSION` (in `src/db/data_service.py`) whenever columns are added**, or old caches silently lack them. Never load 10 years of all stocks into one DataFrame (16 GB machine): backtests must read per-year pieces.
 - **Corporate-action adjustment** (`src/etl/adjust.py`): prices are adjusted ONLY from NSE's official corporate actions (`corporate_actions` table, filled by `--download-corporate-actions`; reader `get_price_adjustment_events`). `build_events` keeps official events that lie inside the stock's price history (future ex-dates and pre-listing actions are skipped), then applies the owner's corrections from `config/adjustment_overrides.csv` (`apply` an exact factor, `ignore` an event; the owner's row always wins). `find_unexplained_jumps` only REPORTS big overnight moves that no applied event explains, to `reports/adj_events_uncertain.csv`; it never changes a price. An empty `corporate_actions` table stops the rebuild with a clear error. Re-run `--rebuild-adjusted` after every corporate-actions download. Adjusted columns are rebuilt by `rebuild_adjusted`; raw `close` is never modified.
-- **Universe:** `stock_master` decides what is screened. Enter at market cap >= 500 cr, stay while >= 490 cr, below that flag (`below_threshold`), never delete. `config/universe_overrides.csv` (force_include/force_exclude) is applied after the hysteresis. The source Excel (`data/universe/`) is placed manually and never committed.
-- **Symbol renames:** `symbol_alias` plus `stock_master.renamed_to`. An alias is applied only after a continuity check on raw cache values (`verified_exact` / `verified_close` merge; `ratio_mismatch`, `date_gap`, `overlap` do not). Ingestion and `--fill-missing-symbols` must never recreate rows under a `renamed` symbol.
+- **Which stocks are screened:** all regular series (EQ, BE, BZ, SM, ST) are loaded, delisted ones included, and price history is never deleted. The dashboard filters by series and by minimum market cap (default 500 cr, EQ only; market cap is NULL before 2024-02-01 and is never guessed). There is no `stock_master` and no universe import.
+- **Symbol renames:** raw `daily_prices.symbol` is never relabelled. Official renames live in `symbol_changes` (`--load-renames`, from NSE's `symbolchange.csv`) and are joined at read time by `prices_for` in `src/ingestion/renames.py` (chains `A -> B -> C`, cycle detection, ISIN check via `verify_rename_by_isin`).
 - **DB layer:** `src/db/upsert.py` is the dialect-agnostic upsert (MySQL `ON DUPLICATE KEY UPDATE`, SQLite `ON CONFLICT`); it groups rows by key set and renders NULLs for MySQL. A function that takes a session must use it as given and must not check for a live MySQL.
 - **Screeners:** `Screener` (`base.py`) exposes `rules()` and `explain()` (per-condition pass/fail and near-misses); screeners register through `registry.py`. `catalog.py` holds the conditions and the 20 built-in screeners. JSON screeners in `screeners/custom/` are loaded lazily by `declarative.py`. Core screeners (`swing_volume`, `swing_momentum`, `rsi_momentum`) keep locked default parameters. Rule names stay neutral (not `within_15pct_52wH`) because parameters change.
 - **Strategies:** `StrategySpec` (pydantic, `spec.py`) JSON files live in `strategies/library/`; `rules.py` is a whitelisting rule parser (no `eval`/`exec`; planned to move to `src/screeners/rules.py` to fix an import cycle with `screeners.base`); `risk.py`, `costs.py` (rates in `config/costs.json`) and `signals.py` complete the engine. See `docs/strategy_engine.md` and `docs/adding_a_screener.md`.
@@ -54,8 +54,7 @@ NSE data facts (hard-won, do not undo):
 - A 404 within the last 3 calendar days is never cached as a holiday (the file may not be published yet).
 - After inserting historical rows, rebuild adjusted prices for those symbols.
 - Corporate-action detection keeps its cross-sectional guard (many symbols moving on one date is a data problem).
-- Never delete price history; change status instead. Never overwrite a stored `index_name` with NULL.
-- IndianAPI has a small monthly limit: never call it from tests, loops or scheduled jobs.
+- Never delete price history. No code path in the project deletes `daily_prices` rows; the bogus-session check (`src/etl/bogus_sessions.py`) only reports.
 - Backtest rules (locked): signal on day `t` close, fill at `t+1` open; stop and target in the same bar means the stop was hit first; gaps exit at the open; costs and slippage always on (Zerodha rates, slippage 10 bps unless configured). Every backtest result must carry a `survivorship_biased` flag (membership history only exists from 2026-03-20).
 - No look-ahead: a value on day `t` may only use data up to the close of `t`; add a test for every shifting or rolling calculation. Per-symbol offsets must shift within each symbol.
 
@@ -94,7 +93,7 @@ Stop and report instead of pushing on when: the same test or command fails after
 - Diagnose first with the read-only `mysql` MCP.
 - **Backup first:** before the first write, migration or pipeline command of a task, run `bash scripts/backup_db.sh` and say where the backup is.
 - **Small fixes:** use `mysql_write`. Run the same condition as a `SELECT` first and show the row count and samples. Every UPDATE and DELETE has a `WHERE`. Small named batches.
-- **Schema changes and pipeline commands:** the agent may run `alembic upgrade head` and `run_pipeline.py` commands against the real database after the backup. Destructive commands default to dry-run, need `--yes`, write a backup of what they remove, and the dry-run result is shown before `--yes`.
+- **Schema changes and pipeline commands:** the agent may run `alembic upgrade head` and `run_pipeline.py` commands against the real database after the backup. No pipeline command deletes price rows. If a future command ever deletes anything, it must default to a dry run, need `--yes`, back up what it removes, and show the dry-run result first.
 - **Ask the owner in chat first** only for: deleting or rewriting `daily_prices` history rows, `DROP` or `TRUNCATE`, restoring a backup over live data, and any change touching more than 10,000 rows. State the rows affected and how to undo it.
 - After writing, run a `SELECT` that proves the result and report it. Alembic migrations: chained from the current head, working `downgrade()`, MySQL-compatible (explicit `VARCHAR` lengths, correct server defaults); the CI job runs upgrade, downgrade, upgrade on MySQL. See skill `db-migration`.
 

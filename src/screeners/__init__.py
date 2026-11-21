@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from src.screeners.base import BaseScreener, MissingIndicatorError, Screener
 from src.screeners.catalog import (
-    TRACKED_INDICES,
     Above50SmaScreener,
     Above200SmaScreener,
     BollingerSqueezeScreener,
@@ -53,7 +52,6 @@ from src.screeners.registry import (
 )
 
 __all__ = [
-    "TRACKED_INDICES",
     "Above50SmaScreener",
     "Above200SmaScreener",
     "BaseScreener",

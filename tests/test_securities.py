@@ -7,7 +7,6 @@ and schema defaults. All tests run offline using in-memory SQLite and mock data.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Generator
 from datetime import date
 
@@ -16,7 +15,6 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, Security
-from src.etl.dry_run import dry_run_is_supported
 from src.ingestion.securities import import_equity_l, parse_equity_l
 
 # Sample EQUITY_L.csv with typical leading header spaces and formatting
@@ -111,18 +109,3 @@ def test_missing_required_columns_raises_error() -> None:
     bad_csv = "SYMBOL,SERIES\nINFY,EQ\n"
     with pytest.raises(ValueError, match="missing required columns"):
         parse_equity_l(bad_csv)
-
-
-def test_dry_run_flag_refused_for_load_securities() -> None:
-    """Refuses --dry-run when --load-securities is invoked."""
-    args = argparse.Namespace(
-        load_securities=True,
-        load_renames=False,
-        dry_run=True,
-        import_universe=None,
-        apply_symbol_aliases=False,
-        purge_bogus_sessions=False,
-        fill_missing_symbols=False,
-        detect_renames=False,
-    )
-    assert not dry_run_is_supported(args)

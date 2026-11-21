@@ -1,29 +1,10 @@
 import unittest
 
 from src.db.models import DailyPrice
-from src.ingestion.index_constituents import ConstituentResult
 from src.screeners import SwingMomentumScreener, SwingVolumeScreener
 
 
-class TestIngestionAndModels(unittest.TestCase):
-    def test_constituent_result_dict_interface(self):
-        mapping = {
-            "RELIANCE": "NIFTY 100",
-            "DIXON": "NIFTY Midcap 150",
-            "KAYNES": "NIFTY Smallcap 250",
-        }
-        res = ConstituentResult(
-            symbol_to_index=mapping,
-            symbols=set(mapping.keys()),
-            per_index={"NIFTY 100": {"RELIANCE"}},
-        )
-        # Verify dict behaviors
-        self.assertEqual(res["RELIANCE"], "NIFTY 100")
-        self.assertEqual(res.get("DIXON"), "NIFTY Midcap 150")
-        self.assertEqual(len(res), 3)
-        self.assertIn("KAYNES", res)
-        self.assertEqual(res.symbols, {"RELIANCE", "DIXON", "KAYNES"})
-
+class TestModelsAndScreeners(unittest.TestCase):
     def test_daily_price_model_index_name(self):
         # In task D4, index_name was dropped from daily_prices; series, market_cap, isin were added
         self.assertFalse(hasattr(DailyPrice, "index_name"))

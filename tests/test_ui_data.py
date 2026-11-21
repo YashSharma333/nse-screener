@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from ui.data import get_cache_invalidation_token, get_market_data
+from ui.data import get_cache_invalidation_token, get_market_data, get_snapshot
 
 
 def test_cache_invalidation_token_computation(tmp_path):
@@ -66,8 +66,29 @@ def test_get_market_data_uses_cache_token(tmp_path):
         assert mock_fetch.call_count == 2  # Invalidation fired!
 
 
-def test_empty_database_ui_does_not_trigger_downloader():
-    """Verify that visiting empty dashboard does not trigger pipeline download."""
+def test_empty_snapshot_is_not_kept_for_the_cache_ttl(tmp_path):
+    """An empty result (DB hiccup, update still running) must be retried on the next run."""
+    parquet_file = tmp_path / "indicators.parquet"
+    meta_file = tmp_path / "indicators.meta.json"
+    parquet_file.write_text("x")
+    meta_file.write_text(json.dumps({"v": "empty-retry"}))
+
+    empty = {"snapshot": pd.DataFrame(), "is_live": False, "message": "MySQL offline"}
+    full = {
+        "snapshot": pd.DataFrame([{"symbol": "TCS", "close": 3500.0}]),
+        "is_live": True,
+        "message": "ok",
+    }
+
+    with patch("ui.data._fetch_market_data", side_effect=[empty, full]) as mock_fetch:
+        assert get_snapshot(parquet_file, meta_file)["snapshot"].empty
+        # Same files, same token: a cached empty result would be returned again.
+        assert not get_snapshot(parquet_file, meta_file)["snapshot"].empty
+        assert mock_fetch.call_count == 2
+
+
+def test_empty_database_ui_does_not_trigger_update():
+    """Visiting an empty dashboard must not start a data update by itself."""
     empty_result = {
         "snapshot": pd.DataFrame(),
         "indicators": pd.DataFrame(),
@@ -75,10 +96,10 @@ def test_empty_database_ui_does_not_trigger_downloader():
         "message": "offline",
     }
 
-    mock_downloader_cls = MagicMock()
+    mock_update = MagicMock()
     with (
         patch("ui.data._fetch_market_data", return_value=empty_result),
-        patch("src.ingestion.downloader.NSEBhavcopyDownloader", mock_downloader_cls),
+        patch("ui.data.run_full_update", mock_update),
     ):
         from streamlit.testing.v1 import AppTest
 
@@ -86,6 +107,6 @@ def test_empty_database_ui_does_not_trigger_downloader():
 
         at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=10)
         at.run()
-        # Verify no unprompted download occurred
-        mock_downloader_cls.assert_not_called()
+        # Verify no unprompted update occurred
+        mock_update.assert_not_called()
         assert not at.exception

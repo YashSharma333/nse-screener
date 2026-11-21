@@ -76,3 +76,56 @@ def test_migration_008_creates_and_drops_the_corporate_action_tables(tmp_path):
     assert "corporate_actions" not in tables
     assert "symbol_changes" not in tables
     assert "symbol_alias" in tables  # the previous migration is untouched
+
+
+def _alembic_config(tmp_path, name: str) -> tuple[Config, str]:
+    url = f"sqlite:///{tmp_path / name}"
+    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
+    return cfg, url
+
+
+def test_010_drops_legacy_tables_and_keeps_prices(tmp_path):
+    """010 removes technical_indicators; the downgrade brings it back; prices are untouched."""
+    cfg, url = _alembic_config(tmp_path, "test_010.db")
+    command.upgrade(cfg, "094ee0ad95bf")  # 009
+    engine = create_engine(url)
+    assert "technical_indicators" in inspect(engine).get_table_names()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO daily_prices (symbol, date, series, close) "
+                "VALUES ('TEST', '2024-01-01', 'EQ', 100.0)"
+            )
+        )
+
+    command.upgrade(cfg, "head")
+    tables = set(inspect(engine).get_table_names())
+    assert not tables & {"stock_master", "symbol_alias", "index_membership", "technical_indicators"}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM daily_prices")).scalar() == 1
+
+    command.downgrade(cfg, "-1")
+    assert "technical_indicators" in set(inspect(engine).get_table_names())
+    command.upgrade(cfg, "head")  # upgrade -> downgrade -> upgrade works (the CI sequence)
+
+
+def test_010_cleans_objects_the_old_code_recreated(tmp_path):
+    """The real DB had these re-created by init_db(): 010 must remove them, rows included."""
+    cfg, url = _alembic_config(tmp_path, "test_010_stale.db")
+    command.upgrade(cfg, "094ee0ad95bf")  # 009
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE stock_master (symbol VARCHAR(50) PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE symbol_alias (old_symbol VARCHAR(50) PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE index_membership (id INTEGER PRIMARY KEY)"))
+        conn.execute(text("ALTER TABLE daily_prices ADD COLUMN index_name VARCHAR(50)"))
+        conn.execute(text("CREATE INDEX ix_daily_prices_index_name ON daily_prices (index_name)"))
+
+    command.upgrade(cfg, "head")
+
+    insp = inspect(engine)
+    assert not set(insp.get_table_names()) & {"stock_master", "symbol_alias", "index_membership"}
+    assert "index_name" not in {c["name"] for c in insp.get_columns("daily_prices")}

@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from src.db.models import Base, DailyPrice, Security, StockMaster, SymbolAlias
+from src.db.models import Base, DailyPrice, Security, SymbolChange
 from src.db.upsert import _build_upsert_statement, _infer_index_elements, upsert_rows
 
 
@@ -102,64 +102,42 @@ def test_upsert_rows_sqlite_heterogeneous_key_sets_and_none_values():
     Base.metadata.create_all(engine)
     d = date(2024, 1, 1)
 
-    # Heterogeneous batch: some rows contain benchmark_index, some omit it, some have None
+    # Heterogeneous batch: some rows contain series, some omit it, some have None
     mixed_rows = [
-        {
-            "symbol": "INFY",
-            "company_name": "Infosys",
-            "status": "active",
-            "added_on": d,
-            "benchmark_index": "NIFTY 50",
-            "in_universe": True,
-        },
+        {"symbol": "INFY", "name": "Infosys", "status": "active", "series": "EQ"},
         {
             "symbol": "TCS",
-            "company_name": "Tata Consultancy Services",
+            "name": "Tata Consultancy Services",
             "status": "active",
-            "added_on": d,
-            # benchmark_index omitted
+            # series omitted
         },
-        {
-            "symbol": "WIPRO",
-            "company_name": "Wipro",
-            "status": "below_threshold",
-            "added_on": d,
-            "benchmark_index": None,
-        },
+        {"symbol": "WIPRO", "name": "Wipro", "status": "suspended", "series": None},
     ]
 
     with Session(engine) as session:
-        count = upsert_rows(session, StockMaster, mixed_rows)
+        count = upsert_rows(session, Security, mixed_rows)
         session.commit()
         assert count == 3
 
     with Session(engine) as session:
-        infy = session.query(StockMaster).filter_by(symbol="INFY").one()
-        tcs = session.query(StockMaster).filter_by(symbol="TCS").one()
-        wipro = session.query(StockMaster).filter_by(symbol="WIPRO").one()
+        infy = session.query(Security).filter_by(symbol="INFY").one()
+        tcs = session.query(Security).filter_by(symbol="TCS").one()
+        wipro = session.query(Security).filter_by(symbol="WIPRO").one()
 
-        assert infy.benchmark_index == "NIFTY 50"
-        assert tcs.benchmark_index is None
-        assert wipro.benchmark_index is None
+        assert infy.series == "EQ"
+        assert tcs.series is None
+        assert wipro.series is None
 
-    # Upsert INFY with row that lacks benchmark_index: stored value MUST NOT be overwritten
-    update_row = [
-        {
-            "symbol": "INFY",
-            "company_name": "Infosys Limited",
-            "status": "active",
-            "added_on": d,
-            # benchmark_index omitted!
-        }
-    ]
+    # Upsert INFY with a row that lacks series: the stored value MUST NOT be overwritten
+    update_row = [{"symbol": "INFY", "name": "Infosys Limited", "status": "active"}]
     with Session(engine) as session:
-        upsert_rows(session, StockMaster, update_row)
+        upsert_rows(session, Security, update_row)
         session.commit()
 
     with Session(engine) as session:
-        infy = session.query(StockMaster).filter_by(symbol="INFY").one()
-        assert infy.company_name == "Infosys Limited"
-        assert infy.benchmark_index == "NIFTY 50"
+        infy = session.query(Security).filter_by(symbol="INFY").one()
+        assert infy.name == "Infosys Limited"
+        assert infy.series == "EQ"
 
     # Verify isin coalesce with heterogeneous daily_price rows
     daily_rows = [
@@ -197,11 +175,13 @@ def test_upsert_rows_sqlite_heterogeneous_key_sets_and_none_values():
 
 
 def _parse_mysql_insert_and_update_columns(sql: str) -> tuple[list[str], list[str]]:
-    """Parse a compiled MySQL INSERT ... ON DUPLICATE KEY UPDATE statement.
+    """Parse a compiled MySQL INSERT [IGNORE] ... ON DUPLICATE KEY UPDATE statement.
 
     Returns (insert_columns, update_target_columns).
     """
-    match_insert = re.search(r"INSERT INTO\s+\S+\s*\((.*?)\)", sql, re.IGNORECASE | re.DOTALL)
+    match_insert = re.search(
+        r"INSERT (?:IGNORE )?INTO\s+\S+\s*\((.*?)\)", sql, re.IGNORECASE | re.DOTALL
+    )
     assert match_insert, f"Could not find INSERT columns in: {sql}"
     insert_cols = [c.strip().strip("`") for c in match_insert.group(1).split(",")]
 
@@ -215,58 +195,48 @@ def _parse_mysql_insert_and_update_columns(sql: str) -> tuple[list[str], list[st
 
 
 def test_upsert_rows_mysql_compile_statement_columns():
-    """No-server compile test: verify that for StockMaster, SymbolAlias, and DailyPrice,
+    """No-server compile test: verify that for Security, SymbolChange, and DailyPrice,
 
     every column in ON DUPLICATE KEY UPDATE is projected in the INSERT column list.
     """
     mysql_dialect = sa.dialects.mysql.dialect()
 
     test_groups: list[tuple[Any, list[dict[str, Any]]]] = [
-        # StockMaster: minimal keys vs full keys vs None values
+        # Security: minimal keys vs full keys vs None values
         (
-            StockMaster,
+            Security,
             [
-                {"symbol": "INFY", "company_name": "Infosys", "status": "active", "added_on": "d"},
-                {
-                    "symbol": "TCS",
-                    "company_name": "TCS",
-                    "status": "active",
-                    "added_on": "d",
-                    "benchmark_index": "NIFTY 50",
-                },
+                {"symbol": "INFY", "name": "Infosys", "status": "active"},
+                {"symbol": "TCS", "name": "TCS", "status": "active", "series": "EQ"},
                 {
                     "symbol": "WIPRO",
-                    "company_name": "Wipro",
+                    "name": "Wipro",
                     "status": "active",
-                    "added_on": "d",
-                    "benchmark_index": None,
-                    "market_cap_cr": 50000.0,
+                    "series": None,
+                    "isin": "INE075A01022",
                 },
             ],
         ),
-        # SymbolAlias: minimal keys vs optional dates and ratios
+        # SymbolChange: minimal keys vs optional company
         (
-            SymbolAlias,
+            SymbolChange,
             [
-                {"old_symbol": "AAA", "new_symbol": "BBB", "status": "candidate"},
+                {"old_symbol": "AAA", "new_symbol": "BBB", "effective_date": "2024-05-01"},
                 {
                     "old_symbol": "CCC",
                     "new_symbol": "DDD",
-                    "status": "candidate",
-                    "effective_date": None,
-                    "implied_ratio": None,
+                    "effective_date": "2024-05-01",
+                    "company": None,
                 },
                 {
                     "old_symbol": "EEE",
                     "new_symbol": "FFF",
-                    "status": "verified_exact",
                     "effective_date": "2024-05-01",
-                    "implied_ratio": 1.0,
-                    "note": "rename",
+                    "company": "Example Ltd",
                 },
             ],
         ),
-        # DailyPrice: prices without index_name vs with index_name
+        # DailyPrice: prices with and without an isin
         (
             DailyPrice,
             [

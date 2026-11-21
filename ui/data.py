@@ -100,7 +100,13 @@ def get_snapshot(
 ) -> dict[str, Any]:
     """Retrieve market snapshot using cached wrapper with automatic invalidation."""
     token = get_cache_invalidation_token(parquet_path=parquet_path, meta_path=meta_path)
-    return _get_snapshot_cached(token)
+    result = _get_snapshot_cached(token)
+    snapshot = result.get("snapshot")
+    if isinstance(snapshot, pd.DataFrame) and snapshot.empty:
+        # Never keep an empty result for the 5 minute TTL: a brief database hiccup or an
+        # update still running would otherwise leave the page empty until the cache expires.
+        _get_snapshot_cached.clear()
+    return result
 
 
 @st.cache_data(ttl=300)
@@ -205,10 +211,9 @@ def filter_by_market_cap(
 def run_full_update() -> dict[str, str]:
     """Run the full daily update for the UI buttons and return a ``status``/``message`` dict.
 
-    Why: the old button used ``BhavcopyETL.run_incremental``, which keeps only Nifty-500
-    symbols when ``stock_master`` is empty, so the newest day had 495 stocks instead of all.
-    ``run_daily_update`` loads every EQ-family row, market cap, corporate actions, adjusted
-    prices and the indicator cache, and stops with a clear message at the failing step.
+    Why: ``run_daily_update`` loads every price row of every regular series (not just
+    Nifty-500), plus market cap, corporate actions, benchmarks, adjusted prices and the
+    indicator cache, and stops with a clear message at the failing step.
     """
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -245,9 +250,11 @@ def render_uninitialized_prompt(custom_message: str | None = None) -> None:
         "**To initialize the database, run these commands in your terminal:**\n"
         "```bash\n"
         "alembic upgrade head\n"
-        "python run_pipeline.py --backfill --days-back 365\n"
+        "python run_pipeline.py --load-prices   # first time only: all history, takes long\n"
+        "python run_pipeline.py --update\n"
         "```\n\n"
-        "Alternatively, click below to trigger a background update:"
+        "See the README section 'Building the database from scratch' for the full order. "
+        "Or click below to run the daily update:"
     )
 
     if "is_initializing_etl" not in st.session_state:

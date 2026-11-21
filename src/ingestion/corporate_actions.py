@@ -43,7 +43,7 @@ from src.ingestion.corporate_actions_parser import (
     parse_subject,
     subject_hash,
 )
-from src.ingestion.downloader import (
+from src.ingestion.nse_files import (
     MAX_RETRIES,
     NSE_HEADERS,
     REQUEST_DELAY,

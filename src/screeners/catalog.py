@@ -296,16 +296,6 @@ def cond_sma_trending_up(
 
 
 # ---------------------------------------------------------------------------
-# Index universe for swing screeners
-# ---------------------------------------------------------------------------
-
-TRACKED_INDICES: set[str] = {
-    "NIFTY 100",
-    "NIFTY Midcap 150",
-    "NIFTY Smallcap 250",
-}
-
-# ---------------------------------------------------------------------------
 # CLASSIC SCREENERS
 # ---------------------------------------------------------------------------
 
@@ -564,7 +554,6 @@ class SwingVolumeScreener(Screener):
         "vol_multiplier": 1.5,
         "min_volume": 250_000.0,
         "max_pct_from_high": 15.0,
-        "enforce_universe": False,
     }
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
@@ -582,8 +571,6 @@ class SwingVolumeScreener(Screener):
             ),
             "min_liquidity": (df["volume_sma_20"] > p["min_volume"]).fillna(False),
         }
-        if p["enforce_universe"] and "index_name" in df.columns and not df.empty:
-            conds["tracked_index_universe"] = df["index_name"].isin(TRACKED_INDICES)
         return conds
 
 
@@ -630,7 +617,6 @@ class SwingMomentumScreener(Screener):
         "vol_multiplier": 1.5,
         "min_volume": 250_000.0,
         "max_pct_from_high": 15.0,
-        "enforce_universe": False,
         "max_return_60d": 40.0,
         "min_return_120d": 30.0,
         "ratio_180_252_min": 50.0,
@@ -667,9 +653,6 @@ class SwingMomentumScreener(Screener):
         conds["ratio_252_180_capped"] = (ratio_252_180 <= p["ratio_252_180_max"]).fillna(False)
         conds["ratio_180_252_capped"] = (ratio_180_252 <= p["ratio_180_252_max"]).fillna(False)
         conds["ratio_180_252_floor"] = (ratio_180_252 >= p["ratio_180_252_min"]).fillna(False)
-
-        if p["enforce_universe"] and "index_name" in df.columns and not df.empty:
-            conds["tracked_index_universe"] = df["index_name"].isin(TRACKED_INDICES)
 
         return conds
 
