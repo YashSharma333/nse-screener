@@ -84,8 +84,3 @@ def get_screener_keys(
 ) -> list[str]:
     """Return all registered screener keys, optionally filtered."""
     return [s.key for s in list_screeners(category=category, status=status)]
-
-
-def clear_registry() -> None:
-    """Clear all registered screeners (for use in unit tests only)."""
-    _REGISTRY.clear()

@@ -16,7 +16,6 @@ Volume, and benchmark prices. Includes:
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -695,29 +694,3 @@ class TechnicalCalculator:
             res["ret_rank_252d"] = np.nan
 
         return res
-
-    @classmethod
-    def compute_snapshot(
-        cls,
-        df: pd.DataFrame,
-        symbols: Sequence[str] | None = None,
-        benchmark_df: pd.DataFrame | None = None,
-    ) -> pd.DataFrame:
-        """Compute the latest cross-sectional snapshot across all requested symbols."""
-        if df.empty:
-            return pd.DataFrame()
-
-        computed_df = cls.apply_all_indicators(df, benchmark_df=benchmark_df)
-
-        if symbols is not None:
-            computed_df = computed_df[computed_df["symbol"].isin(symbols)]
-
-        if computed_df.empty:
-            return pd.DataFrame()
-
-        # Extract latest bar per symbol
-        if "date" in computed_df.columns:
-            latest_idx = computed_df.groupby("symbol")["date"].idxmax()
-            return computed_df.loc[latest_idx].reset_index(drop=True)
-
-        return computed_df.groupby("symbol").last().reset_index()

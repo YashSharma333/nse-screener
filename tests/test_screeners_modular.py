@@ -99,7 +99,8 @@ def test_rsi_pullback_uptrend() -> None:
         "sma_200": [90.0, 90.0, 100.0],
         "rsi_14": [48.0, 65.0, 45.0],  # 40-55 is pass
         "volume": [80_000, 80_000, 80_000],
-        "volume_sma_20": [100_000, 100_000, 100_000],  # <= 1.2 * 100k
+        "volume_sma_20": [100_000, 100_000, 100_000],
+        "vol_dryup": [0.8, 0.8, 0.8],  # the rule reads this column: 0.8 <= 1.2
     }
     df = pd.DataFrame(data)
     screener = RsiPullbackUptrendScreener()
@@ -123,8 +124,9 @@ def test_vcp_lite() -> None:
         "sma_50": [100.0, 100.0],
         "atr_pct": [1.5, 1.5],
         "atr_pct_max_60d": [3.0, 3.0],  # 1.5 <= 0.75 * 3.0 = 2.25
-        "volume": [40_000, 90_000],  # SMA 100k -> 40k is 0.4 <= 0.7 dryup
+        "volume": [40_000, 90_000],
         "volume_sma_20": [100_000, 100_000],
+        "vol_dryup": [0.4, 0.9],  # the rule reads this column: 0.4 <= 0.7 passes
     }
     df = pd.DataFrame(data)
     screener = VcpLiteScreener()
