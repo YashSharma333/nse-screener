@@ -410,7 +410,7 @@ def run_daily_update(
         # Step 7: rebuild adjusted prices for symbols with new events or new rows
         # ---------------------------------------------------------------------
         def _step_7() -> dict[str, Any]:
-            from src.etl.adjust import adjust_new_rows
+            from src.etl.adjust import adjust_new_rows, adjust_rows_with_missing_adjusted
 
             # 1. If new trading dates were added, retrieve those rows and incrementally adjust
             updated_count = 0
@@ -435,8 +435,10 @@ def run_daily_update(
                     updated_count = adjust_new_rows(df_new, session=s)
                     logger.info("Adjusted new price rows: %d rows updated.", updated_count)
             else:
-                # If no new price dates, check if any symbols need adjustment
-                logger.info("No new price dates loaded; adjusted price rebuild skipped.")
+                logger.info("No new price dates loaded.")
+
+            # Also repair rows an earlier failed run left with NULL adj_* (they are not "new").
+            updated_count += adjust_rows_with_missing_adjusted(s)
 
             summary.adjusted_rows = updated_count
             return {"updated_rows": updated_count}

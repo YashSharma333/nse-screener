@@ -125,6 +125,14 @@ def load_raw_market_data(
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
         if use_adjusted:
+            # Rows without adjusted prices fall back to RAW below: wrong around splits, so say so.
+            missing_adjusted = df.loc[df["adj_close"].isna(), "symbol"].nunique()
+            if missing_adjusted:
+                logger.warning(
+                    "%d symbols have rows without adjusted prices; using RAW prices for them. "
+                    "Run `python run_pipeline.py --update` or --rebuild-adjusted.",
+                    missing_adjusted,
+                )
             df["open"] = df["adj_open"].combine_first(df["open"])
             df["high"] = df["adj_high"].combine_first(df["high"])
             df["low"] = df["adj_low"].combine_first(df["low"])

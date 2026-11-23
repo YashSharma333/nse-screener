@@ -490,6 +490,21 @@ def cumulative_factors(dates: Sequence[date], events_df: pd.DataFrame) -> np.nda
     return cum_factors
 
 
+def _write_report(df: pd.DataFrame, path: Path, only_symbols: list[str] | None) -> None:
+    """Write one report CSV. A partial run replaces only its own symbols' rows.
+
+    Why: an incremental run sees just a few symbols. Writing only those would erase every
+    other symbol from the owner's report, so their old rows are kept and the new ones added.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if only_symbols and path.exists():
+        old = pd.read_csv(path)
+        if "symbol" in old.columns:
+            kept = old[~old["symbol"].isin(only_symbols)]
+            df = pd.concat([kept, df], ignore_index=True)
+    df.to_csv(path, index=False)
+
+
 def save_events_report(
     events_df: pd.DataFrame,
     file_path: Path | None = None,
@@ -497,25 +512,27 @@ def save_events_report(
     review_path: Path | None = None,
     gaps_df: pd.DataFrame | None = None,
     gaps_path: Path | None = None,
+    only_symbols: list[str] | None = None,
 ) -> None:
-    """Save applied events, unexplained jumps, and big gap moves to CSV reports for the owner."""
+    """Save applied events, unexplained jumps, and big gap moves to CSV reports for the owner.
+
+    ``only_symbols`` is set by a partial rebuild: the reports then keep the rows of every
+    other symbol. ``None`` (a full rebuild) writes the reports from scratch.
+    """
     target_path = file_path or (settings.REPORTS_DIR / "adj_events_review.csv")
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    events_df.to_csv(target_path, index=False)
+    _write_report(events_df, target_path, only_symbols)
     logger.info("Saved %d applied events to %s", len(events_df), target_path)
 
     if review_df is not None:
         uncertain_path = review_path or (settings.REPORTS_DIR / "adj_events_uncertain.csv")
-        uncertain_path.parent.mkdir(parents=True, exist_ok=True)
-        review_df.to_csv(uncertain_path, index=False)
+        _write_report(review_df, uncertain_path, only_symbols)
         logger.info(
             "Saved %d unexplained price jumps (NOT applied) to %s", len(review_df), uncertain_path
         )
 
     if gaps_df is not None:
         target_gaps = gaps_path or (settings.REPORTS_DIR / "adj_gaps.csv")
-        target_gaps.parent.mkdir(parents=True, exist_ok=True)
-        gaps_df.to_csv(target_gaps, index=False)
+        _write_report(gaps_df, target_gaps, only_symbols)
         logger.info("Saved %d big gap moves to %s", len(gaps_df), target_gaps)
 
 
@@ -631,7 +648,9 @@ def rebuild_adjusted(
         with get_db() as s:
             _sync_db(s)
 
-    save_events_report(events_df, review_df=review_df, gaps_df=gaps_df)
+    save_events_report(
+        events_df, review_df=review_df, gaps_df=gaps_df, only_symbols=symbols or None
+    )
 
     # 3. Vectorized adjusted price calculation per symbol, updating only changed/NULL rows
     updated_rows = 0
@@ -818,3 +837,21 @@ def adjust_new_rows(
             _run_adj(s)
 
     return len(records)
+
+
+def adjust_rows_with_missing_adjusted(session: Session) -> int:
+    """Fully re-adjust every symbol that has any row with adj_close NULL; return rows updated.
+
+    Why: if a daily update failed after loading prices, those rows keep NULL adj_* and the
+    next run sees "no new dates", so nothing would ever fix them. A full per-symbol rebuild
+    (not adj = raw) is used because the old rows may lie before a split.
+    """
+    symbols = list(
+        session.scalars(
+            select(DailyPrice.symbol).where(DailyPrice.adj_close.is_(None)).distinct()
+        ).all()
+    )
+    if not symbols:
+        return 0
+    logger.warning("%d symbols have rows with missing adjusted prices; re-adjusting.", len(symbols))
+    return rebuild_adjusted(symbols=symbols, session=session)
