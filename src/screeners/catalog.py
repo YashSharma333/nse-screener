@@ -132,8 +132,6 @@ def _cond_atr_contracting(df: pd.DataFrame, threshold_factor: float = 0.75) -> p
         return pd.Series(False, index=df.index, dtype=bool)
     missing = [c for c in ("atr_pct", "atr_pct_max_60d") if c not in df.columns]
     if missing:
-        if "bb_width" in df.columns:
-            return (df["bb_width"] <= 0.12).fillna(False)
         raise MissingIndicatorError(missing)
     return (df["atr_pct"] <= df["atr_pct_max_60d"] * threshold_factor).fillna(False)
 
@@ -161,18 +159,13 @@ def _cond_min_volume(
     return (df[vol_sma_col] > min_volume).fillna(False)
 
 
-def _cond_volume_dryup(
-    df: pd.DataFrame, max_ratio: float = 0.6, vol_sma_col: str = "volume_sma_20"
-) -> pd.Series:
+def _cond_volume_dryup(df: pd.DataFrame, max_ratio: float = 0.6) -> pd.Series:
     """Traded volume is subdued relative to its moving average."""
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    if "vol_dryup" in df.columns:
-        return (df["vol_dryup"] <= max_ratio).fillna(False)
-    missing = [c for c in ("volume", vol_sma_col) if c not in df.columns]
-    if missing:
-        raise MissingIndicatorError(missing)
-    return (df["volume"] <= max_ratio * df[vol_sma_col]).fillna(False)
+    if "vol_dryup" not in df.columns:
+        raise MissingIndicatorError(["vol_dryup"])
+    return (df["vol_dryup"] <= max_ratio).fillna(False)
 
 
 def _cond_rsi_bounds(
@@ -210,53 +203,6 @@ def _cond_percentile_rank_leader(
     if rank_col not in df.columns:
         raise MissingIndicatorError([rank_col])
     return (df[rank_col] >= min_rank).fillna(False)
-
-
-def _cond_return_capped(
-    df: pd.DataFrame, max_return: float = 40.0, ret_col: str = "return_60d"
-) -> pd.Series:
-    """Lookback return does not exceed max_return (anti-climax guard)."""
-    if df.empty:
-        return pd.Series(False, index=df.index, dtype=bool)
-    if ret_col not in df.columns:
-        raise MissingIndicatorError([ret_col])
-    return (df[ret_col] <= max_return).fillna(False)
-
-
-def _cond_return_floor(
-    df: pd.DataFrame, min_return: float = 30.0, ret_col: str = "return_120d"
-) -> pd.Series:
-    """Lookback return meets or exceeds min_return."""
-    if df.empty:
-        return pd.Series(False, index=df.index, dtype=bool)
-    if ret_col not in df.columns:
-        raise MissingIndicatorError([ret_col])
-    return (df[ret_col] >= min_return).fillna(False)
-
-
-def _cond_return_ratio(
-    df: pd.DataFrame,
-    numerator_shift: int = 252,
-    denominator_shift: int = 180,
-    min_val: float | None = None,
-    max_val: float | None = None,
-) -> pd.Series:
-    """((Close - Close_N) / Close_D) × 100 bounded within [min_val, max_val]."""
-    if df.empty:
-        return pd.Series(False, index=df.index, dtype=bool)
-    c_num_col = f"close_{numerator_shift}d"
-    c_den_col = f"close_{denominator_shift}d"
-    missing = [c for c in ("close", c_num_col, c_den_col) if c not in df.columns]
-    if missing:
-        raise MissingIndicatorError(missing)
-    c_den = df[c_den_col].replace(0, float("nan"))
-    ratio = ((df["close"] - df[c_num_col]) / c_den) * 100.0
-    mask = pd.Series(True, index=df.index)
-    if min_val is not None:
-        mask &= ratio >= min_val
-    if max_val is not None:
-        mask &= ratio <= max_val
-    return mask.fillna(False)
 
 
 # Public aliases kept so existing imports still resolve during migration
@@ -388,10 +334,6 @@ class BullishMacdCrossoverScreener(Screener):
 
     def rules(self, df: pd.DataFrame, _p: dict) -> dict[str, pd.Series]:
         return {"macd_cross_up": cond_macd_bullish_cross(df)}
-
-
-# Alias for backward compatibility
-BullishMacdCrossScreener = BullishMacdCrossoverScreener
 
 
 @register_screener()
@@ -976,9 +918,7 @@ class RsiPullbackUptrendScreener(Screener):
             "rsi_support_zone": _cond_rsi_bounds(
                 df, min_rsi=p["rsi_lower"], max_rsi=p["rsi_upper"], rsi_col="rsi_14"
             ),
-            "volume_orderly": _cond_volume_dryup(
-                df, max_ratio=p["max_vol_multiple"], vol_sma_col="volume_sma_20"
-            ),
+            "volume_orderly": _cond_volume_dryup(df, max_ratio=p["max_vol_multiple"]),
         }
 
 
@@ -1006,21 +946,5 @@ class VcpLiteScreener(Screener):
         return {
             "uptrend_close_above_50": _cond_above_sma(df, "sma_50"),
             "volatility_contraction": _cond_atr_contracting(df, threshold_factor=p["atr_factor"]),
-            "volume_dryup": _cond_volume_dryup(
-                df, max_ratio=p["vol_dryup_threshold"], vol_sma_col="volume_sma_20"
-            ),
+            "volume_dryup": _cond_volume_dryup(df, max_ratio=p["vol_dryup_threshold"]),
         }
-
-
-# ---------------------------------------------------------------------------
-# Backward-compat param aliases (now plain dicts, kept so old code still works)
-# ---------------------------------------------------------------------------
-SwingVolumeParams = SwingVolumeScreener.default_params
-SwingMomentumParams = SwingMomentumScreener.default_params
-RsiMomentumParams = RsiMomentumScreener.default_params
-Breakout52wParams = Breakout52wVolumeScreener.default_params
-CompositeTrendParams = CompositeTrendScreener.default_params
-MinerviniParams = MinerviniTrendTemplateScreener.default_params
-RsLeadersParams = RsLeadersScreener.default_params
-RsiPullbackParams = RsiPullbackUptrendScreener.default_params
-VcpLiteParams = VcpLiteScreener.default_params

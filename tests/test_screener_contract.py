@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 from src.computation.indicators.calculator import TechnicalCalculator
-from src.screeners.base import BaseScreener
+from src.screeners.base import Screener
 from src.screeners.registry import list_screeners
 
 ALL_SCREENERS = list_screeners()
@@ -84,7 +84,7 @@ def test_registry_uniqueness():
 
 
 @pytest.mark.parametrize("screener_cls", ALL_SCREENERS, ids=lambda s: s.key)
-def test_screener_metadata_and_conditions_contract(screener_cls: type[BaseScreener]):
+def test_screener_metadata_and_conditions_contract(screener_cls: type[Screener]):
     """1. Unique key, non-empty metadata, status in {'core', 'experimental'}.
     2. Screener must define valid params, evidence_columns, required_columns.
     """
@@ -101,7 +101,7 @@ def test_screener_metadata_and_conditions_contract(screener_cls: type[BaseScreen
 
 @pytest.mark.parametrize("screener_cls", ALL_SCREENERS, ids=lambda s: s.key)
 def test_screener_column_alignment_with_calculator(
-    screener_cls: type[BaseScreener], synthetic_full_and_truncated_data
+    screener_cls: type[Screener], synthetic_full_and_truncated_data
 ):
     """6 & 7. evidence_columns and required_columns must exist in calculator output."""
     screener = screener_cls()
@@ -120,7 +120,7 @@ def test_screener_column_alignment_with_calculator(
 
 @pytest.mark.parametrize("screener_cls", ALL_SCREENERS, ids=lambda s: s.key)
 def test_screener_condition_evaluation_and_explain(
-    screener_cls: type[BaseScreener], synthetic_full_and_truncated_data
+    screener_cls: type[Screener], synthetic_full_and_truncated_data
 ):
     """3. Conditions return boolean Series aligned with input df index; NaN inputs return False.
     4. run(df) returns filtered DataFrame matching logical AND across all conditions.
@@ -175,7 +175,7 @@ def test_screener_condition_evaluation_and_explain(
 
 @pytest.mark.parametrize("screener_cls", ALL_SCREENERS, ids=lambda s: s.key)
 def test_screener_point_in_time_look_ahead(
-    screener_cls: type[BaseScreener], synthetic_full_and_truncated_data
+    screener_cls: type[Screener], synthetic_full_and_truncated_data
 ):
     """9. Point-in-time invariant:
     Truncating data after t_mid must not change screener decisions or condition results at t_mid.

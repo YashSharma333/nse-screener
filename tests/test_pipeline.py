@@ -1,7 +1,7 @@
 import unittest
 
 from src.db.models import DailyPrice
-from src.screeners import SwingMomentumScreener, SwingVolumeScreener
+from src.screeners.catalog import SwingMomentumScreener, SwingVolumeScreener
 
 
 class TestModelsAndScreeners(unittest.TestCase):

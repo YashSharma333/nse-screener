@@ -26,9 +26,6 @@ class MissingIndicatorError(Exception):
         self.missing_columns = sorted(missing_columns)
         super().__init__(f"Missing required indicator columns: {', '.join(self.missing_columns)}")
 
-    def __str__(self) -> str:
-        return f"Missing required indicator columns: {', '.join(self.missing_columns)}"
-
 
 class Screener:
     """Base class for quantitative stock screens.
@@ -213,21 +210,3 @@ class Screener:
         res["failed_conditions"] = failed_lists
 
         return res
-
-    @classmethod
-    def get_metadata(cls) -> dict[str, Any]:
-        """Return screener metadata as a plain dict."""
-        return {
-            "key": cls.key,
-            "name": cls.name,
-            "description": cls.description,
-            "category": cls.category,
-            "version": str(cls.version),
-            "status": cls.status,
-            "evidence_columns": cls.evidence_columns,
-            "required_columns": cls.required_columns,
-        }
-
-
-# Alias kept for backward compatibility with any code that imports BaseScreener
-BaseScreener = Screener

@@ -14,19 +14,19 @@ from collections.abc import Sequence
 
 import pandas as pd
 
-from src.screeners.base import BaseScreener
+from src.screeners.base import Screener
 from src.strategies.rules import evaluate_rule
 
 
 def evaluate_screener_history(
-    screener: BaseScreener,
+    screener: Screener,
     df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Evaluate a systematic Screener across a multi-symbol historical panel.
 
     Parameters
     ----------
-    screener : BaseScreener
+    screener : Screener
         Configured Screener instance with registered conditions and evidence columns.
     df : pd.DataFrame
         Historical panel containing 'symbol', 'date', OHLCV and precomputed indicators.
