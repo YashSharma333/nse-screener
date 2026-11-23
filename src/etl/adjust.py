@@ -550,10 +550,6 @@ def rebuild_adjusted(
     detected events (``overrides_path`` replaces that file, mainly for tests).
     """
     target_engine = engine or default_engine
-    if target_engine is None and session is None:
-        logger.warning("Database engine offline. Skipping adjusted price rebuild.")
-        return 0
-
     logger.info(
         "Rebuilding adjusted prices (symbols=%s)...", "all" if symbols is None else len(symbols)
     )
@@ -750,10 +746,6 @@ def adjust_new_rows(
         return 0
 
     target_engine = engine or default_engine
-    if target_engine is None and session is None:
-        logger.warning("Database engine offline. Skipping incremental price adjustment.")
-        return 0
-
     work_new = new_df.copy()
     if not pd.api.types.is_datetime64_any_dtype(work_new["date"]):
         work_new["date"] = pd.to_datetime(work_new["date"])

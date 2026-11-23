@@ -520,32 +520,6 @@ def refresh_indicator_cache(
     )
 
 
-def ensure_data_initialized() -> dict[str, Any]:
-    """Inspect data initialization status without triggering blocking downloads."""
-    if not check_connection():
-        return {"online": False, "has_db_data": False, "has_cache": False}
-
-    has_db_data = False
-    try:
-        from src.db.session import init_db
-
-        init_db()
-        with engine.connect() as conn:
-            cnt = conn.execute(text("SELECT COUNT(*) FROM daily_prices")).scalar() or 0
-        has_db_data = cnt > 0
-    except Exception as exc:
-        logger.warning("Error checking DB status: %s", exc)
-
-    cache_path = settings.INDICATORS_CACHE_PATH
-    has_cache = cache_path.exists() and cache_path.with_suffix(".meta.json").exists()
-
-    return {
-        "online": True,
-        "has_db_data": has_db_data,
-        "has_cache": has_cache,
-    }
-
-
 def get_market_data(use_adjusted: bool = True) -> dict[str, Any]:
     """Unified cached market data provider for Streamlit UI."""
     snapshot, with_indicators, is_live, status_msg = load_indicator_snapshot(
@@ -569,7 +543,6 @@ __all__ = [
     "INDICATORS_SCHEMA_VERSION",
     "clear_market_data_cache",
     "compute_market_indicators",
-    "ensure_data_initialized",
     "get_benchmark_returns",
     "get_db_cache_metadata",
     "get_latest_market_snapshot",
