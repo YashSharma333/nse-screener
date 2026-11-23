@@ -16,8 +16,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from src.db.models import Base, DailyPrice
+from src.etl.daily_update import run_daily_update
 from src.ingestion.nse_files import BadFile, NoFile
 from src.ingestion.price_loader import (
+    find_price_gaps,
     load_non_trading_days,
     load_raw_prices,
 )
@@ -374,3 +376,95 @@ def test_dry_run_flag_is_not_accepted():
     )
     assert proc.returncode == 2
     assert "unrecognized arguments: --dry-run" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# CL-11: price gap check
+# ---------------------------------------------------------------------------
+
+
+def _add_price_row(session: Session, d: date) -> None:
+    session.add(
+        DailyPrice(
+            symbol="INFY",
+            date=d,
+            series="EQ",
+            open=1.0,
+            high=1.0,
+            low=1.0,
+            close=1.0,
+            volume=1,
+        )
+    )
+    session.commit()
+
+
+def test_find_price_gaps_reports_missing_day(sqlite_session: Session):
+    """D1 and D3 stored, D2 missing and not a known holiday: D2 is a gap."""
+    _add_price_row(sqlite_session, date(2024, 1, 1))
+    _add_price_row(sqlite_session, date(2024, 1, 3))
+
+    assert find_price_gaps(sqlite_session, non_trading_days=set()) == [date(2024, 1, 2)]
+
+
+def test_find_price_gaps_ignores_confirmed_non_trading_day(sqlite_session: Session):
+    """The same hole is not a gap when D2 is recorded as a non-trading day."""
+    _add_price_row(sqlite_session, date(2024, 1, 1))
+    _add_price_row(sqlite_session, date(2024, 1, 3))
+
+    assert find_price_gaps(sqlite_session, non_trading_days={date(2024, 1, 2)}) == []
+
+
+def test_find_price_gaps_empty_table(sqlite_session: Session):
+    """No stored prices means nothing to compare: no gaps, no crash."""
+    assert find_price_gaps(sqlite_session, non_trading_days=set()) == []
+
+
+def _skip_steps_2_to_9() -> dict:
+    """Step handlers that do nothing, so a test can exercise step 1 alone."""
+    return {i: (lambda: {}) for i in range(2, 10)}
+
+
+def test_update_retries_gap_day_and_fills_it(sqlite_session: Session):
+    """A day missing between two stored days is downloaded again by --update."""
+    _add_price_row(sqlite_session, date(2026, 11, 2))
+    _add_price_row(sqlite_session, date(2026, 11, 4))
+    gap_day = date(2026, 11, 3)
+
+    def fake_fetch(url: str) -> bytes:
+        if "20261103" in url:
+            return make_day_udiff_zip(gap_day)
+        raise NoFile(url)
+
+    summary = run_daily_update(
+        session=sqlite_session,
+        fetch_fn=fake_fetch,
+        today=date(2026, 11, 5),
+        step_handlers=_skip_steps_2_to_9(),
+    )
+
+    stored = set(sqlite_session.scalars(select(DailyPrice.date)).all())
+    assert gap_day in stored
+    assert summary.price_gaps == []
+
+
+def test_update_reports_gap_that_still_fails(sqlite_session: Session):
+    """A gap day that fails again stays in the summary and in reports/price_gaps.csv."""
+    from config import settings
+
+    _add_price_row(sqlite_session, date(2026, 11, 2))
+    _add_price_row(sqlite_session, date(2026, 11, 4))
+
+    def bad_fetch(url: str) -> bytes:
+        raise BadFile("html block page")
+
+    summary = run_daily_update(
+        session=sqlite_session,
+        fetch_fn=bad_fetch,
+        today=date(2026, 11, 5),
+        step_handlers=_skip_steps_2_to_9(),
+    )
+
+    assert summary.price_gaps == [date(2026, 11, 3)]
+    assert "Price gaps remaining     : 1" in summary.format_text()
+    assert "2026-11-03" in (settings.REPORTS_DIR / "price_gaps.csv").read_text()

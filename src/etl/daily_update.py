@@ -63,6 +63,7 @@ class DailyUpdateSummary:
     dropped_symbols: list[str] = field(default_factory=list)
     adjusted_rows: int = 0
     bogus_sessions_flagged: int = 0
+    price_gaps: list[date] = field(default_factory=list)
     benchmark_rows_saved: int = 0
     warnings: list[str] = field(default_factory=list)
     step_results: dict[str, Any] = field(default_factory=dict)
@@ -100,6 +101,7 @@ class DailyUpdateSummary:
             f"• Benchmark rows saved     : {self.benchmark_rows_saved:,}\n"
             f"• Adjusted rows recomputed : {self.adjusted_rows:,}\n"
             f"• Bogus sessions flagged   : {self.bogus_sessions_flagged} (report only, 0 deleted)\n"
+            f"• Price gaps remaining     : {len(self.price_gaps)} (see reports/price_gaps.csv)\n"
             f"• Warnings & notices:\n{warn_str}\n"
             "===================================================================="
         )
@@ -116,6 +118,21 @@ STEP_NAMES = {
     8: "rebuild_indicator_cache",
     9: "summary",
 }
+
+
+def _retry_price_gaps(s: Session, fetch_fn: Callable[[str], bytes], ref_today: date) -> None:
+    """Retry every calendar day with no prices that is not a confirmed holiday.
+
+    Why: step 1 only starts at max(date)+1, so a day that failed once (for example an
+    HTML block page) would never be visited again.
+    """
+    from src.ingestion.price_loader import find_price_gaps, load_raw_prices
+
+    for gap_day in find_price_gaps(s):
+        logger.info("Retrying price gap %s...", gap_day)
+        load_raw_prices(
+            start=gap_day, end=gap_day, session=s, fetch_fn=fetch_fn, ref_date=ref_today
+        )
 
 
 def run_daily_update(
@@ -176,6 +193,21 @@ def run_daily_update(
         # Step 1: load_prices from day after last loaded date to yesterday (D5)
         # ---------------------------------------------------------------------
         def _step_1() -> dict[str, Any]:
+            from src.ingestion.price_loader import find_price_gaps, write_price_gaps_report
+
+            # Old holes first, then new days; the report shows what is still missing.
+            _retry_price_gaps(s, fetch_fn, ref_today)
+            result = _load_new_days()
+            summary.price_gaps = find_price_gaps(s)
+            write_price_gaps_report(summary.price_gaps)
+            if summary.price_gaps:
+                summary.warnings.append(
+                    f"{len(summary.price_gaps)} calendar days have no prices and are not "
+                    "confirmed holidays (reports/price_gaps.csv)."
+                )
+            return result
+
+        def _load_new_days() -> dict[str, Any]:
             max_date = s.scalar(select(func.max(DailyPrice.date)))
             start_date = max_date + timedelta(days=1) if max_date else NSE_HISTORY_START
             if start_date > yesterday:

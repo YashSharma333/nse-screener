@@ -212,7 +212,7 @@ alembic upgrade head
 python run_pipeline.py --update
 ```
 * **Why it exists:** One command for the whole daily routine. It runs 9 steps in sequence and stops at the first failure with a clear message naming the step:
-  1. `load_prices`: day after the last loaded date up to yesterday (all regular series)
+  1. `load_prices`: day after the last loaded date up to yesterday (all regular series). First it retries every calendar day between the first and last stored date that has no prices and is not a confirmed non-trading day (a day that failed once, for example an HTML block page); days still missing are listed in `reports/price_gaps.csv` and counted in the summary
   2. `market_cap`: market cap for the new dates (from 2024-02-01; older dates stay NULL)
   3. `refresh_securities_and_renames`: `EQUITY_L.csv` and `symbolchange.csv`
   4. `refresh_corporate_actions`: official splits, bonuses, dividends
@@ -621,7 +621,8 @@ nse-screener/
 │       ├── 094ee0ad95bf_009_clean_daily_prices_and_securities.py  # Raw-first schema, securities
 │       └── 5e2b8c4d7a10_010_drop_legacy_tables_and_index_name.py  # Removes old-ETL leftovers
 ├── reports/                      # Audit and diagnostic reports (git-ignored)
-│   └── bogus_sessions.csv        # Dates that look like copies of the previous session
+│   ├── bogus_sessions.csv        # Dates that look like copies of the previous session
+│   └── price_gaps.csv            # Calendar days with no prices that are not confirmed holidays
 ├── src/
 │   ├── computation/
 │   │   ├── cache_reader.py       # Read-only access to the indicator cache (used by the UI)
