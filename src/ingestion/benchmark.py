@@ -98,6 +98,26 @@ def canonical_index_code(code: str) -> str:
     return INDEX_NAME_NORMALIZATION.get(cleaned.lower(), cleaned.upper())
 
 
+def _parse_month_first(val: object) -> date | None:
+    """Read a 'MM-DD-YYYY' text date (None if it is not one)."""
+    try:
+        return datetime.strptime(str(val).strip(), "%m-%d-%Y").date()
+    except ValueError:
+        return None
+
+
+def _file_date_matches(raw: object, day_first: date | None, requested: date) -> bool:
+    """True if the file's own date is the requested day.
+
+    Why both orders: NSE wrote some 2023 index files month-first ('04-06-2023' for
+    6 April). We read day-first normally and fall back to month-first only when that
+    fails to match, so a file for any other day is still rejected.
+    """
+    if day_first == requested:
+        return True
+    return _parse_month_first(raw) == requested
+
+
 def _ensure_cache_dir() -> Path:
     """Ensure benchmark cache directory exists on demand."""
     settings.BENCHMARK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -269,12 +289,14 @@ class NSEIndexSource(BenchmarkSource):
                 None,
             )
             file_date: date | None = None
+            raw_date: object = None
             if date_col is not None:
                 non_null_dates = df[date_col].dropna()
                 if not non_null_dates.empty:
-                    file_date = parse_trade_date(non_null_dates.iloc[0])
+                    raw_date = non_null_dates.iloc[0]
+                    file_date = parse_trade_date(raw_date)
 
-            if date_col is None or file_date is None or file_date != d:
+            if date_col is None or not _file_date_matches(raw_date, file_date, d):
                 raw_val = df[date_col].iloc[0] if (date_col and not df[date_col].empty) else None
                 logger.warning(
                     "Benchmark trade date mismatch for %s: file reports %r (parsed: %s)",

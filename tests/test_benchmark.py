@@ -252,3 +252,35 @@ def test_missing_benchmark_dates_and_refresh_fetch_only_gaps(tmp_path: Path):
         load_benchmarks(gaps, source=source, delay=0, session=s)
         fetched = [c.args[0] for c in source.fetch_prices.call_args_list]
         assert fetched == [days[2], days[3]]
+
+
+def _fetch_with_index_date(tmp_path: Path, file_date_text: str, requested: date):
+    """Run fetch_prices against a one-row index file that reports `file_date_text`."""
+    csv_text = (
+        "Index Name,Index Date,Open Index Value,High Index Value,"
+        "Low Index Value,Closing Index Value\n"
+        f"Nifty 50,{file_date_text},100,100,100,100\n"
+    )
+    mock_session = MagicMock()
+    mock_session.get.return_value = MagicMock(status_code=200, text=csv_text)
+    with (
+        patch("config.settings.BENCHMARK_CACHE_DIR", tmp_path),
+        patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", tmp_path / "n.json"),
+    ):
+        return NSEIndexSource(session=mock_session).fetch_prices(requested)
+
+
+def test_month_first_index_date_is_accepted(tmp_path: Path):
+    """NSE wrote '04-06-2023' (month first) for 6 April 2023; the file must load."""
+    assert _fetch_with_index_date(tmp_path, "04-06-2023", date(2023, 4, 6)) == {NIFTY_50: 100.0}
+
+
+def test_date_matching_in_neither_order_is_still_rejected(tmp_path: Path):
+    """A file for another day must still be rejected: the safety check keeps working."""
+    assert _fetch_with_index_date(tmp_path, "25-10-2024", date(2024, 10, 27)) is None
+    assert _fetch_with_index_date(tmp_path, "04-06-2023", date(2023, 4, 7)) is None
+
+
+def test_ambiguous_index_date_loads(tmp_path: Path):
+    """'05-05-2023' reads the same in both orders."""
+    assert _fetch_with_index_date(tmp_path, "05-05-2023", date(2023, 5, 5)) == {NIFTY_50: 100.0}
