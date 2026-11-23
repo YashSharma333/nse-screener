@@ -22,14 +22,14 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import PROJECT_ROOT
 from src.computation.indicators.calculator import INDICATORS_SCHEMA_VERSION
 from src.db.data_service import load_indicator_snapshot
-from src.db.models import Base, DailyPrice
+from src.db.models import Base, BenchmarkPrice, DailyPrice
 from src.etl.daily_update import (
     DailyUpdateError,
     DailyUpdateSummary,
@@ -117,6 +117,71 @@ def test_update_stops_on_first_failure_and_reports_which_step(sqlite_session: Se
     assert "NSE connection dropped" in str(err)
     # Subsequent steps 4, 5, etc. were NEVER called
     assert call_order == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# 2b. Each step commits its own work (CL-08)
+# ---------------------------------------------------------------------------
+def _file_database(tmp_path: Path):
+    """A SQLite FILE database, so a second connection is truly separate (like step 8)."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'update.db'}")
+    Base.metadata.create_all(engine)
+    return engine
+
+
+def _count_benchmark_rows(engine) -> int:
+    """Count rows through a NEW connection: it only sees what was committed."""
+    with engine.connect() as other_connection:
+        return other_connection.scalar(select(func.count(BenchmarkPrice.id)))
+
+
+def _add_benchmark_row(session: Session) -> None:
+    """Write one benchmark row and flush it, but do NOT commit (what step 6 does today)."""
+    session.add(
+        BenchmarkPrice(index_code="NIFTY 50", date=date(2026, 11, 19), close=100, source="test")
+    )
+    session.flush()
+
+
+def test_cache_step_sees_earlier_writes(tmp_path: Path) -> None:
+    """Step 8 reads through its own connection, so step 6's write must already be committed."""
+    engine = _file_database(tmp_path)
+    seen_by_step_8: list[int] = []
+
+    handlers = {i: (lambda: {}) for i in range(1, 10)}
+    with Session(engine) as session:
+        handlers[6] = lambda: _add_benchmark_row(session)
+        handlers[8] = lambda: seen_by_step_8.append(_count_benchmark_rows(engine))
+        run_daily_update(session=session, today=date(2026, 11, 20), step_handlers=handlers)
+
+    assert seen_by_step_8 == [1]
+
+
+def test_failing_step_rolls_back_only_itself(tmp_path: Path) -> None:
+    """A step 5 that fails half-way keeps the committed work of steps 1-4, and none of its own."""
+    engine = _file_database(tmp_path)
+
+    def step_4_writes_benchmark() -> None:
+        _add_benchmark_row(session)
+
+    def step_5_writes_then_fails() -> None:
+        session.add(
+            BenchmarkPrice(index_code="NIFTY 500", date=date(2026, 11, 19), close=5, source="test")
+        )
+        session.flush()
+        raise ConnectionResetError("boom after a partial write")
+
+    handlers = {i: (lambda: {}) for i in range(1, 10)}
+    handlers[4] = step_4_writes_benchmark
+    handlers[5] = step_5_writes_then_fails
+
+    with Session(engine) as session, pytest.raises(DailyUpdateError) as exc_info:
+        run_daily_update(session=session, today=date(2026, 11, 20), step_handlers=handlers)
+
+    assert exc_info.value.step_number == 5
+    with engine.connect() as connection:
+        codes = connection.scalars(select(BenchmarkPrice.index_code)).all()
+    assert codes == ["NIFTY 50"]  # step 4 kept, step 5's half-written row gone
 
 
 # ---------------------------------------------------------------------------
