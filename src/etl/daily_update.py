@@ -14,6 +14,9 @@ Steps in order:
  7. rebuild adjusted prices for symbols with new events or new rows
  8. rebuild the indicator cache (rebuilds itself when DB max date changed)
  9. print one summary: new dates, rows added, new/renamed/dropped symbols, warnings
+
+Each step commits its own work when it succeeds. A failed step rolls back only itself:
+the committed work of the earlier steps stays in the database.
 """
 
 from __future__ import annotations
@@ -157,9 +160,15 @@ def run_daily_update(
             handler = handlers.get(step_num, default_fn)
             try:
                 res = handler()
+                # KEEP: commit per step. Step 8 reads through its own connection; under MySQL
+                # REPEATABLE READ it would not see this session's uncommitted writes and could
+                # build the indicator cache from OLD data.
+                s.commit()
                 summary.step_results[step_name] = res
                 return res
             except Exception as exc:
+                # A failed step undoes only its own half-written work; earlier steps stay saved.
+                s.rollback()
                 logger.error("Failed Daily Update Step %d (%s): %s", step_num, step_name, exc)
                 raise DailyUpdateError(step_num, step_name, exc) from exc
 
