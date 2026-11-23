@@ -12,11 +12,9 @@ Nothing else in the project may call NSE directly after the later tasks.
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import date
 from typing import Any
 from urllib.parse import urlparse
@@ -25,7 +23,6 @@ import requests
 
 from config.settings import (
     NSE_ARCHIVES_BASE,
-    NSE_ARCHIVES_HOST,
     NSE_UDIFF_START,
     NSE_WWW_HOST,
 )
@@ -220,41 +217,6 @@ def fetch(
     raise FetchFailed(f"Failed to fetch {url} after {retries} attempts")
 
 
-def fetch_many(
-    urls: Sequence[str],
-    *,
-    workers: int = 4,
-    pause: float = 0.3,
-    timeout: int | float = 30,
-    retries: int = 3,
-    session: requests.Session | None = None,
-) -> dict[str, bytes]:
-    """Fetch multiple URLs concurrently with ThreadPoolExecutor and polite pause.
-
-    Returns a dict mapping url -> content bytes.
-    """
-    results: dict[str, bytes] = {}
-    if not urls:
-        return results
-
-    s = session or requests.Session()
-    s.headers.update(HEADERS)
-
-    def _worker(target_url: str) -> tuple[str, bytes]:
-        if pause > 0:
-            time.sleep(pause)
-        data = fetch(target_url, session=s, timeout=timeout, retries=retries)
-        return target_url, data
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-        future_to_url = {executor.submit(_worker, u): u for u in urls}
-        for future in concurrent.futures.as_completed(future_to_url):
-            u, data = future.result()
-            results[u] = data
-
-    return results
-
-
 # ---------------------------------------------------------------------------
 # URL builders (pure functions of a date)
 # ---------------------------------------------------------------------------
@@ -287,16 +249,6 @@ EQUITY_L_URL: str = f"{NSE_ARCHIVES_BASE}/content/equities/EQUITY_L.csv"
 SYMBOLCHANGE_URL: str = f"{NSE_ARCHIVES_BASE}/content/equities/symbolchange.csv"
 
 
-def equity_l_url(_d: date | None = None) -> str:
-    """Return the official listing master URL (EQUITY_L.csv)."""
-    return EQUITY_L_URL
-
-
-def symbolchange_url(_d: date | None = None) -> str:
-    """Return the official symbol change history URL (symbolchange.csv)."""
-    return SYMBOLCHANGE_URL
-
-
 def bhavcopy_url(d: date) -> str:
     """Return official Bhavcopy URL: UDiFF format if d >= NSE_UDIFF_START else old format."""
     if d >= NSE_UDIFF_START:
@@ -308,70 +260,3 @@ def cm_52_wk_url(d: date) -> str:
     """Return official adjusted 52-week High/Low CSV URL: CM_52_wk_High_low_DDMMYYYY.csv."""
     ddmmyyyy = f"{d.day:02d}{d.month:02d}{d.year:04d}"
     return f"{NSE_ARCHIVES_BASE}/content/CM_52_wk_High_low_{ddmmyyyy}.csv"
-
-
-# ---------------------------------------------------------------------------
-# Registry of official NSE data sources
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class FileSource:
-    """Metadata describing an official NSE file source."""
-
-    name: str
-    url_builder: Callable[..., str]
-    host: str
-    frequency_note: str
-
-    @property
-    def frequency(self) -> str:
-        return self.frequency_note
-
-
-FILE_REGISTRY: dict[str, FileSource] = {
-    "bhavcopy": FileSource(
-        name="bhavcopy",
-        url_builder=bhavcopy_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="daily (trading days; UDiFF from 2024-01-01, old format before)",
-    ),
-    "bhavcopy_udiff": FileSource(
-        name="bhavcopy_udiff",
-        url_builder=bhavcopy_udiff_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="daily from 2024-01-01",
-    ),
-    "bhavcopy_old": FileSource(
-        name="bhavcopy_old",
-        url_builder=bhavcopy_old_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="daily historical up to 2024-07-05",
-    ),
-    "pr_bundle": FileSource(
-        name="pr_bundle",
-        url_builder=pr_bundle_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="daily (contains mcap<date>.csv from 2024-02-01)",
-    ),
-    "equity_l": FileSource(
-        name="equity_l",
-        url_builder=equity_l_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="listing master (updated when new securities list)",
-    ),
-    "symbolchange": FileSource(
-        name="symbolchange",
-        url_builder=symbolchange_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="symbol change history (cumulative file)",
-    ),
-    "cm_52_wk": FileSource(
-        name="cm_52_wk",
-        url_builder=cm_52_wk_url,
-        host=NSE_ARCHIVES_HOST,
-        frequency_note="daily adjusted 52-week high/low report (CM_52_wk_High_low_DDMMYYYY.csv)",
-    ),
-}
-
-REGISTRY = FILE_REGISTRY

@@ -15,7 +15,6 @@ import requests
 
 from src.ingestion.nse_files import (
     EQUITY_L_URL,
-    FILE_REGISTRY,
     SYMBOLCHANGE_URL,
     BadFile,
     FetchFailed,
@@ -27,7 +26,6 @@ from src.ingestion.nse_files import (
     check_not_html,
     check_zip,
     fetch,
-    fetch_many,
     pr_bundle_url,
 )
 
@@ -289,40 +287,3 @@ def test_bhavcopy_url_switches_on_2024_01_01():
         bhavcopy_url(date(2024, 1, 1))
         == "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_20240101_F_0000.csv.zip"
     )
-
-
-def test_fetch_many_success():
-    """fetch_many downloads multiple URLs concurrently with polite pause."""
-    urls = [
-        "https://nsearchives.nseindia.com/content/cm/file1.csv",
-        "https://nsearchives.nseindia.com/content/cm/file2.csv",
-    ]
-    session = FakeSession(
-        [
-            FakeResponse(200, b"data1"),
-            FakeResponse(200, b"data2"),
-        ]
-    )
-    results = fetch_many(urls, workers=2, pause=0.0, session=session)
-    assert len(results) == 2
-    assert results[urls[0]] in (b"data1", b"data2")
-    assert results[urls[1]] in (b"data1", b"data2")
-
-
-def test_registry_entries():
-    """FILE_REGISTRY contains all expected official file metadata."""
-    expected_keys = {
-        "bhavcopy",
-        "bhavcopy_udiff",
-        "bhavcopy_old",
-        "pr_bundle",
-        "equity_l",
-        "symbolchange",
-    }
-    assert expected_keys.issubset(set(FILE_REGISTRY.keys()))
-
-    for key, source in FILE_REGISTRY.items():
-        assert source.name == key
-        assert source.host == "nsearchives.nseindia.com"
-        assert callable(source.url_builder)
-        assert source.frequency == source.frequency_note

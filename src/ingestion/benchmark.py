@@ -8,7 +8,7 @@ Fetches official historical index closing prices for standard benchmark series:
   - NIFTY SMALLCAP 250
   - NIFTY 500
 
-Provides an extensible BenchmarkSource interface with a primary NSE archive source.
+Downloads index closes from the official NSE archive (NSEIndexSource).
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import io
 import json
 import logging
 import time
-from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -68,14 +67,6 @@ NIFTY_100 = "NIFTY 100"
 NIFTY_MIDCAP_150 = "NIFTY MIDCAP 150"
 NIFTY_SMALLCAP_250 = "NIFTY SMALLCAP 250"
 NIFTY_500 = "NIFTY 500"
-
-SUPPORTED_INDICES: list[str] = [
-    NIFTY_50,
-    NIFTY_100,
-    NIFTY_MIDCAP_150,
-    NIFTY_SMALLCAP_250,
-    NIFTY_500,
-]
 
 INDEX_NAME_NORMALIZATION: dict[str, str] = {
     "nifty 50": NIFTY_50,
@@ -162,45 +153,7 @@ def record_non_trading_day(d: date) -> None:
     record_non_trading_days([d])
 
 
-def clear_non_trading_days(start: date, end: date) -> list[date]:
-    """Remove cached non-trading days in [start, end] from benchmark cache.
-
-    Returns the list of removed dates.
-    """
-    existing_str = load_non_trading_days()
-    to_remove: list[date] = []
-    remaining: set[str] = set()
-    for s in existing_str:
-        try:
-            d = date.fromisoformat(s)
-            if start <= d <= end:
-                to_remove.append(d)
-            else:
-                remaining.add(s)
-        except ValueError:
-            remaining.add(s)
-
-    if to_remove:
-        try:
-            _ensure_cache_dir()
-            with settings.BENCHMARK_NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
-                json.dump(sorted(remaining), f, indent=2)
-        except Exception as exc:
-            logger.warning("Failed saving benchmark non-trading days: %s", exc)
-
-    return sorted(to_remove)
-
-
-class BenchmarkSource(ABC):
-    """Abstract interface for downloading index benchmark prices."""
-
-    @abstractmethod
-    def fetch_prices(self, d: date) -> dict[str, float] | None:
-        """Fetch index closes for a given date. Returns {index_code: close}."""
-        pass
-
-
-class NSEIndexSource(BenchmarkSource):
+class NSEIndexSource:
     """Primary source: official NSE daily index archive (ind_close_all_DDMMYYYY.csv)."""
 
     def __init__(self, session: requests.Session | None = None) -> None:
@@ -338,7 +291,7 @@ class NSEIndexSource(BenchmarkSource):
 
 def load_benchmarks(
     dates: Sequence[date],
-    source: BenchmarkSource | None = None,
+    source: NSEIndexSource | None = None,
     delay: float = 0.5,
     session: Session | None = None,
 ) -> int:

@@ -13,7 +13,7 @@ Downloads three official NSE reports with ONE HTTP session and ONE retry method:
 3. **Listing master**: ``EQUITY_L.csv`` (symbol, ISIN, face value, listing date).
 
 The session, headers, retry and polite-delay method is the same one used by
-``src/ingestion/downloader.py`` for Bhavcopy files.
+``src/ingestion/nse_files.py`` for Bhavcopy files.
 
 NSE changes formats from time to time, so this module checks what it receives and fails
 loudly (:class:`NSEFormatChangedError`) instead of storing something wrong. Reading the text of
@@ -373,11 +373,6 @@ class NSEReportsDownloader:
             logger.warning("NSE homepage warm-up failed: %s (continuing anyway)", exc)
         self._session = session
         return session
-
-    def refresh_session(self) -> requests.Session:
-        """Throw the session away and start a new warm one (after a 403)."""
-        self._session = None
-        return self.get_session()
 
     # -- the three reports -----------------------------------------------
     def fetch_corporate_actions_window(
