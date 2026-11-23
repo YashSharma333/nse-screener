@@ -483,7 +483,7 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 - Pre-compute only 1 to 2 years of indicators. Full history on demand.
 - Streamlit now; private deployment only; no static IP; no paid data.
 - Every prompt files GitHub issues for problems and updates the README.
-- Fixes PRs merge with "Create a merge commit"; Updates and docs PRs "Squash and merge".
+- The AI states in every PR when to merge and which method (squash by default, merge commit when each commit stands alone); see "Git and pull requests" in CLAUDE.md.
 
 ## 16. Open items and known risks
 
