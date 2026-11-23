@@ -168,6 +168,7 @@ def calculate_sell_costs(
     )
 
 
+# KEEP: used by the backtest engine (P5); only tests call it today.
 def calculate_round_trip_costs(
     buy_price: float,
     sell_price: float,

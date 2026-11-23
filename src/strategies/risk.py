@@ -124,6 +124,7 @@ def target_price(
     return round_to_tick(raw_target, tick_size)
 
 
+# KEEP: used by the backtest engine (P5); only tests call it today.
 def risk_reward(entry_price: float, stop_price: float, target: float) -> float:
     """Calculate Risk:Reward ratio.
 
@@ -175,6 +176,7 @@ def position_size(
     return max(0, shares)
 
 
+# KEEP: used by the backtest engine (P5); only tests call it today.
 def trail_next(
     current_trail: float,
     high_since_entry: float,
@@ -207,6 +209,7 @@ def trail_next(
     return max(current_trail, candidate)
 
 
+# KEEP: used by the backtest engine (P5); only tests call it today.
 def r_multiple(exit_price: float, entry_price: float, initial_stop_price: float) -> float:
     """Calculate the realized R-multiple of a completed trade.
 
@@ -218,6 +221,7 @@ def r_multiple(exit_price: float, entry_price: float, initial_stop_price: float)
     return round((exit_price - entry_price) / rps, 2)
 
 
+# KEEP: used by the backtest engine (P5); only tests call it today.
 def portfolio_heat(
     open_positions: Sequence[tuple[float, float, int]],
     equity: float,

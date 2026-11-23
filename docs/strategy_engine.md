@@ -57,11 +57,9 @@ Strategies are expressed as validated Pydantic v2 JSON models with a defined lif
   "version": "1.0",
   "description": "Trend alignment with volume surge entry, 2.0x ATR stop, and dynamic trailing stop.",
   "status": "candidate",
-  "universe": "NIFTY 500",
   "entry": {
     "screener_key": "swing_volume",
-    "inline_rules": ["rsi_14 < 70"],
-    "timing": "next_open"
+    "inline_rules": ["rsi_14 < 70"]
   },
   "exit": {
     "stop_loss_type": "atr",
@@ -69,12 +67,10 @@ Strategies are expressed as validated Pydantic v2 JSON models with a defined lif
     "target_type": "none",
     "trailing_stop_type": "atr",
     "trailing_stop_value": 2.0,
-    "breakeven": true,
     "move_to_breakeven_at_r": 1.5,
     "max_holding_days": 20
   },
   "sizing": {
-    "method": "risk_percent",
     "risk_percent": 1.0,
     "max_positions": 5,
     "max_portfolio_heat_percent": 5.0

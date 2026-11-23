@@ -4,13 +4,11 @@
   "description": "Trend alignment with volume surge entry, 2.0x ATR initial stop, and dynamic 2.0x ATR trailing ratchet with breakeven at 1.5R.",
   "author": "trader",
   "status": "candidate",
-  "universe": "NIFTY 500",
   "entry": {
     "screener_key": "swing_volume",
     "inline_rules": [
       "rsi_14 < 70"
-    ],
-    "timing": "next_open"
+    ]
   },
   "exit": {
     "stop_loss_type": "atr",
@@ -19,13 +17,11 @@
     "target_value": null,
     "trailing_stop_type": "atr",
     "trailing_stop_value": 2.0,
-    "breakeven": true,
     "move_to_breakeven_at_r": 1.5,
     "max_holding_days": 20,
     "exit_rules": []
   },
   "sizing": {
-    "method": "risk_percent",
     "risk_percent": 1.0,
     "fixed_amount": 50000.0,
     "max_positions": 5,
