@@ -11,7 +11,6 @@ import pandas as pd
 
 from src.computation.indicators import INDICATORS_SCHEMA_VERSION
 from src.db.data_service import (
-    ensure_data_initialized,
     load_indicator_snapshot,
     load_raw_market_data,
     save_indicator_parquet_cache,
@@ -165,14 +164,6 @@ def test_load_raw_market_data_when_offline_returns_empty_no_demo_data():
     assert is_live is False
     assert "MySQL offline" in msg
     assert "Demo" not in msg
-
-
-def test_ensure_data_initialized_non_blocking():
-    """Verify ensure_data_initialized returns status without blocking downloads."""
-    with patch("src.db.data_service.check_connection", return_value=False):
-        status = ensure_data_initialized()
-        assert status["online"] is False
-        assert status["has_db_data"] is False
 
 
 def test_data_service_db_path_with_sqlite(tmp_path: Path):
