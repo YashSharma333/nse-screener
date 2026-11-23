@@ -14,13 +14,22 @@ logs/
 # Data (Keep out of source control)
 data/raw/*
 data/processed/*
-data/universe/*.xlsx
 data/corporate_actions/*
 !data/corporate_actions/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
-!data/universe/.gitkeep
-reports/*.csv
+
+# Generated reports: keep the folder (via .gitkeep), never the files
+reports/*
+!reports/.gitkeep
+
+# Scratch notes for GitHub issues
+issue.md
+
+# Packaging output
+dist/
+build/
+*.egg-info/
 
 # Environment Variables
 .env
