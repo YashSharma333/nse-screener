@@ -3,7 +3,7 @@
 #
 # Why a separate server? The read-only server (scripts/mcp_mysql.sh) stays safe
 # for everyday checks. This one is only for fixing data, by the steps in
-# CLAUDE.md section 7a (backup first, preview, small batches).
+# CLAUDE.md ("Working on the real database": backup first, preview, small batches).
 # It uses its own MySQL user (nse_agent) that has no ALTER or DROP rights, so
 # even a wrong command cannot delete a table. It never uses the root user.
 set -euo pipefail

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Makes a compressed backup of the nse_screener database OUTSIDE the repository.
 #
-# Why: CLAUDE.md section 7a requires a backup before the first data write.
+# Why: CLAUDE.md ("Working on the real database") requires a backup before the first data write.
 # It only needs SELECT rights, so it uses the read-only user. That user has no
 # RELOAD or LOCK TABLES right, so --single-transaction and table locks cannot be
 # used; run this when nothing is writing (no pipeline run in progress).

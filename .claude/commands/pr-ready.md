@@ -14,7 +14,7 @@ description: Finish a task. Verifies the branch, runs the CI-like checks, review
    three failed attempts and report.
 3. Review the whole diff (`git diff main --stat` and the content). Confirm there
    are no secrets, `.env`, `.xlsx` or `.csv` data files, and no unrelated edits.
-4. Run the quick checks of the `repo-hygiene` skill.
+4. Run the quick checks of the `deep-cleanup` skill.
 5. Confirm README/docs are updated for every new command, table or setting.
 6. Commit specific paths with a Conventional Commit message, re-check the branch
    (Step D), then `git push -u origin <branch>`.
@@ -24,5 +24,5 @@ description: Finish a task. Verifies the branch, runs the CI-like checks, review
 8. Print the PR URL. If `gh pr create` fails, say so and print the title and body.
 9. NEVER run `gh pr merge`, never push to main, never enable auto-merge. Do not
    delete the branch: its PR is still open.
-10. Finish with the final report from CLAUDE.md section 11, including the branch
+10. Finish with the final report from the "Final report" section of CLAUDE.md, including the branch
     used and which old branches were deleted or kept.
