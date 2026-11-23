@@ -115,8 +115,6 @@ NSE_API_BASE: str = os.getenv("NSE_API_BASE", "https://www.nseindia.com")
 NSE_CORP_ACTIONS_API_PATH: str = "/api/corporates-corporateActions"
 # Static report files live on the same archive host as the Bhavcopy files.
 NSE_ARCHIVES_BASE: str = "https://nsearchives.nseindia.com"
-NSE_SYMBOL_CHANGE_PATH: str = "/content/equities/symbolchange.csv"
-NSE_LISTING_MASTER_PATH: str = "/content/equities/EQUITY_L.csv"
 # NSE's API returned the full 10 years in one call (verified 18 Nov 2026). We still ask one
 # calendar year at a time so a failed call only repeats one small piece.
 CORP_ACTIONS_HISTORY_YEARS: int = 10
@@ -136,7 +134,6 @@ ADJUSTMENT_OVERRIDES_FILE: Path = PROJECT_ROOT / "config" / "adjustment_override
 # Official NSE hosts
 NSE_WWW_HOST: str = "www.nseindia.com"
 NSE_ARCHIVES_HOST: str = "nsearchives.nseindia.com"
-NSE_WWW_BASE: str = f"https://{NSE_WWW_HOST}"
 
 # Official file start dates:
 # • 2016-11-21: earliest daily price history in scope
@@ -144,8 +141,7 @@ NSE_WWW_BASE: str = f"https://{NSE_WWW_HOST}"
 # • 2024-02-01: earliest PR bundle containing usable market cap files
 NSE_HISTORY_START: date = date(2016, 11, 21)
 NSE_UDIFF_START: date = date(2024, 1, 1)
-NSE_MCAP_START: date = date(2024, 2, 1)
-FIRST_MCAP_DATE: date = NSE_MCAP_START
+FIRST_MCAP_DATE: date = date(2024, 2, 1)
 
 # ---------------------------------------------------------------------------
 # Bhavcopy parsing and raw cache settings (task D3 & D6)

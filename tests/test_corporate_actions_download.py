@@ -80,21 +80,13 @@ class FakeSession:
         return reply
 
 
-def make_downloader(*sessions: FakeSession):
-    """Downloader whose sessions are fakes. The list gives one session per refresh."""
+def make_downloader(session: FakeSession):
+    """Downloader whose session is a fake. Sleeps are recorded, not waited for."""
     sleeps: list[float] = []
     downloader = NSEReportsDownloader(
         max_retries=3, retry_wait=7, request_delay=0.5, sleep=sleeps.append
     )
-    queue = list(sessions)
-    downloader._session = queue.pop(0)
-
-    def fake_refresh():
-        if queue:
-            downloader._session = queue.pop(0)
-        return downloader._session
-
-    downloader.refresh_session = fake_refresh
+    downloader._session = session
     downloader.sleeps = sleeps
     return downloader
 
