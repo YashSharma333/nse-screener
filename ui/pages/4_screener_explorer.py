@@ -61,7 +61,7 @@ def main() -> None:
         st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
         if snapshot.empty:
-            render_uninitialized_prompt(data["message"])
+            render_uninitialized_prompt()
             return
 
         # Sidebar Screener Selection

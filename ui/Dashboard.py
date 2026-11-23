@@ -92,7 +92,7 @@ def main() -> None:
         )
 
         if snapshot.empty:
-            render_uninitialized_prompt(data["message"])
+            render_uninitialized_prompt()
             return
 
         as_of = snapshot["date"].max() if "date" in snapshot.columns else "unknown"

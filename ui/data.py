@@ -150,16 +150,9 @@ def filter_by_market_cap(
     return df[mask]
 
 
-def render_uninitialized_prompt(message: str | None = None) -> None:
-    """Tell the user there is no data and which terminal commands create it (no buttons)."""
+def render_uninitialized_prompt() -> None:
+    """Tell the user there is no data and how to create it (the UI itself never loads data)."""
     st.info(
-        f"{message or cache_reader.NO_CACHE_MESSAGE}\n\n"
-        "**To load the data, run these commands in your terminal:**\n"
-        "```bash\n"
-        "alembic upgrade head\n"
-        "python run_pipeline.py --load-prices   # first time only: all history, takes long\n"
-        "python run_pipeline.py --update\n"
-        "```\n\n"
-        "See the README section 'Building the database from scratch' for the full order. "
-        "The dashboard only reads the saved data; it never loads or rebuilds anything itself."
+        "No data yet. Run `scripts/run_app.sh` or `python run_pipeline.py --update`. "
+        "First time? See the README section 'Building the database from scratch'."
     )

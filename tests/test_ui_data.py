@@ -159,5 +159,8 @@ def test_empty_cache_dashboard_shows_the_command_and_has_no_button() -> None:
     at.run()
 
     assert not at.exception
-    assert any("python run_pipeline.py --update" in info.value for info in at.info)
+    assert any(
+        "scripts/run_app.sh" in info.value and "python run_pipeline.py --update" in info.value
+        for info in at.info
+    )
     assert len(at.button) == 0
