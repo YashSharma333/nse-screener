@@ -1,8 +1,11 @@
-"""Data Access Layer for Streamlit UI
-==================================
-Provides Streamlit-cached access to market indicators with multi-factor
-cache invalidation based on Parquet file modification time and metadata hash.
-Supports lightweight snapshots and lazy per-symbol historical projections.
+"""Data access layer for the Streamlit UI (READ ONLY).
+
+The UI only reads the Parquet cache through ``src/computation/cache_reader.py``. It never
+opens MySQL, never downloads anything and never rebuilds the cache: ``python run_pipeline.py
+--update`` (or ``--refresh-cache``) does that, and the dashboard shows the result.
+
+Streamlit caching is invalidated by a token made of the Parquet file's modification time and a
+hash of its metadata file, so new data appears as soon as the file changes.
 """
 
 from __future__ import annotations
@@ -10,101 +13,66 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from config.settings import PROJECT_ROOT
-from src.db.data_service import (
-    load_indicator_history as _load_indicator_history,
-)
-from src.db.data_service import (
-    load_indicator_snapshot as _load_indicator_snapshot,
-)
+from config import settings
+from src.computation import cache_reader
 
 logger = logging.getLogger(__name__)
 
-DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-PARQUET_PATH = DATA_PROCESSED_DIR / "indicators.parquet"
-META_PATH = DATA_PROCESSED_DIR / "indicators.meta.json"
 
+def get_cache_invalidation_token() -> tuple[float, str]:
+    """Compute a lightweight cache invalidation token: (parquet_mtime, meta_sha256)."""
+    cache_path = settings.INDICATORS_CACHE_PATH
+    meta_path = cache_path.with_suffix(".meta.json")
 
-def get_cache_invalidation_token(
-    parquet_path: Path = PARQUET_PATH,
-    meta_path: Path = META_PATH,
-) -> tuple[float, str]:
-    """Compute a lightweight cache invalidation token.
-
-    Returns
-    -------
-    tuple[float, str]
-        (parquet_mtime, meta_sha256)
-    """
     mtime = 0.0
-    if parquet_path.exists():
+    if cache_path.exists():
         try:
-            mtime = parquet_path.stat().st_mtime
+            mtime = cache_path.stat().st_mtime
         except OSError:
             mtime = 0.0
 
     meta_hash = "missing"
     if meta_path.exists():
         try:
-            content = meta_path.read_bytes()
-            meta_hash = hashlib.sha256(content).hexdigest()
+            meta_hash = hashlib.sha256(meta_path.read_bytes()).hexdigest()
         except OSError:
             meta_hash = "error"
 
     return mtime, meta_hash
 
 
-def _fetch_market_data() -> tuple[pd.DataFrame, pd.DataFrame, bool, str] | dict[str, Any]:
-    """Internal fetcher delegating to data_service.load_indicator_snapshot."""
-    return _load_indicator_snapshot(snapshot_only=True)
-
-
 @st.cache_data(ttl=300)
 def _get_snapshot_cached(cache_token: tuple[float, str]) -> dict[str, Any]:
-    """Fetch only latest snapshot (1 row per symbol) with Streamlit caching."""
-    _mtime, _hash = cache_token
+    """Read the latest snapshot (1 row per symbol) from the cache, remembered by Streamlit."""
     logger.debug("Streamlit cache miss / reload for market snapshot (token=%s)", cache_token)
-    res = _fetch_market_data()
-    if isinstance(res, dict):
-        snapshot = res.get("snapshot", pd.DataFrame())
-        is_live = bool(res.get("is_live", False))
-        msg = str(res.get("status_msg") or res.get("message") or "")
-    elif isinstance(res, tuple):
-        snapshot, _full, is_live, msg = res
-    else:
-        snapshot, is_live, msg = pd.DataFrame(), False, ""
+    snapshot, message = cache_reader.read_snapshot()
 
-    if isinstance(snapshot, pd.DataFrame) and not snapshot.empty:
+    if not snapshot.empty:
         # Task D11: UI shows market cap, no cap bucket
         drop_cols = [c for c in ("cap_bucket", "index_name") if c in snapshot.columns]
-        if drop_cols:
-            snapshot = snapshot.drop(columns=drop_cols)
+        snapshot = snapshot.drop(columns=drop_cols)
 
     return {
         "snapshot": snapshot,
-        "is_live": is_live,
-        "status_msg": msg,
-        "message": msg,
+        "as_of": cache_reader.read_data_date(),
+        "message": message,
     }
 
 
-def get_snapshot(
-    parquet_path: Path = PARQUET_PATH,
-    meta_path: Path = META_PATH,
-) -> dict[str, Any]:
-    """Retrieve market snapshot using cached wrapper with automatic invalidation."""
-    token = get_cache_invalidation_token(parquet_path=parquet_path, meta_path=meta_path)
-    result = _get_snapshot_cached(token)
-    snapshot = result.get("snapshot")
-    if isinstance(snapshot, pd.DataFrame) and snapshot.empty:
-        # Never keep an empty result for the 5 minute TTL: a brief database hiccup or an
-        # update still running would otherwise leave the page empty until the cache expires.
+def get_snapshot() -> dict[str, Any]:
+    """Latest market snapshot as ``{"snapshot": DataFrame, "as_of": str | None, "message": str}``.
+
+    ``as_of`` is the trading day written in ``indicators.meta.json`` (None without a cache).
+    """
+    result = _get_snapshot_cached(get_cache_invalidation_token())
+    if result["snapshot"].empty:
+        # Never keep an empty result for the 5 minute TTL: while ``--update`` is rewriting the
+        # file the page would otherwise stay empty until the cache expires.
         _get_snapshot_cached.clear()
     return result
 
@@ -115,42 +83,16 @@ def _get_symbol_history_cached(
     columns: tuple[str, ...] | None,
     cache_token: tuple[float, str],
 ) -> pd.DataFrame:
-    """Fetch history for a single symbol from Parquet using PyArrow filters."""
-    _mtime, _hash = cache_token
-    logger.debug(
-        "Streamlit cache miss / reload for symbol history (%s, token=%s)",
-        symbol,
-        cache_token,
-    )
-    return _load_indicator_history(columns=columns, symbols=[symbol], cache_path=PARQUET_PATH)
+    """Read the history of one symbol from the Parquet cache, remembered by Streamlit."""
+    # cache_token is only here so Streamlit forgets the result when the cache file changes.
+    logger.debug("Streamlit cache miss / reload for symbol history (%s, %s)", symbol, cache_token)
+    return cache_reader.read_history([symbol], columns=columns)
 
 
-def get_symbol_history(
-    symbol: str,
-    columns: Sequence[str] | None = None,
-    parquet_path: Path = PARQUET_PATH,
-    meta_path: Path = META_PATH,
-) -> pd.DataFrame:
-    """Retrieve history for one symbol with PyArrow projection and per-symbol Streamlit cache."""
-    token = get_cache_invalidation_token(parquet_path=parquet_path, meta_path=meta_path)
+def get_symbol_history(symbol: str, columns: Sequence[str] | None = None) -> pd.DataFrame:
+    """History for one symbol with PyArrow projection and a per-symbol Streamlit cache."""
     col_tuple = tuple(columns) if columns is not None else None
-    return _get_symbol_history_cached(symbol, col_tuple, token)
-
-
-def get_market_data(
-    parquet_path: Path = PARQUET_PATH,
-    meta_path: Path = META_PATH,
-) -> dict[str, Any]:
-    """Backward-compatible wrapper returning snapshot data."""
-    snap_data = get_snapshot(parquet_path=parquet_path, meta_path=meta_path)
-    return {
-        "raw": snap_data["snapshot"],
-        "indicators": snap_data["snapshot"],
-        "snapshot": snap_data["snapshot"],
-        "is_live": snap_data["is_live"],
-        "status_msg": snap_data["status_msg"],
-        "message": snap_data["status_msg"],
-    }
+    return _get_symbol_history_cached(symbol, col_tuple, get_cache_invalidation_token())
 
 
 def format_market_cap(val: Any) -> str:
@@ -208,65 +150,16 @@ def filter_by_market_cap(
     return df[mask]
 
 
-def run_full_update() -> dict[str, str]:
-    """Run the full daily update for the UI buttons and return a ``status``/``message`` dict.
-
-    Why: ``run_daily_update`` loads every price row of every regular series (not just
-    Nifty-500), plus market cap, corporate actions, benchmarks, adjusted prices and the
-    indicator cache, and stops with a clear message at the failing step.
-    """
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from src.etl.daily_update import DailyUpdateError, run_daily_update
-
-    try:
-        summary = run_daily_update()
-    except (DailyUpdateError, SQLAlchemyError, OSError) as exc:
-        logger.error("Full update failed: %s", exc, exc_info=True)
-        return {"status": "error", "message": str(exc)}
-
-    # Streamlit caches the snapshot for 5 minutes; drop it so new data shows immediately.
-    st.cache_data.clear()
-    if not summary.new_dates:
-        return {"status": "up_to_date", "message": "Market data is already up to date."}
-    warnings = f" ({len(summary.warnings)} warnings, see logs)" if summary.warnings else ""
-    return {
-        "status": "success",
-        "message": (
-            f"Loaded {len(summary.new_dates)} new trading day(s), "
-            f"{summary.rows_added:,} price rows{warnings}."
-        ),
-    }
-
-
-def render_uninitialized_prompt(custom_message: str | None = None) -> None:
-    """Render a friendly callout when the market database has not been initialized."""
-    msg = custom_message or (
-        "No market data is available in the database or cache. "
-        "The application does not use synthetic demo data."
-    )
+def render_uninitialized_prompt(message: str | None = None) -> None:
+    """Tell the user there is no data and which terminal commands create it (no buttons)."""
     st.info(
-        f"{msg}\n\n"
-        "**To initialize the database, run these commands in your terminal:**\n"
+        f"{message or cache_reader.NO_CACHE_MESSAGE}\n\n"
+        "**To load the data, run these commands in your terminal:**\n"
         "```bash\n"
         "alembic upgrade head\n"
         "python run_pipeline.py --load-prices   # first time only: all history, takes long\n"
         "python run_pipeline.py --update\n"
         "```\n\n"
         "See the README section 'Building the database from scratch' for the full order. "
-        "Or click below to run the daily update:"
+        "The dashboard only reads the saved data; it never loads or rebuilds anything itself."
     )
-
-    if "is_initializing_etl" not in st.session_state:
-        st.session_state.is_initializing_etl = False
-
-    failed = st.session_state.get("init_status")
-    if failed and failed.get("status") == "error":
-        st.error(f"Initialisation failed: {failed['message']}")
-
-    if st.button("Initialise Data", disabled=st.session_state.is_initializing_etl):
-        st.session_state.is_initializing_etl = True
-        with st.spinner("Running the full daily update (this can take several minutes)..."):
-            st.session_state.init_status = run_full_update()
-        st.session_state.is_initializing_etl = False
-        st.rerun()

@@ -47,10 +47,7 @@ def _keep_real_files_untouched(tmp_path_factory, monkeypatch):
     pass them explicitly. The session guard above catches any path that is missed.
     """
     sandbox = tmp_path_factory.mktemp("isolated_real_files")
-    monkeypatch.setattr("src.db.data_service.INDICATORS_CACHE_PATH", sandbox / "indicators.parquet")
-    monkeypatch.setattr(
-        "src.db.data_service.INDICATORS_META_PATH", sandbox / "indicators.meta.json"
-    )
+    monkeypatch.setattr("config.settings.INDICATORS_CACHE_PATH", sandbox / "indicators.parquet")
     benchmark_cache = sandbox / "benchmark_cache"
     price_cache = sandbox / "bhavcopy_cache"
     monkeypatch.setattr("config.settings.REPORTS_DIR", sandbox / "reports")

@@ -346,11 +346,13 @@ def apply_terminal_theme() -> None:
     render_sidebar_controls()
 
 
-def render_terminal_header(
-    title: str, subtitle: str, status_text: str, is_live: bool = True
-) -> None:
-    """Renders the top Bloomberg-style header bar with connection badges."""
-    badge_class = "badge-live" if is_live else "badge-demo"
+def render_terminal_header(title: str, subtitle: str, as_of: str | None) -> None:
+    """Renders the top Bloomberg-style header bar with a "Data as of <date>" badge.
+
+    ``as_of`` is the date in ``indicators.meta.json``; without it there is no data to show.
+    """
+    status_text = f"Data as of {as_of}" if as_of else "NO DATA"
+    badge_class = "badge-live" if as_of else "badge-demo"
     html = f"""
     <div class="terminal-header">
         <div>
@@ -366,8 +368,7 @@ def render_terminal_header(
 
 
 def render_sidebar_controls() -> None:
-    """Render unified production-grade sidebar telemetry and data pipeline triggers."""
-    # Top branding box: modern trading terminal identity
+    """Render the sidebar branding. The UI only reads data: updates run from the terminal."""
     st.sidebar.markdown(
         """
     <div class="sidebar-header-box">
@@ -377,36 +378,4 @@ def render_sidebar_controls() -> None:
     """,
         unsafe_allow_html=True,
     )
-
-    # Data update lives in an expander so the sidebar stays short.
-    status = st.session_state.get("etl_status")
-    with st.sidebar.expander("🔄 Update data", expanded=bool(status)):
-        if st.button(
-            "⚡ Sync Market Data",
-            key="sidebar_etl_incremental_sync",
-            disabled=st.session_state.get("is_updating_etl", False),
-            width="stretch",
-            help=(
-                "Runs the full daily update: new prices for ALL stocks, market cap, "
-                "corporate actions, adjusted prices and the indicator cache."
-            ),
-        ):
-            from ui.data import run_full_update
-
-            st.session_state.is_updating_etl = True
-            with st.spinner("Running the full daily update (can take several minutes)..."):
-                st.session_state.etl_status = run_full_update()
-            st.session_state.is_updating_etl = False
-            st.rerun()
-
-        # Result of the last update (the "offline" and "up to date" cases are not errors).
-        if status:
-            message = status.get("message", "")
-            if status.get("status") == "success":
-                st.success(f"✓ {message}")
-            elif status.get("status") in ("up_to_date", "offline"):
-                st.info(f"ℹ {message}")
-            else:
-                st.error(f"✗ {message}")
-
     st.sidebar.caption("NSE Screener Terminal v2.2 · Production")

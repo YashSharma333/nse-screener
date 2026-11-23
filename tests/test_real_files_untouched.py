@@ -19,13 +19,14 @@ REPO = Path(__file__).resolve().parent.parent
 def test_default_cache_path_is_sandboxed_during_tests() -> None:
     """Saving with the default path must land in the temporary sandbox, not data/processed."""
     real = REPO / "data" / "processed" / "indicators.parquet"
-    assert data_service.INDICATORS_CACHE_PATH.resolve() != real.resolve()
+    cache_path = settings.INDICATORS_CACHE_PATH
+    assert cache_path.resolve() != real.resolve()
 
     frame = pd.DataFrame({"symbol": ["TCS"], "date": [pd.Timestamp("2026-01-01").date()]})
     data_service.save_indicator_parquet_cache(frame)  # default path
 
-    assert data_service.INDICATORS_CACHE_PATH.exists()
-    assert data_service.INDICATORS_META_PATH.exists()
+    assert cache_path.exists()
+    assert cache_path.with_suffix(".meta.json").exists()
 
 
 def test_every_output_folder_is_sandboxed_during_tests() -> None:
@@ -38,6 +39,7 @@ def test_every_output_folder_is_sandboxed_during_tests() -> None:
         "BHAVCOPY_ALL_DIR",
         "MCAP_DIR",
         "CORP_ACTIONS_DIR",
+        "INDICATORS_CACHE_PATH",
     ):
         value = getattr(settings, name).resolve()
         in_real_folder = value.is_relative_to(REPO / "reports") or value.is_relative_to(
@@ -71,7 +73,8 @@ def test_real_defaults_are_absolute_and_inside_the_project() -> None:
     code = (
         "from config import settings as s; "
         "names = ['REPORTS_DIR','BENCHMARK_CACHE_DIR','BENCHMARK_NON_TRADING_DAYS_FILE',"
-        "'PRICE_NON_TRADING_DAYS_FILE','BHAVCOPY_ALL_DIR','MCAP_DIR','CORP_ACTIONS_DIR']; "
+        "'PRICE_NON_TRADING_DAYS_FILE','BHAVCOPY_ALL_DIR','MCAP_DIR','CORP_ACTIONS_DIR',"
+        "'INDICATORS_CACHE_PATH']; "
         "bad = [n for n in names if not getattr(s, n).is_absolute() "
         "or not getattr(s, n).is_relative_to(s.PROJECT_ROOT)]; "
         "print(bad)"

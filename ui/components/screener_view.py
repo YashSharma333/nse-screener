@@ -79,18 +79,12 @@ def render_screener_page(
 
     data = get_snapshot()
     snapshot = data["snapshot"]
-    is_live = data["is_live"]
 
-    render_terminal_header(
-        title=page_title,
-        subtitle=subtitle,
-        status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
-        is_live=is_live,
-    )
+    render_terminal_header(title=page_title, subtitle=subtitle, as_of=data["as_of"])
     st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
     if snapshot.empty:
-        render_uninitialized_prompt()
+        render_uninitialized_prompt(data["message"])
         return
 
     st.sidebar.markdown("### ⚙️ Screener settings")
