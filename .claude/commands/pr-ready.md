@@ -20,8 +20,8 @@ description: Finish a task. Verifies the branch, runs the CI-like checks, review
    (Step D), then `git push -u origin <branch>`.
 7. Open the PR with `gh pr create`, title `<type>(<task>): <summary>`, body with
    these sections in order: Summary, Changes, Commands, Verification,
-   Not verified, Risks and rollback, Issues filed, Merge advice (when to merge and
-   which method, by the table in the "Git and pull requests" section of CLAUDE.md).
+   Not verified, Risks and rollback, Issues filed. Do NOT put merge advice in the
+   PR description: it goes only in the final report in step 10.
 8. Print the PR URL. If `gh pr create` fails, say so and print the title and body.
 9. NEVER run `gh pr merge`, never push to main, never enable auto-merge. Do not
    delete the branch: its PR is still open.

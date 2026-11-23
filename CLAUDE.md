@@ -83,8 +83,8 @@ Stop and report instead of pushing on when: the same test or command fails after
 
 - Branches from an up-to-date `main`: `fix/<task>-name`, `feat/<task>-name`, `docs/<name>`, `chore/<name>`. One task = one branch = one PR; a Fixes PR and an Updates PR are always separate. If a task grows beyond about 800 changed lines, stop and file an issue proposing a split. Follow-up fixes go on the same branch. Never reuse a branch whose PR was merged.
 - Task IDs (T01 to T65a, Prompts A to L, FIRST-n, I<issue>) appear in branch names, commit messages and the PR title. Conventional Commits: `fix(T64): ...`, `feat(T65a): ...`, `docs: ...`. No "WIP".
-- **PR title:** `<type>(<task id>): <what it does>`. **PR description, in this order:** Summary, Changes, Commands (for the owner), Verification (real results), Not verified, Risks and rollback, Issues filed (`Fixes #N` only for issues the PR really closes), Merge advice (see below).
-- **Merge advice (the owner merges; the AI always says WHEN and HOW).** Every PR description and every final report ends with a "Merge advice" block:
+- **PR title:** `<type>(<task id>): <what it does>`. **PR description, in this order:** Summary, Changes, Commands (for the owner), Verification (real results), Not verified, Risks and rollback, Issues filed (`Fixes #N` only for issues the PR really closes). Do NOT put merge advice in the PR description.
+- **Merge advice (the owner merges; the AI always says WHEN and HOW).** Every final report (the chat message to the owner, never the GitHub PR description) ends with a "Merge advice" block:
   1. **When:** "Merge now" only if CI is green, no review comment is unresolved, the branch has no conflict with `main`, and every PR this one depends on is already merged. Otherwise "Wait for: <the exact thing>". If the PR's "Not verified" list holds something the owner can check, say what and how.
   2. **Method:** pick one by the table below and give a one-line reason. Do not default to a method by PR type (Fixes or Updates).
   3. **Commit title:** for a squash, the title to paste is the PR title (Conventional Commits) and the body is a short Summary.
