@@ -119,7 +119,7 @@ File an issue (`gh issue create`, skill `github-issue`) when you find a bug outs
 
 ## Skills and slash commands
 
-`.claude/skills/`: `branch-guard` (mandatory at the start of every task and before every commit and push), `repo-hygiene`, `nse-data-integrity` (anything touching ingestion, caches, trading days, adjustments, the universe or symbol names), `db-migration`, `github-issue`. `.claude/commands/`: `/start-task` (run at the start of every task), `/pr-ready` (run at the end; opens the PR, never merges), `/cleanup` (weekly and after merges). Skills and commands may not weaken any rule in this file; if one is wrong, file an issue and propose the fix in your PR.
+`.claude/skills/`: `branch-guard` (mandatory at the start of every task and before every commit and push), `simplify-for-beginner` (every task that edits code or tests: code rules, the test-as-you-go loop, test-suite rules), `deep-cleanup` (every deletion, the end-of-task repo checks and the weekly audit), `nse-data-integrity` (anything touching ingestion, caches, trading days, adjustments, the universe or symbol names), `db-migration`, `github-issue`. `.claude/commands/`: `/start-task` (run at the start of every task), `/pr-ready` (run at the end; opens the PR, never merges). Skills and commands may not weaken any rule in this file; if one is wrong, file an issue and propose the fix in your PR.
 
 ## Final report
 

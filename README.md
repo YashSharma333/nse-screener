@@ -484,7 +484,8 @@ The [CLAUDE.md](CLAUDE.md) file is the central source of truth for development s
 ### 2. Specialized Agent Skills (`.claude/skills/`)
 Skills are modular, on-demand instruction packs loaded by agents whenever a relevant task is executed:
 * **`branch-guard`:** Keeps git branches safe. Ensures work happens on dedicated task branches, prevents accidental commits to `main`, verifies working tree status before switching branches, and safely deletes branches only after their pull request is verified merged.
-* **`repo-hygiene`:** Keeps the repository clean and tidy. Defines a quick checklist run at the end of every task (removing stray files, verifying tracked files, and checking diff sizes) and a weekly audit covering CI health, open issues, and dependencies.
+* **`simplify-for-beginner`:** How code and tests must look so a Python beginner can read them: plain names, one job per function, no code that only tests use, the test-as-you-go loop (test after every edit, regression test first for bug fixes, golden check for refactors) and the test-suite rules.
+* **`deep-cleanup`:** Keeps the repository clean and small. Deletion rules (dead and test-only code is listed in a table before it is removed), how to find dead code, a quick checklist run at the end of every task (stray files, tracked files, diff sizes) and a weekly audit covering branches, CI health, open issues and dependencies.
 * **`nse-data-integrity`:** Contains hard-won rules for handling National Stock Exchange market data, including weekend/special session detection, rejection of duplicate non-trading Bhavcopy files, corporate action split/bonus rebuild safeguards, and the rules for reading renamed symbols.
 * **`db-migration`:** Standardizes database schema migrations using Alembic. Ensures every migration has both an `upgrade()` and a working `downgrade()` compatible with both MySQL (production) and SQLite (offline tests).
 * **`github-issue`:** Standardizes how bugs, data anomalies, out-of-scope issues, and questions requiring owner decisions are filed as structured GitHub issues using the `gh` CLI.
@@ -493,7 +494,6 @@ Skills are modular, on-demand instruction packs loaded by agents whenever a rele
 Commands are repeatable, step-by-step procedures triggered by typing a slash command:
 * **`/start-task`:** Initializes every task safely. Checks the current git branch, ensures uncommitted deliverable files are preserved, safely cleans merged local branches, reviews open issues, and clarifies task scope before writing code.
 * **`/pr-ready`:** Prepares a completed task for review. Re-verifies branch safety, runs all lint and test suites offline, reviews the git diff for unintended edits, commits staged files, and opens a GitHub pull request with a complete summary.
-* **`/cleanup`:** Performs routine repository maintenance. Audits local and remote branches against pull request statuses, deletes merged branches that pass all safety gates, inspects open issues and PRs, and cleans temporary caches.
 
 ---
 
@@ -505,7 +505,7 @@ This repo ships three, configured in [.mcp.json](.mcp.json):
 | Server | What it does | Package |
 |---|---|---|
 | `mysql` | Read-only SQL queries on the `nse_screener` database | `@benborla29/mcp-server-mysql@2.0.9` |
-| `mysql_write` | Data fixes (INSERT, UPDATE, DELETE; no schema changes), by the backup-first steps in `CLAUDE.md` section 7a | same package |
+| `mysql_write` | Data fixes (INSERT, UPDATE, DELETE; no schema changes), by the backup-first steps in the "Working on the real database" section of `CLAUDE.md` | same package |
 | `github` | Read and create issues and pull requests | GitHub's official remote server |
 
 Passwords and tokens are **never** in `.mcp.json`. Two small scripts in
@@ -597,8 +597,8 @@ put the secret in `.env` and load it through a small script like
 nse-screener/
 ├── .claude/                      # Claude Code settings, skills and slash commands
 │   ├── settings.json             # Permission rules (blocks merging, force-push and pushes to main)
-│   ├── skills/                   # Modular domain skills (branch-guard, repo-hygiene, etc.)
-│   └── commands/                 # Slash commands (/start-task, /pr-ready, /cleanup)
+│   ├── skills/                   # Modular domain skills (branch-guard, simplify-for-beginner, deep-cleanup, etc.)
+│   └── commands/                 # Slash commands (/start-task, /pr-ready)
 ├── config/
 │   └── settings.py               # Central configuration (paths, INDICATOR_HISTORY_YEARS)
 ├── data/
