@@ -249,3 +249,33 @@ def test_data_service_db_path_with_sqlite(tmp_path: Path):
         mdata = get_market_data(use_adjusted=True)
         assert "snapshot" in mdata
         clear_market_data_cache()
+
+
+def test_load_raw_market_data_warns_when_falling_back_to_raw(tmp_path, caplog) -> None:
+    """Rows with NULL adj_* use RAW prices; the loader logs how many symbols are affected."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from src.db.data_service import load_raw_market_data
+    from src.db.models import Base, DailyPrice
+
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'warn.db'}")
+    Base.metadata.create_all(test_engine)
+    with sessionmaker(bind=test_engine)() as session:
+        session.add(
+            DailyPrice(
+                symbol="INFY", date=date(2024, 1, 1), open=10.0, high=10.0, low=10.0,
+                close=10.0, prev_close=10.0, volume=100,
+            )
+        )  # fmt: skip
+        session.commit()
+
+    with (
+        patch("src.db.data_service.engine", test_engine),
+        patch("src.db.data_service.check_connection", return_value=True),
+        caplog.at_level("WARNING", logger="src.db.data_service"),
+    ):
+        df, _live, _msg = load_raw_market_data(use_adjusted=True)
+
+    assert float(df["close"].iloc[0]) == 10.0  # fell back to RAW
+    assert "1 symbols have rows without adjusted prices" in caplog.text

@@ -1,13 +1,16 @@
 """Unit tests for the corporate actions adjustment engine (src/etl/adjust.py)."""
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from config import settings
 from src.db.models import AdjFactor, Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, cumulative_factors, rebuild_adjusted
+from src.etl.daily_update import run_daily_update
 from tests.official_actions import add_official_action, add_placeholder_action
 
 
@@ -184,3 +187,53 @@ def test_sqlite_adjust_new_rows_incremental():
             select(DailyPrice).where(DailyPrice.symbol == "INFY", DailyPrice.date == d1)
         ).one()
         assert float(infy_d1.adj_close) == 1510.0
+
+
+def _price_row(symbol: str, day: date, close: float, **extra) -> DailyPrice:
+    """One raw price row; adj_* stay NULL unless passed in ``extra``."""
+    return DailyPrice(
+        symbol=symbol, date=day, open=close, high=close, low=close, close=close,
+        prev_close=close, volume=1000, **extra
+    )  # fmt: skip
+
+
+def test_step_7_fills_rows_with_missing_adjusted_prices(tmp_path: Path) -> None:
+    """Rows left with NULL adj_* by an earlier failed run are fixed even with no new dates (B4)."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'adj.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        add_placeholder_action(session)
+        session.add_all(_price_row("INFY", date(2024, 1, d), 1500.0 + d) for d in (1, 2, 3))
+        session.commit()
+
+        stubs = {i: (lambda: {}) for i in range(1, 10) if i != 7}  # only the real step 7 runs
+        run_daily_update(session=session, today=date(2024, 1, 4), step_handlers=stubs)
+
+        rows = session.scalars(select(DailyPrice).order_by(DailyPrice.date)).all()
+        assert [float(r.adj_close) for r in rows] == [1501.0, 1502.0, 1503.0]
+
+        # A second run has nothing left to fix (idempotent): no NULL adj_close remains.
+        assert session.scalars(select(DailyPrice).where(DailyPrice.adj_close.is_(None))).all() == []
+
+
+def test_partial_adjust_keeps_other_symbols_in_reports() -> None:
+    """Adjusting one symbol must not wipe the other symbols from adj_events_review.csv (B5)."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    reports = settings.REPORTS_DIR
+    reports.mkdir(parents=True, exist_ok=True)
+    review_csv = reports / "adj_events_review.csv"
+    pd.DataFrame([{"symbol": "TCS", "date": "2023-05-02", "factor": 0.5}]).to_csv(
+        review_csv, index=False
+    )
+
+    with Session(engine) as session:
+        add_official_action(session, "INFY", date(2024, 1, 2), factor=0.5)
+        rows = [_price_row("INFY", date(2024, 1, d), 1500.0) for d in (1, 2)]
+        session.add_all(rows)
+        session.commit()
+        new_df = pd.DataFrame([{"symbol": "INFY", "date": date(2024, 1, 2), "close": 1500.0}])
+        adjust_new_rows(new_df, session=session)  # INFY has a new split: partial rebuild
+
+    saved = pd.read_csv(review_csv)
+    assert sorted(saved["symbol"]) == ["INFY", "TCS"]
