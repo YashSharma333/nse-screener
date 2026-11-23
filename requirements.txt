@@ -2,6 +2,8 @@ streamlit==1.64.0
 pandas==3.0.6
 numpy==2.4.6
 SQLAlchemy==2.1.1
+# PyMySQL and cryptography are never imported in our code: SQLAlchemy loads them
+# by name from the "mysql+pymysql://" URL, and MySQL 8 logins need cryptography.
 PyMySQL==1.2.3
 cryptography==50.0.1
 plotly==7.1.0
