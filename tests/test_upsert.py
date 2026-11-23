@@ -443,3 +443,14 @@ def test_upsert_rows_mysql_integration():
                 DailyPrice.symbol.in_(["T_UPSERT_1", "T_UPSERT_2", "T_UPSERT_3"])
             ).delete(synchronize_session=False)
             session.commit()
+
+
+def test_unsupported_dialect_raises_clear_error() -> None:
+    """Only SQLite and MySQL are supported; anything else must fail loudly."""
+    import pytest
+
+    from src.db.models import DailyPrice
+    from src.db.upsert import _build_upsert_statement
+
+    with pytest.raises(ValueError, match="Unsupported database dialect"):
+        _build_upsert_statement(DailyPrice, ["close"], ["symbol", "date"], None, "postgresql")

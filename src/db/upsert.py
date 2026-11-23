@@ -45,7 +45,7 @@ def _build_upsert_statement(
     coalesce_columns: Sequence[str] | None,
     dialect_name: str,
 ) -> Any:
-    """Build a dialect-specific upsert statement for SQLite, MySQL, or Postgres.
+    """Build a dialect-specific upsert statement for SQLite or MySQL.
 
     Parameters
     ----------
@@ -101,26 +101,8 @@ def _build_upsert_statement(
             return stmt.on_duplicate_key_update(set_dict)
         return stmt.prefix_with("IGNORE")
 
-    else:
-        # Generic fallback (e.g. Postgres or others)
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-        stmt = pg_insert(model)
-        if update_cols:
-            set_dict = {
-                col: (
-                    func.coalesce(getattr(stmt.excluded, col), getattr(model, col))
-                    if col in coalesce_set and hasattr(model, col)
-                    else getattr(stmt.excluded, col)
-                )
-                for col in update_cols
-                if hasattr(stmt.excluded, col)
-            }
-            return stmt.on_conflict_do_update(
-                index_elements=list(index_elements),
-                set_=set_dict,
-            )
-        return stmt.on_conflict_do_nothing(index_elements=list(index_elements))
+    # Only SQLite (tests) and MySQL (real database) are supported: fail loudly, not silently.
+    raise ValueError(f"Unsupported database dialect for upsert: {dialect_name!r}")
 
 
 def _execute_upsert_chunk(

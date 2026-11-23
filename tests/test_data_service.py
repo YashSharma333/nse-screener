@@ -172,10 +172,8 @@ def test_data_service_db_path_with_sqlite(tmp_path: Path):
     from sqlalchemy.orm import sessionmaker
 
     from src.db.data_service import (
-        clear_market_data_cache,
         get_benchmark_returns,
         get_db_cache_metadata,
-        get_market_data,
     )
     from src.db.models import Base, BenchmarkPrice, DailyPrice
 
@@ -222,24 +220,15 @@ def test_data_service_db_path_with_sqlite(tmp_path: Path):
         assert meta["db_max_date"] is not None
         assert meta["benchmark_max_date"] is not None
 
-        raw_df, is_live, _msg = load_raw_market_data(use_adjusted=True)
+        raw_df, is_live, _msg = load_raw_market_data()
         assert not raw_df.empty
         assert is_live is True
         assert len(raw_df) == 65
-
-        # Also test with use_adjusted=False
-        raw_unadj, _, _ = load_raw_market_data(use_adjusted=False)
-        assert not raw_unadj.empty
 
         # Test real get_benchmark_returns query against SQLite
         b_df = get_benchmark_returns("NIFTY 500", start=date(2024, 1, 2), end=date(2024, 1, 10))
         assert not b_df.empty
         assert len(b_df) == 9
-
-        # Test get_market_data provider
-        mdata = get_market_data(use_adjusted=True)
-        assert "snapshot" in mdata
-        clear_market_data_cache()
 
 
 def test_load_raw_market_data_warns_when_falling_back_to_raw(tmp_path, caplog) -> None:
@@ -266,7 +255,7 @@ def test_load_raw_market_data_warns_when_falling_back_to_raw(tmp_path, caplog) -
         patch("src.db.data_service.check_connection", return_value=True),
         caplog.at_level("WARNING", logger="src.db.data_service"),
     ):
-        df, _live, _msg = load_raw_market_data(use_adjusted=True)
+        df, _live, _msg = load_raw_market_data()
 
     assert float(df["close"].iloc[0]) == 10.0  # fell back to RAW
     assert "1 symbols have rows without adjusted prices" in caplog.text
