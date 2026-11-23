@@ -179,6 +179,7 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
 | `src/ingestion/` | `nse_files.py` (download helper), `bhavcopy_parser.py`, `price_loader.py`, `mcap_loader.py`, `securities.py`, `renames.py` (`prices_for`), `benchmark.py` (index closes for RS), `corporate_actions*.py` (official reports, parser, store and the adjustment reader). |
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
+| `src/computation/cache_reader.py` | Read-only access to the indicator cache. The UI uses only this; it never builds the cache. |
 | `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners), `declarative.py` (JSON screeners). |
 | `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
 | `config/` | `settings.py`, `costs.json`, `adjustment_overrides.csv`. |
@@ -340,7 +341,7 @@ Chartink sectors (26 names) and cap buckets (Smallcap, Midcap, Largecap) are kep
 ## 11. UI
 
 Streamlit multipage: Dashboard, Swing Volume, Swing Momentum, Screener Explorer (near-miss
-diagnostics, export). `ui/data.py` is the cached data layer. Known smell: `screener_view.py`
+diagnostics, export). `ui/data.py` is the cached data layer; it is read-only and reads the cache through `src/computation/cache_reader.py` (CL-06). The entry point is `ui/Dashboard.py`. Known smell: `screener_view.py`
 contains fallback math that hides missing-column bugs; delete it once the columns exist.
 Later: Streamlit stays for now, React maybe much later. No separate public website.
 

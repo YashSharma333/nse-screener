@@ -21,16 +21,15 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import text
 
+from config import settings
 from config.settings import INDICATOR_HISTORY_YEARS, INDICATOR_WARMUP_BARS, setup_logging
+from src.computation.cache_reader import date_literal, fill_missing_market_cap
 from src.computation.indicators import INDICATORS_SCHEMA_VERSION, TechnicalCalculator
 from src.db.session import check_connection, engine
 from src.ingestion.benchmark import canonical_index_code
 
 setup_logging()
 logger = logging.getLogger(__name__)
-
-INDICATORS_CACHE_PATH = Path("data/processed/indicators.parquet")
-INDICATORS_META_PATH = Path("data/processed/indicators.meta.json")
 
 
 def load_raw_market_data(
@@ -243,7 +242,7 @@ def save_indicator_parquet_cache(
     meta_dict: dict[str, Any] | None = None,
 ) -> None:
     """Atomically write processed indicator DataFrame and sidecar metadata JSON."""
-    cache_path = cache_path or INDICATORS_CACHE_PATH
+    cache_path = cache_path or settings.INDICATORS_CACHE_PATH
     if df.empty:
         return
 
@@ -323,41 +322,6 @@ def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame
     return latest
 
 
-def fill_missing_market_cap(snapshot: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
-    """Fill empty ``market_cap`` in the latest rows with each symbol's last known value.
-
-    Why: NSE's market cap arrives a few days after the price, so the newest session has none.
-    ``get_latest_market_snapshot`` already behaves this way (``groupby.last`` skips NaN), so
-    the fast ``snapshot_only`` path must match it. ``history`` needs ``symbol``, ``date`` and
-    ``market_cap`` columns; the snapshot is returned unchanged if they are missing.
-    """
-    needed = {"symbol", "date", "market_cap"}
-    if snapshot.empty or not needed.issubset(snapshot.columns) or not needed.issubset(history):
-        return snapshot
-    known = history.dropna(subset=["market_cap"]).sort_values("date")
-    last_known = known.groupby("symbol")["market_cap"].last()
-    filled = snapshot.copy()
-    filled["market_cap"] = filled["market_cap"].fillna(filled["symbol"].map(last_known))
-    return filled
-
-
-def _date_literal(schema: Any, value: Any) -> Any:
-    """Convert ``value`` to an Arrow scalar matching the type of the cache's ``date`` column.
-
-    Arrow does not compare ``date32`` columns with strings, so filters must use a value of the
-    same type as the stored column (``date32`` normally; timestamp or string for older caches).
-    """
-    import pyarrow as pa
-
-    day = pd.Timestamp(value).date()
-    field_type = schema.field("date").type
-    if pa.types.is_date(field_type):
-        return pa.scalar(day, type=field_type)
-    if pa.types.is_timestamp(field_type):
-        return pa.scalar(pd.Timestamp(day), type=field_type)
-    return pa.scalar(day.isoformat(), type=pa.string())
-
-
 def load_indicator_snapshot(
     use_adjusted: bool = True,
     force_refresh: bool = False,
@@ -373,7 +337,7 @@ def load_indicator_snapshot(
     Recomputes and updates cache if any metric differs.
     When snapshot_only=True, loads ONLY the latest date rows via PyArrow dataset filter.
     """
-    cache_path = cache_path or INDICATORS_CACHE_PATH
+    cache_path = cache_path or settings.INDICATORS_CACHE_PATH
     meta_path = cache_path.with_suffix(".meta.json")
 
     # 1. Check if cache and metadata exist and are fresh
@@ -423,7 +387,7 @@ def load_indicator_snapshot(
                             max_cache_date = dates_tbl["date"].to_pandas().max()
 
                         dataset = ds.dataset(cache_path, format="parquet")
-                        latest = _date_literal(dataset.schema, max_cache_date)
+                        latest = date_literal(dataset.schema, max_cache_date)
                         table = dataset.to_table(filter=ds.field("date") == latest)
                         snapshot = table.to_pandas()
                         if not snapshot.empty and "date" in snapshot.columns:
@@ -564,7 +528,8 @@ def ensure_data_initialized() -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Error checking DB status: %s", exc)
 
-    has_cache = INDICATORS_CACHE_PATH.exists() and INDICATORS_META_PATH.exists()
+    cache_path = settings.INDICATORS_CACHE_PATH
+    has_cache = cache_path.exists() and cache_path.with_suffix(".meta.json").exists()
 
     return {
         "online": True,
@@ -587,62 +552,12 @@ def get_market_data(use_adjusted: bool = True) -> dict[str, Any]:
     }
 
 
-def load_indicator_history(
-    columns: Sequence[str] | None = None,
-    symbols: Sequence[str] | None = None,
-    start: date | None = None,
-    end: date | None = None,
-    cache_path: Path | None = None,
-) -> pd.DataFrame:
-    """Load indicator history with PyArrow column projection and predicate pushdown filters.
-
-    Ensures the backend queries only the requested columns and symbols/dates without
-    loading the entire multi-year historical dataset into memory.
-    """
-    cache_path = cache_path or INDICATORS_CACHE_PATH
-    if not cache_path.exists():
-        _snapshot, full, _live, _msg = load_indicator_snapshot(cache_path=cache_path)
-        if full.empty:
-            return pd.DataFrame()
-
-    import pyarrow.dataset as ds
-
-    dataset = ds.dataset(cache_path, format="parquet")
-
-    filter_expr = None
-    if symbols:
-        sym_filter = ds.field("symbol").isin(list(symbols))
-        filter_expr = sym_filter if filter_expr is None else (filter_expr & sym_filter)
-    if start:
-        start_filter = ds.field("date") >= _date_literal(dataset.schema, start)
-        filter_expr = start_filter if filter_expr is None else (filter_expr & start_filter)
-    if end:
-        end_filter = ds.field("date") <= _date_literal(dataset.schema, end)
-        filter_expr = end_filter if filter_expr is None else (filter_expr & end_filter)
-
-    proj_columns = None
-    if columns is not None:
-        proj_columns = list(columns)
-        if "symbol" not in proj_columns:
-            proj_columns.insert(0, "symbol")
-        if "date" not in proj_columns:
-            proj_columns.insert(1, "date")
-
-    table = dataset.to_table(columns=proj_columns, filter=filter_expr)
-    df = table.to_pandas()
-    if not df.empty and "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-    return df
-
-
 def clear_market_data_cache() -> None:
     """Reset market data cache metadata state (UI cache clearing resides in ui/data.py)."""
     logger.debug("Market data cache clear requested.")
 
 
 __all__ = [
-    "INDICATORS_CACHE_PATH",
-    "INDICATORS_META_PATH",
     "INDICATORS_SCHEMA_VERSION",
     "clear_market_data_cache",
     "compute_market_indicators",
@@ -651,7 +566,6 @@ __all__ = [
     "get_db_cache_metadata",
     "get_latest_market_snapshot",
     "get_market_data",
-    "load_indicator_history",
     "load_indicator_snapshot",
     "load_raw_market_data",
     "refresh_indicator_cache",

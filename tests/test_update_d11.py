@@ -8,7 +8,7 @@ Tests:
 • test_update_is_idempotent_when_no_new_day
 • test_indicator_schema_version_bumped_and_cache_rebuilds
 • test_market_cap_column_in_cache_and_null_before_2024_02_01
-• test_ui_data_returns_market_cap_not_bucket (no Streamlit import needed; test ui/data.py functions)
+• test_ui_data_returns_market_cap_not_bucket (format and filter helpers in ui/data.py)
 • README command list matches python run_pipeline.py --help (the check CLAUDE.md requires)
 """
 
@@ -25,12 +25,10 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from config import settings
 from config.settings import PROJECT_ROOT
 from src.computation.indicators.calculator import INDICATORS_SCHEMA_VERSION
-from src.db.data_service import (
-    INDICATORS_CACHE_PATH,
-    load_indicator_snapshot,
-)
+from src.db.data_service import load_indicator_snapshot
 from src.db.models import Base, DailyPrice
 from src.etl.daily_update import (
     DailyUpdateError,
@@ -40,7 +38,6 @@ from src.etl.daily_update import (
 from ui.data import (
     filter_by_market_cap,
     format_market_cap,
-    get_snapshot,
 )
 
 
@@ -299,17 +296,18 @@ def test_indicator_schema_version_bumped_and_cache_rebuilds(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 def test_market_cap_column_in_cache_and_null_before_2024_02_01() -> None:
     """Cache contains market_cap column; values before 2024-02-01 are null/NaN."""
-    if not INDICATORS_CACHE_PATH.exists():
+    cache_path = settings.INDICATORS_CACHE_PATH
+    if not cache_path.exists():
         pytest.skip("indicators.parquet not present in repository")
 
     import pyarrow.parquet as pq
 
-    schema = pq.read_schema(INDICATORS_CACHE_PATH)
+    schema = pq.read_schema(cache_path)
     assert "market_cap" in schema.names
 
     # Read sample of dates before and after 2024-02-01
     table = pq.read_table(
-        INDICATORS_CACHE_PATH,
+        cache_path,
         columns=["date", "market_cap"],
         filters=[("date", "<", date(2024, 2, 1))],
     )
@@ -323,7 +321,7 @@ def test_market_cap_column_in_cache_and_null_before_2024_02_01() -> None:
 # 7. UI data returns market cap not cap bucket
 # ---------------------------------------------------------------------------
 def test_ui_data_returns_market_cap_not_bucket() -> None:
-    """ui/data.py returns market_cap in rupees, format helper shows crores, no cap bucket."""
+    """The market cap helpers in ui/data.py: rupees in, crores shown, missing stays blank."""
     # 1. Format helper tests
     assert format_market_cap(10_000_000_000) == "₹1,000.00 Cr"
     assert format_market_cap(50_000_000) == "₹5.00 Cr"
@@ -347,31 +345,6 @@ def test_ui_data_returns_market_cap_not_bucket() -> None:
         df_test, min_mcap_rupees=10_000_000_000.0, include_missing=False
     )
     assert sorted(filtered["symbol"].tolist()) == ["MEGA", "MID"]
-
-    # 3. get_snapshot strips cap_bucket and includes market_cap
-    fake_snapshot = pd.DataFrame(
-        [
-            {
-                "symbol": "INFY",
-                "date": date(2026, 11, 20),
-                "close": 1850.0,
-                "market_cap": 750_000_000_000.0,
-                "cap_bucket": "largecap",
-                "index_name": "NIFTY 100",
-            }
-        ]
-    )
-
-    fake_res = (fake_snapshot, fake_snapshot, True, "live")
-    with patch("ui.data._fetch_market_data", return_value=fake_res):
-        snap_data = get_snapshot(
-            parquet_path=Path("nonexistent.parquet"),
-            meta_path=Path("nonexistent.json"),
-        )
-        snap_df = snap_data["snapshot"]
-        assert "market_cap" in snap_df.columns
-        assert "cap_bucket" not in snap_df.columns
-        assert "index_name" not in snap_df.columns
 
 
 # ---------------------------------------------------------------------------

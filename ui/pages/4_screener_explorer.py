@@ -51,19 +51,17 @@ def main() -> None:
 
         data = get_snapshot()
         snapshot = data["snapshot"]
-        is_live = data["is_live"]
 
         render_terminal_header(
             title="Screener Explorer",
             subtitle="SYSTEMATIC SCREENING PLATFORM & NEAR-MISS DIAGNOSTICS",
-            status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
-            is_live=is_live,
+            as_of=data["as_of"],
         )
 
         st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
         if snapshot.empty:
-            render_uninitialized_prompt()
+            render_uninitialized_prompt(data["message"])
             return
 
         # Sidebar Screener Selection

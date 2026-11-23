@@ -2,7 +2,7 @@
 Master Stock Screener Dashboard
 ===============================
 Displays all tracked NSE equities with comprehensive quantitative indicators,
-dynamic column customization, real-time filtering, and incremental ETL trigger.
+dynamic column customization and real-time filtering. Read-only: it never loads data.
 """
 
 from __future__ import annotations
@@ -49,13 +49,6 @@ def setup_page_config() -> None:
         )
 
 
-def initialize_session_state() -> None:
-    if "etl_status" not in st.session_state:
-        st.session_state.etl_status = None
-    if "is_updating_etl" not in st.session_state:
-        st.session_state.is_updating_etl = False
-
-
 COLUMN_CONFIG = {
     "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
     "Volume": st.column_config.NumberColumn("Volume", format="%d"),
@@ -88,28 +81,18 @@ def main() -> None:
     try:
         setup_page_config()
         apply_terminal_theme()
-        initialize_session_state()
 
         data = get_snapshot()
         snapshot = data["snapshot"]
-        is_live = data["is_live"]
 
         render_terminal_header(
             title="NSE Screener",
             subtitle="TECHNICAL & QUANTITATIVE SNAPSHOT",
-            status_text="LIVE MYSQL" if is_live else "DATABASE OFFLINE",
-            is_live=is_live,
+            as_of=data["as_of"],
         )
 
-        if not is_live:
-            st.warning(
-                "⚠️ MySQL database is currently unreachable. "
-                "Please verify that MySQL is running and your `.env` credentials are correct. "
-                "Demo data fallback has been removed."
-            )
-
         if snapshot.empty:
-            render_uninitialized_prompt()
+            render_uninitialized_prompt(data["message"])
             return
 
         as_of = snapshot["date"].max() if "date" in snapshot.columns else "unknown"

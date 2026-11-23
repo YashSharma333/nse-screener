@@ -59,7 +59,7 @@ flowchart LR
   - `volume.py`: Volume SMAs, volume expansion ratios, dry-up volume tests.
   - `crossovers.py`: Golden Cross, Death Cross, MACD crossovers.
   - `momentum.py`: RSI, MACD histogram, Relative Strength vs benchmark, cross-sectional percentile rankings.
-- **High-Performance UI (`ui/data.py`):** Uses Streamlit caching with multi-factor cache tokens tied to Parquet mtime and metadata sidecar hashes.
+- **Read-only UI (`ui/data.py`):** The dashboard only reads the Parquet cache (through `src/computation/cache_reader.py`). It never opens MySQL and never rebuilds the cache. Streamlit caching uses cache tokens tied to the Parquet mtime and the metadata sidecar hash, so new data shows up as soon as the file changes.
 
 ---
 
@@ -376,10 +376,10 @@ It runs `python run_pipeline.py --update` first and then opens the dashboard at 
 To open the dashboard without updating, use `streamlit run ui/Dashboard.py` (it shows whatever is in the cache).
 
 > [!NOTE]
-> **Data Availability:** Synthetic demo-mode data was removed in Phase 1; live MySQL or Parquet cache is required to run the application. If your database is empty, the dashboard displays a setup banner with the commands to initialize it.
+> **Data Availability:** Synthetic demo-mode data was removed in Phase 1; the dashboard needs the Parquet cache (`data/processed/indicators.parquet`). If it is missing, the dashboard displays a banner with the commands that create it.
 
 > [!NOTE]
-> **Sync Market Data button (sidebar):** runs the same routine as `python run_pipeline.py --update`: new prices for **all** stocks (not only Nifty-500), market cap, corporate actions, benchmarks, adjusted prices and the indicator cache. It can take several minutes. Like `--update`, it loads up to *yesterday* only, because today's file may not be published yet. If a step fails, the page shows which step (for example "Step 2 (market_cap)"). Restart `streamlit run` after code changes: Streamlit does not reload imported `src/` modules.
+> **The dashboard is read-only:** it has no update button and never touches MySQL. The header badge shows `Data as of <date>`, taken from `indicators.meta.json`. To get new data, run `python run_pipeline.py --update` (new prices for **all** stocks, market cap, corporate actions, benchmarks, adjusted prices and the indicator cache; it loads up to *yesterday* only, because today's file may not be published yet), or `scripts/run_app.sh`, which updates and then opens the dashboard. The cache is rebuilt only by `--update` and `--refresh-cache`. Restart `streamlit run` after code changes: Streamlit does not reload imported `src/` modules.
 
 > [!NOTE]
 > **Screener pages (Swing + Volume, Swing With Momentum, Screener Explorer):** the sidebar has *Min market cap* (default 500 cr, **EQ stocks only**; SME and other series are never filtered) and an *Indicator settings* box built from the screener's parameters (changes last for the session; "Reset to defaults" undoes them; the locked defaults in the code never change). Results are shown in one tab per NSE series (EQ, BE, BZ, SM, ST), with near-miss stocks behind a toggle. The *Technical Stock Inspector* lists only the stocks shown on the page (passing first, then near-misses).
@@ -624,6 +624,7 @@ nse-screener/
 │   └── bogus_sessions.csv        # Dates that look like copies of the previous session
 ├── src/
 │   ├── computation/
+│   │   ├── cache_reader.py       # Read-only access to the indicator cache (used by the UI)
 │   │   └── indicators/           # Technical indicators grouped by nature:
 │   │       ├── price.py          # Price indicators (MAs, BB, ATR, 52W High/Low)
 │   │       ├── volume.py         # Volume indicators (Volume SMA, Volume ratio)
@@ -657,9 +658,8 @@ nse-screener/
 │       └── declarative.py        # JSON screeners from screeners/custom/
 ├── tests/                        # Unit & integration tests (offline: SQLite and tmp folders)
 ├── ui/
-│   ├── app.py                   # Streamlit multipage app router
-│   ├── data.py                  # Streamlit cache wrapper with multi-factor tokens
-│   ├── Dashboard.py             # Main screener dashboard page
+│   ├── data.py                  # Read-only Streamlit cache wrapper over cache_reader.py
+│   ├── Dashboard.py             # Entry point: the main screener dashboard page
 │   ├── components/              # Reusable UI components (terminal header, screener view)
 │   └── pages/
 │       ├── 2_swing_volume.py    # Screener page: Swing + Volume

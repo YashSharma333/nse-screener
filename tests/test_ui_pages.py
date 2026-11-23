@@ -7,11 +7,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestStreamlitPages(unittest.TestCase):
-    def test_app_page(self):
-        at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "app.py"), default_timeout=30)
-        at.run()
-        self.assertFalse(at.exception, f"App router raised exception: {at.exception}")
-
     def test_dashboard_main_page(self):
         at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=30)
         at.run()
@@ -85,14 +80,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestDashboardSingleUpdateButton(unittest.TestCase):
-    def test_update_button_only_in_sidebar(self):
-        """The data sync button must exist once (sidebar), not twice (regression)."""
+class TestDashboardHasNoUpdateButton(unittest.TestCase):
+    def test_no_button_can_load_or_rebuild_data(self):
+        """The UI is read-only: no Sync or Update button exists on the dashboard (CL-06)."""
         at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=30)
         at.run()
         labels = [b.label for b in at.button]
-        self.assertEqual(sum("Sync Market Data" in label for label in labels), 1)
-        self.assertFalse(any("Update Latest Market Data" in label for label in labels))
+        self.assertFalse(any("Sync" in label or "Update" in label for label in labels), labels)
 
 
 class TestDashboardFilters(unittest.TestCase):
@@ -101,7 +95,7 @@ class TestDashboardFilters(unittest.TestCase):
     def _run_dashboard(self, snapshot):
         from unittest.mock import patch
 
-        fake = {"snapshot": snapshot, "is_live": True, "status_msg": "", "message": ""}
+        fake = {"snapshot": snapshot, "as_of": "2026-11-20", "message": ""}
         # Keep the patch alive until the test ends: widget changes re-run the script.
         patcher = patch("ui.data.get_snapshot", return_value=fake)
         patcher.start()
@@ -183,7 +177,7 @@ class TestSwingVolumePageSidebar(unittest.TestCase):
     def _run(self):
         from unittest.mock import patch
 
-        fake = {"snapshot": self._snapshot(), "is_live": True, "status_msg": "", "message": ""}
+        fake = {"snapshot": self._snapshot(), "as_of": "2026-11-20", "message": ""}
         patcher = patch("ui.components.screener_view.get_snapshot", return_value=fake)
         patcher.start()
         self.addCleanup(patcher.stop)

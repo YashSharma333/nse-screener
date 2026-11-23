@@ -33,6 +33,10 @@ BENCHMARK_NON_TRADING_DAYS_FILE: Path = BENCHMARK_CACHE_DIR / "non_trading_days.
 PRICE_NON_TRADING_DAYS_FILE: Path = (
     PROJECT_ROOT / "data" / "raw" / "bhavcopy_cache" / "non_trading_days.json"
 )
+# The indicator cache. Its sidecar file is always the same name with ".meta.json"
+# (``cache_path.with_suffix(".meta.json")``). The builder (src/db/data_service.py) writes it;
+# the dashboard only reads it (src/computation/cache_reader.py).
+INDICATORS_CACHE_PATH: Path = PROJECT_ROOT / "data" / "processed" / "indicators.parquet"
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -57,7 +61,7 @@ def setup_logging() -> None:
     • File handler  → logs/screener.log  (rotating, 5 MB × 3 backups)
     • Stream handler → sys.stdout
 
-    Call this once at application startup (e.g. in ui/app.py).
+    Call this once at application startup (e.g. in ui/Dashboard.py).
     """
     # Ensure the logs directory exists
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
