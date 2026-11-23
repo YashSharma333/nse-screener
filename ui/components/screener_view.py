@@ -84,7 +84,7 @@ def render_screener_page(
     st.caption("ℹ️ *Prices are split/bonus adjusted.*")
 
     if snapshot.empty:
-        render_uninitialized_prompt(data["message"])
+        render_uninitialized_prompt()
         return
 
     st.sidebar.markdown("### ⚙️ Screener settings")

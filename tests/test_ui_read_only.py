@@ -51,6 +51,30 @@ def test_ui_never_imports_db() -> None:
     assert offenders == []
 
 
+PIPELINE_NAMES = ("run_daily_update", "src.etl.daily_update")
+
+
+def test_ui_has_no_pipeline_call() -> None:
+    """No UI file may import the 9-step daily update, so no button can start it (CL-07)."""
+    offenders = [
+        f"{path.relative_to(UI_DIR.parent)} imports {module}"
+        for path in sorted(UI_DIR.rglob("*.py"))
+        for module in _imported_modules(path)
+        if any(name in module for name in PIPELINE_NAMES)
+    ]
+    assert offenders == []
+
+
+def test_pipeline_scan_catches_a_forbidden_import(tmp_path: Path) -> None:
+    """Negative control: the scan above must really see this import, in any form."""
+    bad = tmp_path / "bad.py"
+    bad.write_text("def on_click():\n    from src.etl.daily_update import run_daily_update\n")
+
+    seen = _imported_modules(bad)
+
+    assert any("run_daily_update" in module for module in seen)
+
+
 def _write_cache(days: list[date], db_max_date: str) -> Path:
     """Write a small real cache (date32 dates) at the sandboxed default path."""
     rows = [
