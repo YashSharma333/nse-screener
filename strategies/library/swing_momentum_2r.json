@@ -4,11 +4,9 @@
   "description": "Momentum surge entry with anti-exhaustion filter, 1.5x ATR initial stop, 2.0R profit target, and breakeven ratchet at 1.0R.",
   "author": "trader",
   "status": "candidate",
-  "universe": "NIFTY 500",
   "entry": {
     "screener_key": "swing_momentum",
-    "inline_rules": [],
-    "timing": "next_open"
+    "inline_rules": []
   },
   "exit": {
     "stop_loss_type": "atr",
@@ -17,13 +15,11 @@
     "target_value": 2.0,
     "trailing_stop_type": "none",
     "trailing_stop_value": null,
-    "breakeven": true,
     "move_to_breakeven_at_r": 1.0,
     "max_holding_days": 15,
     "exit_rules": []
   },
   "sizing": {
-    "method": "risk_percent",
     "risk_percent": 1.0,
     "fixed_amount": 50000.0,
     "max_positions": 5,

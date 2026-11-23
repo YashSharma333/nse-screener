@@ -42,11 +42,9 @@ def cmd_validate(path: str) -> int:
         print(f"Status:      {spec.status.upper()}")
         print(f"Author:      {spec.author}")
         print(f"Description: {spec.description}")
-        print(f"Universe:    {spec.universe}")
         print("-" * 60)
         print("ENTRY LOGIC:")
         print(f"  Screener:  {spec.entry.screener_key}")
-        print(f"  Timing:    {spec.entry.timing}")
         print(f"  Rules:     {spec.entry.inline_rules or 'None'}")
         print("-" * 60)
         print("EXIT LOGIC (RISK CONTAINMENT):")
@@ -55,15 +53,12 @@ def cmd_validate(path: str) -> int:
         print(
             f"  Trailing:  {spec.exit.trailing_stop_type} (value: {spec.exit.trailing_stop_value})"
         )
-        print(
-            f"  Breakeven: {spec.exit.breakeven} (at {spec.exit.move_to_breakeven_at_r}R)"
-            if spec.exit.breakeven
-            else "  Breakeven: False"
-        )
+        breakeven_r = spec.exit.move_to_breakeven_at_r
+        print(f"  Breakeven: at {breakeven_r}R" if breakeven_r is not None else "  Breakeven: off")
         print(f"  Max Days:  {spec.exit.max_holding_days} sessions")
         print("-" * 60)
         print("SIZING & COSTS:")
-        print(f"  Method:    {spec.sizing.method} (risk: {spec.sizing.risk_percent}%)")
+        print(f"  Risk:      {spec.sizing.risk_percent}% of equity per trade")
         print(f"  Max Pos:   {spec.sizing.max_positions}")
         print(f"  Slippage:  {spec.costs.slippage_bps} bps")
         print("-" * 60)
@@ -135,7 +130,7 @@ def cmd_signals(path: str, equity: float = 500000.0) -> int:
 
     print("=" * 80)
     print(f"STRATEGY SIGNAL RADAR: {spec.name} (v{spec.version})")
-    print(f"Universe: {spec.universe} | Portfolio Equity: ₹{equity:,.2f}")
+    print(f"Portfolio Equity: ₹{equity:,.2f}")
     print("-" * 80)
 
     if sparse.empty:

@@ -35,17 +35,12 @@ class EntrySpec(BaseModel):
         default_factory=list,
         description="Optional additional rule expressions evaluated with safe AST parser.",
     )
-    timing: Literal["next_open", "same_close"] = Field(
-        default="next_open",
-        description="Order execution timing. Swing strategies fill on next day open.",
-    )
 
     @field_validator("screener_key")
     @classmethod
     def validate_screener_registered(cls, v: str) -> str:
         registered = get_screener_keys()
-        # Allow custom prefix for declarative screeners
-        if v not in registered and not v.startswith("custom_"):
+        if v not in registered:
             raise ValueError(
                 f"Screener key '{v}' is not registered in ScreenerRegistry. "
                 f"Available screeners: {sorted(registered)}"
@@ -90,13 +85,9 @@ class ExitSpec(BaseModel):
         default=None,
         description="Trailing stop parameter (ATR multiplier or percentage).",
     )
-    breakeven: bool = Field(
-        default=False,
-        description="Whether to move stop-loss to entry price once a trigger threshold is reached.",
-    )
     move_to_breakeven_at_r: float | None = Field(
         default=None,
-        description="R-multiple gain (e.g. 1.0R) at which stop-loss is adjusted to breakeven.",
+        description="R-multiple gain (e.g. 1.0R) at which the stop moves to breakeven. None = off.",
     )
     max_holding_days: int = Field(
         default=15,
@@ -117,12 +108,9 @@ class ExitSpec(BaseModel):
         return rules
 
     @model_validator(mode="after")
-    def validate_target_and_breakeven(self) -> ExitSpec:
+    def validate_target(self) -> ExitSpec:
         if self.target_type != "none" and (self.target_value is None or self.target_value <= 0):
             raise ValueError(f"target_value must be > 0 when target_type is '{self.target_type}'.")
-        if self.breakeven and self.move_to_breakeven_at_r is None:
-            # Default to 1.0R if breakeven is enabled without explicit threshold
-            self.move_to_breakeven_at_r = 1.0
         return self
 
 
@@ -131,10 +119,6 @@ class PositionSizingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    method: Literal["risk_percent", "fixed_cash", "fixed_amount"] = Field(
-        default="risk_percent",
-        description="Position sizing methodology.",
-    )
     risk_percent: float = Field(
         default=1.0,
         gt=0,
@@ -144,7 +128,7 @@ class PositionSizingSpec(BaseModel):
     fixed_amount: float = Field(
         default=50000.0,
         gt=0,
-        description="Fixed rupee amount allocated per trade for fixed sizing methods.",
+        description="Maximum rupee amount allocated to one trade (caps the risk-based size).",
     )
     max_positions: int = Field(
         default=5,
@@ -231,7 +215,6 @@ class StrategySpec(BaseModel):
         default="draft",
         description="Lifecycle status: 'draft', 'candidate', 'approved', or 'retired'.",
     )
-    universe: str = Field(default="NIFTY 500", description="Constituent benchmark universe.")
     entry: EntrySpec
     exit: ExitSpec
     sizing: PositionSizingSpec = Field(default_factory=PositionSizingSpec)
@@ -247,13 +230,6 @@ class StrategySpec(BaseModel):
     def to_json(self, indent: int = 2) -> str:
         """Serialize strategy to pretty-printed JSON string."""
         return json.dumps(self.model_dump(mode="json"), indent=indent)
-
-    def save(self, filepath: Path | str) -> Path:
-        """Persist strategy specification to JSON file."""
-        p = Path(filepath)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(self.to_json(), encoding="utf-8")
-        return p
 
     @classmethod
     def from_json(cls, data_or_path: str | Path | dict[str, Any]) -> StrategySpec:
@@ -280,8 +256,3 @@ class StrategySpec(BaseModel):
         if isinstance(data_or_path, dict):
             return cls.model_validate(data_or_path)
         raise TypeError(f"Unsupported input type for StrategySpec.from_json: {type(data_or_path)}")
-
-    @classmethod
-    def export_schema(cls) -> dict[str, Any]:
-        """Export standardized JSON Schema for StrategySpec validation."""
-        return cls.model_json_schema()
