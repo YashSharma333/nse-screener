@@ -53,7 +53,7 @@ def refresh_indicator_cache() -> None:
     """Rebuild the indicator Parquet cache from MySQL (no downloads)."""
     from src.db.data_service import load_indicator_snapshot
 
-    snapshot, _full, is_live, msg = load_indicator_snapshot(use_adjusted=True, force_refresh=True)
+    snapshot, _full, is_live, msg = load_indicator_snapshot(force_refresh=True)
     logger.info("Indicator cache rebuilt: %d symbols, live=%s (%s)", len(snapshot), is_live, msg)
 
 

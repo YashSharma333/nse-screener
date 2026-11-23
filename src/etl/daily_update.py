@@ -482,10 +482,7 @@ def run_daily_update(
             # load_indicator_snapshot automatically checks if cache is stale:
             # (db_max_date changed, adj_factors count changed, schema version bumped, etc.)
             logger.info("Checking indicator cache freshness / rebuilding if stale...")
-            snapshot, _full, is_live, msg = load_indicator_snapshot(
-                use_adjusted=True,
-                force_refresh=False,
-            )
+            snapshot, _full, is_live, msg = load_indicator_snapshot(force_refresh=False)
             logger.info(
                 "Indicator cache check complete: %d snapshot rows (%s).",
                 len(snapshot),

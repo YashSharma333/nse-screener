@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 def load_raw_market_data(
-    use_adjusted: bool = True,
     start_date: date | None = None,
     end_date: date | None = None,
     symbols: Sequence[str] | None = None,
@@ -41,7 +40,6 @@ def load_raw_market_data(
     """Fetch daily prices from MySQL with optional date range and symbol filtering.
 
     Args:
-        use_adjusted: Whether to coalesce split/bonus adjusted price columns.
         start_date: Optional inclusive start date.
         end_date: Optional inclusive end date.
         symbols: Optional collection of ticker symbols to filter.
@@ -124,20 +122,19 @@ def load_raw_market_data(
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        if use_adjusted:
-            # Rows without adjusted prices fall back to RAW below: wrong around splits, so say so.
-            missing_adjusted = df.loc[df["adj_close"].isna(), "symbol"].nunique()
-            if missing_adjusted:
-                logger.warning(
-                    "%d symbols have rows without adjusted prices; using RAW prices for them. "
-                    "Run `python run_pipeline.py --update` or --rebuild-adjusted.",
-                    missing_adjusted,
-                )
-            df["open"] = df["adj_open"].combine_first(df["open"])
-            df["high"] = df["adj_high"].combine_first(df["high"])
-            df["low"] = df["adj_low"].combine_first(df["low"])
-            df["close"] = df["adj_close"].combine_first(df["close"])
-            df["volume"] = df["adj_volume"].combine_first(df["volume"])
+        # Rows without adjusted prices fall back to RAW below: wrong around splits, so say so.
+        missing_adjusted = df.loc[df["adj_close"].isna(), "symbol"].nunique()
+        if missing_adjusted:
+            logger.warning(
+                "%d symbols have rows without adjusted prices; using RAW prices for them. "
+                "Run `python run_pipeline.py --update` or --rebuild-adjusted.",
+                missing_adjusted,
+            )
+        df["open"] = df["adj_open"].combine_first(df["open"])
+        df["high"] = df["adj_high"].combine_first(df["high"])
+        df["low"] = df["adj_low"].combine_first(df["low"])
+        df["close"] = df["adj_close"].combine_first(df["close"])
+        df["volume"] = df["adj_volume"].combine_first(df["volume"])
 
         symbols_count = df["symbol"].nunique()
         dates_count = df["date"].nunique()
@@ -331,7 +328,6 @@ def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame
 
 
 def load_indicator_snapshot(
-    use_adjusted: bool = True,
     force_refresh: bool = False,
     cache_path: Path | None = None,
     snapshot_only: bool = False,
@@ -472,7 +468,6 @@ def load_indicator_snapshot(
             logger.warning("Could not determine window dates (%s); falling back to all dates", exc)
 
     raw_df, is_live, status_msg = load_raw_market_data(
-        use_adjusted=use_adjusted,
         start_date=warmup_start_date,
         end_date=max_date,
     )
@@ -499,56 +494,3 @@ def load_indicator_snapshot(
     snapshot = get_latest_market_snapshot(kept_indicators)
 
     return snapshot, kept_indicators, is_live, status_msg
-
-
-def refresh_indicator_cache(
-    use_adjusted: bool = True,
-    cache_path: Path | None = None,
-    history_years: int | None = INDICATOR_HISTORY_YEARS,
-) -> tuple[pd.DataFrame, pd.DataFrame, bool, str]:
-    """Force recomputing and saving indicators and sidecar metadata."""
-    logger.info("Refreshing indicators cache (use_adjusted=%s)...", use_adjusted)
-    return load_indicator_snapshot(
-        use_adjusted=use_adjusted,
-        force_refresh=True,
-        cache_path=cache_path,
-        history_years=history_years,
-    )
-    logger.info("Refreshing indicators cache (use_adjusted=%s)...", use_adjusted)
-    return load_indicator_snapshot(
-        use_adjusted=use_adjusted, force_refresh=True, cache_path=cache_path
-    )
-
-
-def get_market_data(use_adjusted: bool = True) -> dict[str, Any]:
-    """Unified cached market data provider for Streamlit UI."""
-    snapshot, with_indicators, is_live, status_msg = load_indicator_snapshot(
-        use_adjusted=use_adjusted
-    )
-    return {
-        "raw": with_indicators,
-        "indicators": with_indicators,
-        "snapshot": snapshot,
-        "is_live": is_live,
-        "status_msg": status_msg,
-    }
-
-
-def clear_market_data_cache() -> None:
-    """Reset market data cache metadata state (UI cache clearing resides in ui/data.py)."""
-    logger.debug("Market data cache clear requested.")
-
-
-__all__ = [
-    "INDICATORS_SCHEMA_VERSION",
-    "clear_market_data_cache",
-    "compute_market_indicators",
-    "get_benchmark_returns",
-    "get_db_cache_metadata",
-    "get_latest_market_snapshot",
-    "get_market_data",
-    "load_indicator_snapshot",
-    "load_raw_market_data",
-    "refresh_indicator_cache",
-    "save_indicator_parquet_cache",
-]

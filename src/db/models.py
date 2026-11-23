@@ -67,12 +67,6 @@ class DailyPrice(Base):
 
     __table_args__ = (UniqueConstraint("symbol", "date", name="uq_daily_prices_symbol_date"),)
 
-    def __repr__(self) -> str:
-        return (
-            f"<DailyPrice(symbol={self.symbol!r}, date={self.date}, "
-            f"series={self.series!r}, close={self.close})>"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Securities master model (task D4)
@@ -96,12 +90,6 @@ class Security(Base):
         server_default=text("'active'"),
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<Security(symbol={self.symbol!r}, isin={self.isin!r}, "
-            f"series={self.series!r}, status={self.status!r})>"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Corporate-action adjustment factors
@@ -124,12 +112,6 @@ class AdjFactor(Base):
 
     __table_args__ = (UniqueConstraint("symbol", "date", name="uq_adj_factors_symbol_date"),)
 
-    def __repr__(self) -> str:
-        return (
-            f"<AdjFactor(symbol={self.symbol!r}, date={self.date}, "
-            f"factor={self.factor}, kind={self.ratio_kind!r})>"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Benchmark index prices
@@ -146,12 +128,6 @@ class BenchmarkPrice(Base):
     source = Column(String(20), nullable=False)
 
     __table_args__ = (UniqueConstraint("index_code", "date", name="uq_benchmark_code_date"),)
-
-    def __repr__(self) -> str:
-        return (
-            f"<BenchmarkPrice(index={self.index_code!r}, date={self.date}, "
-            f"close={self.close}, source={self.source!r})>"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -202,12 +178,6 @@ class CorporateAction(Base):
         ),
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<CorporateAction(symbol={self.symbol!r}, ex_date={self.ex_date}, "
-            f"type={self.action_type!r}, factor={self.price_factor})>"
-        )
-
 
 class SymbolChange(Base):
     """Official NSE symbol change (``symbolchange.csv``), e.g. ICICIPRULI -> ICICILIFE.
@@ -222,9 +192,3 @@ class SymbolChange(Base):
     new_symbol = Column(String(50), primary_key=True)
     effective_date = Column(Date, primary_key=True)
     company = Column(String(255), nullable=True)
-
-    def __repr__(self) -> str:
-        return (
-            f"<SymbolChange(old={self.old_symbol!r}, new={self.new_symbol!r}, "
-            f"date={self.effective_date})>"
-        )
