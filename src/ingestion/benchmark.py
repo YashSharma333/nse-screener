@@ -24,12 +24,15 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import settings
-from src.db.models import BenchmarkPrice
+from src.db.models import BenchmarkPrice, DailyPrice
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
+from src.ingestion.nse_files import BadFile
+from src.ingestion.price_loader import is_recent_date
 
 logger = logging.getLogger("src.ingestion.benchmark")
 
@@ -205,6 +208,14 @@ class NSEIndexSource(BenchmarkSource):
     def _url(self, d: date) -> str:
         return f"https://nsearchives.nseindia.com/content/indices/ind_close_all_{d.strftime('%d%m%Y')}.csv"
 
+    def _remember_no_file(self, d: date, reason: str) -> None:
+        """Record d as non-trading, unless it is recent (NSE may not have published yet)."""
+        if is_recent_date(d):
+            logger.info("Benchmark %s for recent date %s: not cached, will retry", reason, d)
+            return
+        logger.debug("Benchmark %s for %s: marking non-trading day", reason, d)
+        record_non_trading_day(d)
+
     def fetch_prices(self, d: date) -> dict[str, float] | None:
         # Check non-trading days cache
         if d.isoformat() in load_non_trading_days():
@@ -241,12 +252,15 @@ class NSEIndexSource(BenchmarkSource):
         try:
             resp = self.session.get(url, timeout=10)
             if resp.status_code == 404:
-                logger.debug("Benchmark data 404 for %s — marking non-trading day", d)
-                record_non_trading_day(d)
+                self._remember_no_file(d, "404")
                 return None
             resp.raise_for_status()
 
-            df = pd.read_csv(io.StringIO(resp.text))
+            try:
+                df = pd.read_csv(io.StringIO(resp.text))
+            except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+                # A broken file is an error to report, not proof of a holiday.
+                raise BadFile(f"Benchmark file for {d} cannot be parsed: {exc}") from exc
             df.columns = df.columns.str.strip()
 
             # Date validation: compare file's own trade date with requested date d
@@ -263,14 +277,12 @@ class NSEIndexSource(BenchmarkSource):
             if date_col is None or file_date is None or file_date != d:
                 raw_val = df[date_col].iloc[0] if (date_col and not df[date_col].empty) else None
                 logger.warning(
-                    "Benchmark trade date mismatch for %s: file reports %r "
-                    "(parsed: %s, expected: %s) — skipping and recording as non-trading",
+                    "Benchmark trade date mismatch for %s: file reports %r (parsed: %s)",
                     d,
                     raw_val,
                     file_date,
-                    d,
                 )
-                record_non_trading_day(d)
+                self._remember_no_file(d, "date mismatch")
                 return None
 
             results: dict[str, float] = {}
@@ -294,9 +306,10 @@ class NSEIndexSource(BenchmarkSource):
                 return results
 
             # File returned but no matching indices
-            record_non_trading_day(d)
+            self._remember_no_file(d, "no matching indices")
             return None
-        except Exception as exc:
+        except requests.RequestException as exc:
+            # Network problem: not a holiday. Nothing is recorded, so the next run retries.
             logger.warning("NSE index source fetch failed for %s: %s", d, exc)
             return None
 
@@ -312,7 +325,12 @@ def load_benchmarks(
     total_saved = 0
 
     for d in dates:
-        prices = src.fetch_prices(d)
+        try:
+            prices = src.fetch_prices(d)
+        except (requests.RequestException, BadFile) as exc:
+            # One bad day must not stop the others; it stays missing and is retried next run.
+            logger.warning("Benchmark fetch failed for %s: %s", d, exc)
+            continue
         if not prices:
             continue
 
@@ -352,6 +370,22 @@ def load_benchmarks(
             time.sleep(delay)
 
     return total_saved
+
+
+def missing_benchmark_dates(session: Session, index_code: str = NIFTY_500) -> list[date]:
+    """Price dates that have no benchmark row yet, minus dates known to be non-trading.
+
+    Why: asking for "dates after the last stored one" never retries a day that was
+    missed in the middle. Asking for every gap heals them.
+    """
+    price_dates = set(session.scalars(select(DailyPrice.date).distinct()).all())
+    have = set(
+        session.scalars(
+            select(BenchmarkPrice.date).where(BenchmarkPrice.index_code == index_code)
+        ).all()
+    )
+    known_non_trading = load_non_trading_days()
+    return sorted(d for d in price_dates - have if d.isoformat() not in known_non_trading)
 
 
 def load_benchmark_range(

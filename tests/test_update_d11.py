@@ -234,19 +234,20 @@ def test_update_never_deletes(
 
 
 # ---------------------------------------------------------------------------
-# 3b. Benchmark step loads only dates newer than the last stored benchmark
+# 3b. Benchmark step asks for every missing date, including gaps in the middle
 # ---------------------------------------------------------------------------
-def test_benchmark_step_loads_only_new_dates(sqlite_session: Session) -> None:
-    """Step 6 asks for price dates after the last benchmark date, up to yesterday."""
+def test_benchmark_step_loads_missing_dates(sqlite_session: Session) -> None:
+    """Step 6 asks for every price date without a benchmark row (up to yesterday)."""
     from src.db.models import BenchmarkPrice
 
     for day in (date(2026, 11, 17), date(2026, 11, 18), date(2026, 11, 19), date(2026, 11, 20)):
         sqlite_session.add(
             DailyPrice(symbol="TESTCO", date=day, open=1, high=1, low=1, close=1, volume=1)
         )
-    sqlite_session.add(
-        BenchmarkPrice(index_code="NIFTY 50", date=date(2026, 11, 17), close=100.0, source="NSE")
-    )
+    for day in (date(2026, 11, 17), date(2026, 11, 19)):
+        sqlite_session.add(
+            BenchmarkPrice(index_code="NIFTY 500", date=day, close=100.0, source="NSE")
+        )
     sqlite_session.flush()
 
     asked: list[list[date]] = []
@@ -263,9 +264,9 @@ def test_benchmark_step_loads_only_new_dates(sqlite_session: Session) -> None:
             session=sqlite_session, today=date(2026, 11, 20), step_handlers=stubs
         )
 
-    # 2026-11-20 is "today", so only the 18th and 19th are requested.
-    assert asked == [[date(2026, 11, 18), date(2026, 11, 19)]]
-    assert summary.benchmark_rows_saved == 10
+    # The 18th is a gap in the middle; the 20th is "today" so it is not requested.
+    assert asked == [[date(2026, 11, 18)]]
+    assert summary.benchmark_rows_saved == 5
 
 
 # ---------------------------------------------------------------------------

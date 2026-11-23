@@ -1,14 +1,15 @@
 """Unit tests for benchmark index ingestion layer (src/ingestion/benchmark.py)."""
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from src.db.data_service import get_benchmark_returns
-from src.db.models import Base, BenchmarkPrice
+from src.db.models import Base, BenchmarkPrice, DailyPrice
 from src.ingestion.benchmark import (
     NIFTY_50,
     NIFTY_100,
@@ -19,8 +20,10 @@ from src.ingestion.benchmark import (
     canonical_index_code,
     load_benchmarks,
     load_non_trading_days,
+    missing_benchmark_dates,
     record_non_trading_day,
 )
+from src.ingestion.nse_files import BadFile
 
 FIXTURE_PATH = Path("tests/fixtures/ind_close_all_sample.csv")
 
@@ -193,3 +196,59 @@ def test_benchmark_loader_rejects_mismatched_index_date(tmp_path: Path):
         # Must record Sunday as non-trading day
         cached_days = load_non_trading_days()
         assert sunday.isoformat() in cached_days
+
+
+def test_recent_404_is_not_recorded_as_non_trading(tmp_path: Path):
+    """A 404 within the last 3 days may be a publishing delay, so it must stay retryable."""
+    mock_session = MagicMock()
+    mock_session.get.return_value = MagicMock(status_code=404)
+    test_file = tmp_path / "non_trading_days.json"
+    with (
+        patch("config.settings.BENCHMARK_CACHE_DIR", tmp_path),
+        patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", test_file),
+    ):
+        today = date.today()
+        assert NSEIndexSource(session=mock_session).fetch_prices(today) is None
+        assert today.isoformat() not in load_non_trading_days()
+
+
+def test_unparseable_file_raises_instead_of_no_data(tmp_path: Path):
+    """A broken file is an error to report, not 'no index data for this day'."""
+    mock_session = MagicMock()
+    mock_session.get.return_value = MagicMock(status_code=200, text="")
+    with (
+        patch("config.settings.BENCHMARK_CACHE_DIR", tmp_path),
+        patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", tmp_path / "n.json"),
+    ):
+        with pytest.raises(BadFile):
+            NSEIndexSource(session=mock_session).fetch_prices(date(2024, 10, 25))
+        assert load_non_trading_days() == set()
+
+
+def test_missing_benchmark_dates_and_refresh_fetch_only_gaps(tmp_path: Path):
+    """Prices on D1..D5, benchmarks on D1, D2, D5: only D3 and D4 are fetched."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    days = [date(2024, 3, 4) + timedelta(days=i) for i in range(5)]
+    non_trading_file = tmp_path / "n.json"
+    with (
+        Session(engine) as s,
+        patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", non_trading_file),
+    ):
+        for d in days:
+            s.add(DailyPrice(symbol="AAA", series="EQ", date=d, close=10.0))
+        for d in (days[0], days[1], days[4]):
+            s.add(BenchmarkPrice(index_code=NIFTY_500, date=d, close=1.0, source="NSE"))
+        s.commit()
+
+        assert missing_benchmark_dates(s, NIFTY_500) == [days[2], days[3]]
+        record_non_trading_day(days[3])
+        assert missing_benchmark_dates(s, NIFTY_500) == [days[2]]
+        non_trading_file.unlink()
+
+        source = MagicMock()
+        source.fetch_prices.return_value = {NIFTY_500: 2.0}
+        gaps = missing_benchmark_dates(s, NIFTY_500)
+        load_benchmarks(gaps, source=source, delay=0, session=s)
+        fetched = [c.args[0] for c in source.fetch_prices.call_args_list]
+        assert fetched == [days[2], days[3]]
