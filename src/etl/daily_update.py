@@ -376,7 +376,7 @@ def run_daily_update(
         # ---------------------------------------------------------------------
         def _step_6() -> dict[str, Any]:
             from src.db.models import BenchmarkPrice
-            from src.ingestion.benchmark import load_benchmarks
+            from src.ingestion.benchmark import load_benchmarks, missing_benchmark_dates
 
             last_bench = s.scalar(select(func.max(BenchmarkPrice.date)))
             if last_bench is None:
@@ -388,19 +388,15 @@ def run_daily_update(
                 summary.warnings.append(msg)
                 return {"saved_rows": 0}
 
-            # Only price dates newer than the last benchmark date: the few dates NSE never
-            # published an index file for are not retried on every run.
-            new_dates = s.scalars(
-                select(DailyPrice.date)
-                .distinct()
-                .where(DailyPrice.date > last_bench, DailyPrice.date <= yesterday)
-                .order_by(DailyPrice.date)
-            ).all()
+            # Every price date without a benchmark row (not just dates after the last one),
+            # so a day missed in the middle is retried. Dates NSE has no file for are
+            # remembered as non-trading and skipped.
+            new_dates = [d for d in missing_benchmark_dates(s) if d <= yesterday]
             if not new_dates:
-                logger.info("Benchmarks already up to date (last %s).", last_bench)
+                logger.info("Benchmarks have no missing dates (last %s).", last_bench)
                 return {"saved_rows": 0}
 
-            saved = load_benchmarks(list(new_dates), session=s)
+            saved = load_benchmarks(new_dates, session=s)
             summary.benchmark_rows_saved = saved
             return {"saved_rows": saved}
 
