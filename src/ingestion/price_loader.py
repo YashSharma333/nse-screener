@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -108,6 +108,43 @@ def is_recent_date(d: date, ref_date: date | None = None) -> bool:
     """
     today = ref_date or date.today()
     return d >= today - timedelta(days=RECENT_NON_TRADING_BUFFER_DAYS)
+
+
+def find_price_gaps(
+    session: Session,
+    non_trading_days: set[date] | None = None,
+) -> list[date]:
+    """List calendar days between the first and last stored date that have no prices.
+
+    Why: the daily update starts at max(date)+1, so a day that failed once (for example
+    an HTML block page served with HTTP 200) would otherwise never be tried again.
+    A day is NOT a gap when it is recorded as a confirmed non-trading day.
+    """
+    first_day, last_day = session.execute(
+        select(func.min(DailyPrice.date), func.max(DailyPrice.date))
+    ).one()
+    if first_day is None:
+        return []
+
+    if non_trading_days is None:
+        non_trading_days = load_non_trading_days()
+    stored_days = set(session.scalars(select(DailyPrice.date).distinct()).all())
+
+    gaps: list[date] = []
+    day = first_day
+    while day <= last_day:
+        if day not in stored_days and day not in non_trading_days:
+            gaps.append(day)
+        day += timedelta(days=1)
+    return gaps
+
+
+def write_price_gaps_report(gaps: list[date], path: Path | None = None) -> Path:
+    """Write the gap days to reports/price_gaps.csv (overwritten every run)."""
+    target = path or settings.REPORTS_DIR / "price_gaps.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"date": [d.isoformat() for d in gaps]}).to_csv(target, index=False)
+    return target
 
 
 def load_raw_prices(
