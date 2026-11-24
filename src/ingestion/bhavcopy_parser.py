@@ -18,14 +18,15 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from config import settings
 from config.settings import REGULAR_SERIES
-from src.ingestion.nse_files import BadFile, check_zip
+from src.common.dates import parse_nse_date
+from src.ingestion.nse_files import BadFile, check_date, check_zip
 
 logger = logging.getLogger(__name__)
 
@@ -73,24 +74,15 @@ FINAL_COLUMNS: list[str] = [
 ]
 
 
-def _parse_file_date(date_str: str) -> date:
-    """Parse date string from Bhavcopy (ISO 'YYYY-MM-DD' or old 'DD-Mon-YYYY')."""
-    clean_str = date_str.strip()
-    # 1. Try ISO YYYY-MM-DD (UDiFF format)
-    try:
-        return datetime.strptime(clean_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
-    # 2. Try DD-Mon-YYYY (Old Bhavcopy format: e.g. '21-NOV-2016')
-    try:
-        return datetime.strptime(clean_str.upper(), "%d-%b-%Y").date()
-    except ValueError:
-        pass
-    # 3. Fallback to pandas parser
-    try:
-        return pd.to_datetime(clean_str).date()
-    except Exception as exc:
-        raise BadFile(f"Cannot parse date in file: {clean_str!r}") from exc
+# ISO ('2026-11-18', the UDiFF format) or 'DD-Mon-YYYY' (old format, '21-NOV-2016').
+FILE_DATE_FORMATS = ("%Y-%m-%d", "%d-%b-%Y")
+
+
+def _read_file_date(text: str) -> date:
+    """Read a date written in a Bhavcopy file; a date nobody can read means a bad file."""
+    return parse_nse_date(
+        text, FILE_DATE_FORMATS, strict=True, dayfirst=False, error=BadFile, label="Date in file"
+    )
 
 
 def parse_bhavcopy(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataFrame:
@@ -113,7 +105,7 @@ def parse_bhavcopy(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataFr
 
     # Convert expected_date to date object if passed as string
     exp_date: date = (
-        expected_date if isinstance(expected_date, date) else _parse_file_date(str(expected_date))
+        expected_date if isinstance(expected_date, date) else _read_file_date(str(expected_date))
     )
 
     # 1. Unzip (one CSV inside), read with dtype=str
@@ -171,9 +163,8 @@ def parse_bhavcopy(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataFr
     if len(raw_dates) > 1:
         raise BadFile(f"File contains mixed dates: {raw_dates.tolist()}")
 
-    file_date = _parse_file_date(str(raw_dates[0]))
-    if file_date != exp_date:
-        raise BadFile(f"Date inside file ({file_date}) does not match expected_date ({exp_date})")
+    file_date = _read_file_date(str(raw_dates[0]))
+    check_date(file_date, exp_date)
 
     # 4. Filter: keep only rows with series in REGULAR_SERIES
     df = df[df["series"].isin(REGULAR_SERIES)].copy()
@@ -206,7 +197,7 @@ def write_cache(
     """
     if cache_dir is None:
         cache_dir = settings.BHAVCOPY_ALL_DIR
-    target_date = d if isinstance(d, date) else _parse_file_date(str(d))
+    target_date = d if isinstance(d, date) else _read_file_date(str(d))
     target_path = cache_dir / f"{target_date.isoformat()}.parquet"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(target_path, index=False, engine="pyarrow")

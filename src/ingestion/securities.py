@@ -27,12 +27,14 @@ from __future__ import annotations
 import io
 import logging
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from src.common.dates import is_blank_date, parse_nse_date
+from src.common.symbols import normalise_symbol
 from src.db.models import Security
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
@@ -51,21 +53,11 @@ REQUIRED_EQUITY_L_COLUMNS: tuple[str, ...] = (
 
 
 def _parse_listing_date(val: Any) -> date | None:
-    """Parse NSE listing date in formats like '19-SEP-2019' or '19-09-2019'."""
-    if val is None or pd.isna(val):
-        return None
-    s = str(val).strip()
-    if not s or s in ("-", "NA", "NULL"):
-        return None
-
-    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-
-    logger.warning("Could not parse listing date '%s'", s)
-    return None
+    """Parse NSE listing date like '19-SEP-2019' or '19-09-2019' (warns if unreadable)."""
+    parsed = parse_nse_date(val)
+    if parsed is None and not is_blank_date(val):
+        logger.warning("Could not parse listing date '%s'", str(val).strip())
+    return parsed
 
 
 def parse_equity_l(content: bytes | str) -> list[dict[str, Any]]:
@@ -106,13 +98,13 @@ def parse_equity_l(content: bytes | str) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for _, row in df.iterrows():
-        sym = str(row["SYMBOL"]).strip().upper()
+        sym = normalise_symbol(row["SYMBOL"])
         if not sym:
             continue
 
         isin = str(row["ISIN NUMBER"]).strip() or None
         name = str(row["NAME OF COMPANY"]).strip() or None
-        series = str(row["SERIES"]).strip().upper() or None
+        series = normalise_symbol(row["SERIES"]) or None
         listing_date = _parse_listing_date(row["DATE OF LISTING"])
 
         rows.append(

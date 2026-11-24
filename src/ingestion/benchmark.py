@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from collections.abc import Sequence
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import settings
+from src.common.dates import parse_nse_date
 from src.db.models import BenchmarkPrice, DailyPrice
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
@@ -34,29 +35,6 @@ from src.ingestion.nse_files import BadFile
 from src.ingestion.price_loader import is_recent_date
 
 logger = logging.getLogger("src.ingestion.benchmark")
-
-
-def parse_trade_date(val: object) -> date | None:
-    """Parse a trade date string or object into a ``datetime.date`` (None if not a date)."""
-    if val is None or pd.isna(val):
-        return None
-    if isinstance(val, pd.Timestamp):
-        return val.date()
-    if isinstance(val, date):
-        return val
-    val_str = str(val).strip()
-    if not val_str:
-        return None
-    for fmt_str in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(val_str, fmt_str).date()
-        except ValueError:
-            continue
-    try:
-        parsed = pd.to_datetime(val_str, dayfirst=True)
-    except (ValueError, TypeError, OverflowError):
-        return None
-    return None if pd.isna(parsed) else parsed.date()
 
 
 # The cache folder and the non-trading-days file are defined once, in config/settings.py.
@@ -89,12 +67,8 @@ def canonical_index_code(code: str) -> str:
     return INDEX_NAME_NORMALIZATION.get(cleaned.lower(), cleaned.upper())
 
 
-def _parse_month_first(val: object) -> date | None:
-    """Read a 'MM-DD-YYYY' text date (None if it is not one)."""
-    try:
-        return datetime.strptime(str(val).strip(), "%m-%d-%Y").date()
-    except ValueError:
-        return None
+# NSE wrote some 2023 index files month-first.
+MONTH_FIRST_FORMATS = ("%m-%d-%Y",)
 
 
 def _file_date_matches(raw: object, day_first: date | None, requested: date) -> bool:
@@ -106,7 +80,7 @@ def _file_date_matches(raw: object, day_first: date | None, requested: date) -> 
     """
     if day_first == requested:
         return True
-    return _parse_month_first(raw) == requested
+    return parse_nse_date(raw, MONTH_FIRST_FORMATS) == requested
 
 
 def _ensure_cache_dir() -> Path:
@@ -202,7 +176,7 @@ class NSEIndexSource:
                 if "date" in cdf.columns:
                     cached_dates = cdf["date"].dropna()
                     if not cached_dates.empty:
-                        cached_d = parse_trade_date(cached_dates.iloc[0])
+                        cached_d = parse_nse_date(cached_dates.iloc[0], dayfirst=True)
                         if cached_d is not None and cached_d != d:
                             logger.warning(
                                 "Cached benchmark parquet for %s has mismatched date %s "
@@ -247,7 +221,7 @@ class NSEIndexSource:
                 non_null_dates = df[date_col].dropna()
                 if not non_null_dates.empty:
                     raw_date = non_null_dates.iloc[0]
-                    file_date = parse_trade_date(raw_date)
+                    file_date = parse_nse_date(raw_date, dayfirst=True)
 
             if date_col is None or not _file_date_matches(raw_date, file_date, d):
                 raw_val = df[date_col].iloc[0] if (date_col and not df[date_col].empty) else None

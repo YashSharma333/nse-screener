@@ -37,6 +37,7 @@ from config.settings import (
     CORP_ACTIONS_HISTORY_YEARS,
     CORP_ACTIONS_MAX_UNPARSED_SHARE,
 )
+from src.common.symbols import normalise_symbol
 from src.db.models import CorporateAction, DailyPrice, Security, SymbolChange
 from src.db.upsert import upsert_rows
 from src.ingestion.corporate_actions import (
@@ -179,7 +180,7 @@ def get_price_adjustment_events(
     target_symbols: set[str] = set()
     if actual_symbols is not None:
         for s in actual_symbols:
-            sym_norm = s.strip().upper()
+            sym_norm = normalise_symbol(s)
             curr = chains.get_current(sym_norm)
             target_symbols.add(sym_norm)
             target_symbols.add(curr)
@@ -219,7 +220,7 @@ def get_price_adjustment_events(
     raw_exact_rows = session.execute(exact_stmt).all()
     mapped_exact: list[tuple[str, date, str, str, int, float]] = []
     for row in raw_exact_rows:
-        sym = row.symbol.strip().upper()
+        sym = normalise_symbol(row.symbol)
         curr = chains.get_current(sym)
         formers = chains.get_former(curr)
         family = {curr, sym, *formers}
@@ -273,7 +274,7 @@ def get_price_adjustment_events(
     raw_review_rows = session.execute(review_stmt).all()
     mapped_review: list[tuple[str, date, str, str]] = []
     for row in raw_review_rows:
-        sym = row.symbol.strip().upper()
+        sym = normalise_symbol(row.symbol)
         curr = chains.get_current(sym)
         formers = chains.get_former(curr)
         family = {curr, sym, *formers}
