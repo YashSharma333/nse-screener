@@ -468,7 +468,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P11 | Chartink-style scanner builder (Phase 10, T60 to T63, Prompt L) | P3 base, P5 for backtests on saved scanners | T62 cannot come earlier than P5 |
 
 Task IDs T01 to T65 and the findings H1 to H11, F1 to F12 live in the owner's Master Tracker
-PDF. Known H items: H1 import cycle between `strategies.rules` and `screeners.base`; H4
+PDF. Known H items: H1 import cycle between `strategies.rules` and `screeners.base` (fixed in I126: the parser now lives in `src/screeners/rules.py`); H4
 strategy liquidity cap (needs `turnover_sma_20`); H5 brokerage and DP charges; H6 scaffold
 tests; H8 and H9 broad `except`, `contextlib.suppress`, `TypeVar` boilerplate. If a task
 needs an H item you cannot see, ask the owner to attach the tracker. Do not guess.
