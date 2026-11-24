@@ -38,6 +38,8 @@ from config.settings import (
     NSE_ARCHIVES_BASE,
     NSE_CORP_ACTIONS_API_PATH,
 )
+from src.common.dates import parse_nse_date
+from src.common.symbols import normalise_symbol
 from src.ingestion.corporate_actions_parser import (
     ActionPart,
     parse_subject,
@@ -174,15 +176,16 @@ def check_api_payload(
 
 def _parse_nse_date(value: Any, label: str, allow_blank: bool = False) -> date | None:
     """Parse ``18-Nov-2026`` strictly. A bad date stops the run and names the field."""
-    text = str(value).strip()
-    if allow_blank and text in ("", "-"):
+    if allow_blank and str(value).strip() in ("", "-"):
         return None
-    try:
-        return datetime.strptime(text, NSE_DATE_FORMAT).date()
-    except ValueError as exc:
-        raise NSEFormatChangedError(
-            f"{label}: '{text}' is not a {NSE_DATE_FORMAT} date. NSE changed the date format."
-        ) from exc
+    return parse_nse_date(
+        value,
+        (NSE_DATE_FORMAT,),
+        strict=True,
+        error=NSEFormatChangedError,
+        label=label,
+        hint="NSE changed the date format.",
+    )
 
 
 def _to_float(value: Any) -> float | None:
@@ -214,7 +217,7 @@ def build_action_rows(
             continue
         seen_raw.add(fingerprint)
 
-        symbol = str(raw["symbol"]).strip().upper()
+        symbol = normalise_symbol(raw["symbol"])
         label = f"corporate action {symbol}"
         ex_date = _parse_nse_date(raw["exDate"], f"{label} exDate")
         record_date = _parse_nse_date(raw["recDate"], f"{label} recDate", allow_blank=True)

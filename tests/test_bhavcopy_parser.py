@@ -361,7 +361,7 @@ def test_wrong_date_in_file_raises():
     raw_zip = make_udiff_zip(records, filename="BhavCopy_NSE_CM_0_0_0_20250814_F_0000.csv")
     with pytest.raises(BadFile) as exc_info:
         parse_bhavcopy(raw_zip, date(2025, 8, 15))
-    assert "does not match expected_date" in str(exc_info.value)
+    assert "does not match expected date" in str(exc_info.value)
 
 
 def test_mixed_dates_in_file_raises():

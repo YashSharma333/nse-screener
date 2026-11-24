@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import settings
+from src.common.dates import parse_nse_date
 from src.db.models import DailyPrice
 from src.db.session import get_db
 
@@ -30,13 +31,13 @@ MIN_COMMON_SYMBOLS = 100
 DATE_CHUNK_SIZE = 50
 
 
-def _to_date(val: object) -> date:
-    """Turn a DB value (date, Timestamp or ISO string) into a plain ``date``."""
-    if isinstance(val, pd.Timestamp):
-        return val.date()
-    if isinstance(val, date):
-        return val
-    return date.fromisoformat(str(val).split("T")[0])
+# What a database may hand back for a date: a date, a Timestamp or ISO text.
+_DB_DATE_FORMATS = ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S")
+
+
+def _to_day(value: object) -> date:
+    """Turn a value read from the database into a plain ``date``."""
+    return parse_nse_date(value, _DB_DATE_FORMATS, strict=True)
 
 
 def _load_close_volume(
@@ -50,7 +51,7 @@ def _load_close_volume(
             DailyPrice.symbol, DailyPrice.date, DailyPrice.close, DailyPrice.volume
         ).where(DailyPrice.date.in_(chunk))
         for sym, dt, close, volume in session.execute(query).all():
-            day = _to_date(dt)
+            day = _to_day(dt)
             if day in day_data:
                 day_data[day][str(sym)] = (
                     float(close) if close is not None else None,
@@ -79,7 +80,7 @@ def _identical_count(
 def _find(session: Session, start: date | None, end: date | None) -> list[dict]:
     stored = sorted(
         {
-            _to_date(d)
+            _to_day(d)
             for d in session.execute(
                 select(DailyPrice.date).distinct().order_by(DailyPrice.date.asc())
             )

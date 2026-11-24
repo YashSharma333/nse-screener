@@ -35,6 +35,7 @@ from config.settings import (
     SPLIT_GUARD_MIN_SYMBOLS,
     SPLIT_REVIEW_MIN_RATIO,
 )
+from src.common.symbols import normalise_symbol
 from src.db.models import AdjFactor, CorporateAction, DailyPrice
 from src.db.session import engine as default_engine
 from src.db.session import get_db
@@ -151,7 +152,7 @@ def load_adjustment_overrides(path: Path | None = None) -> pd.DataFrame:
                 raise ValueError(f"{label}: factor must be above 0, got {factor}")
         records.append(
             {
-                "symbol": row["symbol"].strip().upper(),
+                "symbol": normalise_symbol(row["symbol"]),
                 "date": event_date,
                 "action": action,
                 "factor": factor,

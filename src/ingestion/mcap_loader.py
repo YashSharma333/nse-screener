@@ -24,7 +24,7 @@ import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -35,9 +35,10 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import FIRST_MCAP_DATE
+from src.common.dates import parse_nse_date
 from src.db.models import DailyPrice
 from src.db.session import get_db
-from src.ingestion.nse_files import BadFile, NoFile, check_zip, fetch, pr_bundle_url
+from src.ingestion.nse_files import BadFile, NoFile, check_date, check_zip, fetch, pr_bundle_url
 
 logger = logging.getLogger(__name__)
 
@@ -59,15 +60,15 @@ class McapSummary:
     last_date: date | None = None
 
 
-def _parse_mcap_date(val: str) -> date:
-    """Parse date from mcap file ('01 FEB 2024', '01-Feb-2024', or '2024-02-01')."""
-    clean_val = val.strip().upper()
-    for fmt in ("%d %b %Y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y"):
-        try:
-            return datetime.strptime(clean_val, fmt).date()
-        except ValueError:
-            continue
-    raise BadFile(f"Cannot parse trade date in mcap file: {val!r}")
+# '01 FEB 2024', '01-Feb-2024', '2024-02-01' or '01/02/2024'.
+MCAP_DATE_FORMATS = ("%d %b %Y", "%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y")
+
+
+def _read_mcap_date(text: str) -> date:
+    """Read a date written in a market cap file; a date nobody can read means a bad file."""
+    return parse_nse_date(
+        text, MCAP_DATE_FORMATS, strict=True, error=BadFile, label="Trade date in mcap file"
+    )
 
 
 def parse_mcap_file(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataFrame:
@@ -87,7 +88,7 @@ def parse_mcap_file(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataF
     """
     check_zip(raw_zip_bytes)
     exp_date = (
-        expected_date if isinstance(expected_date, date) else _parse_mcap_date(str(expected_date))
+        expected_date if isinstance(expected_date, date) else _read_mcap_date(str(expected_date))
     )
 
     try:
@@ -135,11 +136,8 @@ def parse_mcap_file(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataF
     raw_dates = df[date_col].unique()
     if len(raw_dates) == 0:
         raise BadFile("Mcap file contains 0 rows")
-    file_date = _parse_mcap_date(str(raw_dates[0]))
-    if file_date != exp_date:
-        raise BadFile(
-            f"Trade date inside mcap file ({file_date}) does not match expected ({exp_date})"
-        )
+    file_date = _read_mcap_date(str(raw_dates[0]))
+    check_date(file_date, exp_date)
 
     # Standardize symbols, series, and parse exact Decimal market cap
     df["symbol"] = df[sym_col].str.upper()
@@ -172,7 +170,7 @@ def write_mcap_cache(
 ) -> Path:
     """Save parsed market cap DataFrame to Parquet cache."""
     target_dir = cache_dir or settings.MCAP_DIR
-    target_date = d if isinstance(d, date) else _parse_mcap_date(str(d))
+    target_date = d if isinstance(d, date) else _read_mcap_date(str(d))
     target_path = target_dir / f"{target_date.isoformat()}.parquet"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(target_path, index=False, engine="pyarrow")

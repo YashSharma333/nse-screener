@@ -17,13 +17,15 @@ import io
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.common.dates import is_blank_date, parse_nse_date
+from src.common.symbols import normalise_symbol
 from src.db.models import DailyPrice, Security, SymbolChange
 from src.db.session import get_db
 from src.db.upsert import upsert_rows
@@ -40,21 +42,11 @@ REQUIRED_SYMBOLCHANGE_COLUMNS: tuple[str, ...] = (
 
 
 def _parse_effective_date(val: Any) -> date | None:
-    """Parse effective date in formats like '30-OCT-2019' or '30-10-2019'."""
-    if val is None or pd.isna(val):
-        return None
-    s = str(val).strip()
-    if not s or s in ("-", "NA", "NULL"):
-        return None
-
-    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-
-    logger.warning("Could not parse symbol change effective date '%s'", s)
-    return None
+    """Parse effective date in formats like '30-OCT-2019' or '30-10-2019' (warns if unreadable)."""
+    parsed = parse_nse_date(val)
+    if parsed is None and not is_blank_date(val):
+        logger.warning("Could not parse symbol change effective date '%s'", str(val).strip())
+    return parsed
 
 
 @dataclass
@@ -70,17 +62,17 @@ class RenameChains:
 
     def get_current(self, symbol: str) -> str:
         """Return the latest active symbol for a given symbol."""
-        sym = symbol.strip().upper()
+        sym = normalise_symbol(symbol)
         return self.latest_map.get(sym, sym)
 
     def get_former(self, symbol: str) -> list[str]:
         """Return all former names for a symbol (oldest first)."""
-        sym = symbol.strip().upper()
+        sym = normalise_symbol(symbol)
         return list(self.former_map.get(sym, []))
 
     def get_history(self, symbol: str) -> list[dict[str, Any]]:
         """Return all rename events for this security in chronological order."""
-        sym = symbol.strip().upper()
+        sym = normalise_symbol(symbol)
         curr = self.get_current(sym)
         formers = self.get_former(curr)
         all_syms = {*formers, curr, sym}
@@ -134,8 +126,8 @@ def parse_symbol_changes_csv(content: bytes | str) -> list[dict[str, Any]]:
             skipped_blank_comp += 1
             continue
 
-        old_sym = str(row["OLD SYMBOL"]).strip().upper()
-        new_sym = str(row["NEW SYMBOL"]).strip().upper()
+        old_sym = normalise_symbol(row["OLD SYMBOL"])
+        new_sym = normalise_symbol(row["NEW SYMBOL"])
         if not old_sym or not new_sym:
             continue
 
@@ -242,15 +234,15 @@ def build_rename_chains(rows: Sequence[dict[str, Any] | SymbolChange]) -> Rename
     normalized_events: list[tuple[str, str, date, str | None]] = []
     for r in rows:
         if isinstance(r, dict):
-            old_s = str(r["old_symbol"]).strip().upper()
-            new_s = str(r["new_symbol"]).strip().upper()
+            old_s = normalise_symbol(r["old_symbol"])
+            new_s = normalise_symbol(r["new_symbol"])
             dt = r["effective_date"]
             if isinstance(dt, str):
                 dt = _parse_effective_date(dt)
             comp = r.get("company")
         else:
-            old_s = str(r.old_symbol).strip().upper()
-            new_s = str(r.new_symbol).strip().upper()
+            old_s = normalise_symbol(r.old_symbol)
+            new_s = normalise_symbol(r.new_symbol)
             dt = r.effective_date
             comp = r.company
 
@@ -326,7 +318,7 @@ def current_symbol(
 
     If the symbol has never undergone a rename, returns the symbol itself.
     """
-    sym = symbol.strip().upper()
+    sym = normalise_symbol(symbol)
     if chains is not None:
         return chains.get_current(sym)
 
@@ -348,7 +340,7 @@ def former_names(
 
     If the symbol has no earlier names, returns an empty list.
     """
-    sym = symbol.strip().upper()
+    sym = normalise_symbol(symbol)
     if chains is not None:
         return chains.get_former(sym)
 
@@ -367,7 +359,7 @@ def rename_history(
     session: Session | None = None,
 ) -> list[dict[str, Any]]:
     """Return all rename events (with exact effective dates) for a security in date order."""
-    sym = symbol.strip().upper()
+    sym = normalise_symbol(symbol)
     if chains is not None:
         return chains.get_history(sym)
 
@@ -396,8 +388,8 @@ def rename_date(
         Target new symbol. If omitted, returns the date of the first rename away from old_symbol.
     """
     history = rename_history(old_symbol, chains=chains, session=session)
-    old_s = old_symbol.strip().upper()
-    new_s = new_symbol.strip().upper() if new_symbol else None
+    old_s = normalise_symbol(old_symbol)
+    new_s = normalise_symbol(new_symbol) if new_symbol else None
 
     for event in history:
         if event["old_symbol"] == old_s and (new_s is None or event["new_symbol"] == new_s):
@@ -414,8 +406,8 @@ def verify_rename_by_isin(
 
     When a legitimate company renames, its 12-character ISIN remains identical.
     """
-    old_s = old_symbol.strip().upper()
-    new_s = new_symbol.strip().upper()
+    old_s = normalise_symbol(old_symbol)
+    new_s = normalise_symbol(new_symbol)
 
     # 1. Check securities table
     old_sec = session.get(Security, old_s)
@@ -479,7 +471,7 @@ def prices_for(
     - Ordered chronologically by date ASC.
     - Read-only: daily_prices is never updated, modified, or relabelled.
     """
-    sym = symbol.strip().upper()
+    sym = normalise_symbol(symbol)
 
     def _query(s: Session) -> list[DailyPrice]:
         nonlocal chains
