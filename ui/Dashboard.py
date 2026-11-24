@@ -99,29 +99,22 @@ def main() -> None:
         st.caption(f"Data as of **{as_of}** · prices are split/bonus adjusted")
 
         # Filters: which series (EQ, SME, ...), a symbol search and a column preset.
-        # An older cache may lack the series column; then the selector is skipped.
-        has_series = "series" in snapshot.columns
-        available = sorted(snapshot["series"].dropna().unique().tolist()) if has_series else []
+        available = sorted(snapshot["series"].dropna().unique().tolist())
         f1, f2, f3 = st.columns([2.5, 1.5, 2])
         with f1:
-            if has_series:
-                chosen_series = st.multiselect(
-                    "Series",
-                    options=available,
-                    default=default_series(available),
-                    format_func=lambda s: SERIES_LABELS.get(s, s),
-                    help="NSE series: EQ is normal equity; SM/ST are SME stocks; BE/BZ are "
-                    "restricted.",
-                )
-            else:
-                chosen_series = []
-                st.caption("Series information is missing in the cache; showing all rows.")
+            chosen_series = st.multiselect(
+                "Series",
+                options=available,
+                default=default_series(available),
+                format_func=lambda s: SERIES_LABELS.get(s, s),
+                help="NSE series: EQ is normal equity; SM/ST are SME stocks; BE/BZ are restricted.",
+            )
         with f2:
             search = st.text_input("Search symbol", placeholder="e.g. RELIANCE")
         with f3:
             preset = st.radio("Columns", [*COLUMN_PRESETS, "Custom"], horizontal=True, index=0)
 
-        by_series = filter_by_series(snapshot, chosen_series) if has_series else snapshot
+        by_series = filter_by_series(snapshot, chosen_series)
         filtered = filter_by_symbol(by_series, search)
         table = rename_for_display(filtered)
 

@@ -95,61 +95,6 @@ def get_symbol_history(symbol: str, columns: Sequence[str] | None = None) -> pd.
     return _get_symbol_history_cached(symbol, col_tuple, get_cache_invalidation_token())
 
 
-def format_market_cap(val: Any) -> str:
-    """Format market cap in rupees to crore string (e.g. ₹1,234.56 Cr).
-
-    Missing values (None, NaN, or non-positive) return empty string (blank, never a guess).
-    """
-    if val is None or pd.isna(val):
-        return ""
-    try:
-        num = float(val)
-        if num <= 0:
-            return ""
-        crores = num / 1e7
-        return f"₹{crores:,.2f} Cr"
-    except (ValueError, TypeError):
-        return ""
-
-
-def filter_by_market_cap(
-    df: pd.DataFrame,
-    min_mcap_rupees: float | None = None,
-    max_mcap_rupees: float | None = None,
-    include_missing: bool = True,
-) -> pd.DataFrame:
-    """Filter DataFrame by market cap in rupees.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame containing 'market_cap'.
-    min_mcap_rupees : float, optional
-        Minimum market cap in rupees.
-    max_mcap_rupees : float, optional
-        Maximum market cap in rupees.
-    include_missing : bool, default True
-        Whether to keep stocks whose market cap is missing (e.g. before 2024-02-01).
-
-    Returns
-    -------
-    pd.DataFrame
-        Filtered DataFrame.
-    """
-    if df.empty or "market_cap" not in df.columns:
-        return df
-
-    mask = pd.Series(True, index=df.index)
-    is_missing = df["market_cap"].isna()
-
-    if min_mcap_rupees is not None:
-        mask &= (df["market_cap"] >= min_mcap_rupees) | (is_missing if include_missing else False)
-    if max_mcap_rupees is not None:
-        mask &= (df["market_cap"] <= max_mcap_rupees) | (is_missing if include_missing else False)
-
-    return df[mask]
-
-
 def render_uninitialized_prompt() -> None:
     """Tell the user there is no data and how to create it (the UI itself never loads data)."""
     st.info(

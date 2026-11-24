@@ -130,13 +130,6 @@ class TestDashboardFilters(unittest.TestCase):
         series.set_value(["EQ", "SM"]).run()
         self.assertEqual(at.metric[0].value, "3")
 
-    def test_dashboard_survives_cache_without_series_column(self):
-        """Regression: an older cache has no series column; the page must not crash."""
-        at = self._run_dashboard(self._snapshot().drop(columns=["series"]))
-        self.assertFalse(at.exception)
-        self.assertEqual(len(at.error), 0, [e.value for e in at.error])
-        self.assertEqual(at.metric[0].value, "3")
-
 
 class TestSwingVolumePageSidebar(unittest.TestCase):
     """Series tabs, EQ-only market cap filter and inspector list, on a crafted snapshot."""
