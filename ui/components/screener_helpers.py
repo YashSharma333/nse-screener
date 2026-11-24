@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 CRORE = 1e7  # 1 crore rupees; market cap is stored in rupees
@@ -76,8 +75,6 @@ def _with_market_cap_cr(df: pd.DataFrame) -> pd.DataFrame:
 def build_results_table(passing: pd.DataFrame) -> pd.DataFrame:
     """Columns shown for passing stocks (adds volume multiple and market cap in crores)."""
     res = _with_market_cap_cr(passing)
-    if "vol_multiple" not in res.columns and {"volume", "volume_sma_20"} <= set(res.columns):
-        res["vol_multiple"] = res["volume"] / res["volume_sma_20"].replace(0, np.nan)
     order = [
         "symbol",
         "series",

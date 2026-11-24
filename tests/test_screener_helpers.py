@@ -86,7 +86,7 @@ def test_results_table_has_numeric_market_cap_in_crores_and_series():
             "market_cap": [2500 * CR],
             "close": [10.0],
             "volume": [300],
-            "volume_sma_20": [100],
+            "vol_multiple": [3.0],
         }
     )
     table = build_results_table(passing)

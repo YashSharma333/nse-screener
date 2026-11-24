@@ -82,6 +82,15 @@ def render_stock_inspector(
     if len(stock_df) > lookback_days:
         stock_df = stock_df.iloc[-lookback_days:]
 
+    # Missing columns mean an old cache: fail loudly instead of inventing values.
+    needed = ["volume_sma_20", "rsi_14", "high_252d_prev"]
+    missing = [c for c in needed if c not in stock_df.columns]
+    if missing:
+        st.error(
+            f"Column(s) {', '.join(missing)} missing: run `python run_pipeline.py --refresh-cache`."
+        )
+        return
+
     latest = stock_df.iloc[-1]
     prev_close = stock_df.iloc[-2]["close"] if len(stock_df) > 1 else latest["close"]
     daily_change = ((latest["close"] - prev_close) / prev_close) * 100.0
@@ -95,11 +104,7 @@ def render_stock_inspector(
             delta=f"{daily_change:+.2f}%",
         )
     with m2:
-        vol_multiple = (
-            latest["volume"] / latest["volume_sma_20"]
-            if ("volume_sma_20" in latest and latest["volume_sma_20"] > 0)
-            else 1.0
-        )
+        vol_multiple = latest["volume"] / latest["volume_sma_20"]
         st.metric(
             label="Volume Multiple",
             value=f"{vol_multiple:.2f}x",
@@ -107,12 +112,12 @@ def render_stock_inspector(
             delta_color="normal" if vol_multiple >= 1.5 else "off",
         )
     with m3:
-        rsi_val = latest.get("rsi_14", 50.0)
+        rsi_val = latest["rsi_14"]
         rsi_status = "Overbought" if rsi_val >= 70 else ("Oversold" if rsi_val <= 30 else "Neutral")
         st.metric(label="RSI (14)", value=f"{rsi_val:.1f}", delta=rsi_status, delta_color="off")
     with m4:
-        high_prev = latest.get("high_252d_prev", latest["close"])
-        dist_52w = ((latest["close"] - high_prev) / high_prev * 100.0) if high_prev else 0.0
+        high_prev = latest["high_252d_prev"]
+        dist_52w = (latest["close"] - high_prev) / high_prev * 100.0
         st.metric(label="Distance from 52W High", value=f"{dist_52w:+.1f}%")
     with m5:
         # Last known market cap in the window (the newest session may not have one yet).

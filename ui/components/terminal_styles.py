@@ -126,20 +126,6 @@ def apply_terminal_theme() -> None:
         text-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
     }
 
-    /* Page-specific icons for clean visual presentation */
-    div[data-testid="stSidebarNav"] ul li:nth-child(1) a span::before {
-        content: "📊 ";
-        margin-right: 4px;
-    }
-    div[data-testid="stSidebarNav"] ul li:nth-child(2) a span::before {
-        content: "🌊 ";
-        margin-right: 4px;
-    }
-    div[data-testid="stSidebarNav"] ul li:nth-child(3) a span::before {
-        content: "🚀 ";
-        margin-right: 4px;
-    }
-
     /* Terminal Header Bar */
     .terminal-header {
         display: flex;
@@ -298,23 +284,6 @@ def apply_terminal_theme() -> None:
         margin-top: 3px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-    }
-    .sidebar-card {
-        background: #0f172a;
-        border: 1px solid #1e293b;
-        border-radius: 6px;
-        padding: 8px 12px;
-        margin: 6px 0;
-        font-size: 0.8rem;
-    }
-    .index-badge-card {
-        background: #0f172a;
-        border-left: 3px solid #38bdf8;
-        padding: 6px 10px;
-        border-radius: 4px;
-        margin: 6px 0;
-        font-size: 0.8rem;
-        color: #cbd5e1;
     }
 
     /* Buttons */

@@ -19,7 +19,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, func, select
@@ -34,10 +33,6 @@ from src.etl.daily_update import (
     DailyUpdateError,
     DailyUpdateSummary,
     run_daily_update,
-)
-from ui.data import (
-    filter_by_market_cap,
-    format_market_cap,
 )
 
 
@@ -381,36 +376,6 @@ def test_market_cap_column_in_cache_and_null_before_2024_02_01() -> None:
     if not df_prior.empty:
         # All market_cap rows before 2024-02-01 must be NaN / null
         assert df_prior["market_cap"].isna().all()
-
-
-# ---------------------------------------------------------------------------
-# 7. UI data returns market cap not cap bucket
-# ---------------------------------------------------------------------------
-def test_ui_data_returns_market_cap_not_bucket() -> None:
-    """The market cap helpers in ui/data.py: rupees in, crores shown, missing stays blank."""
-    # 1. Format helper tests
-    assert format_market_cap(10_000_000_000) == "₹1,000.00 Cr"
-    assert format_market_cap(50_000_000) == "₹5.00 Cr"
-    assert format_market_cap(None) == ""
-    assert format_market_cap(np.nan) == ""
-    assert format_market_cap(0) == ""
-    assert format_market_cap(-500) == ""
-    assert format_market_cap("invalid") == ""
-
-    # 2. Filter helper tests (rupees)
-    df_test = pd.DataFrame(
-        [
-            {"symbol": "MEGA", "market_cap": 1_000_000_000_000.0},  # 100,000 Cr
-            {"symbol": "MID", "market_cap": 50_000_000_000.0},  # 5,000 Cr
-            {"symbol": "SMALL", "market_cap": 5_000_000_000.0},  # 500 Cr
-            {"symbol": "ANCIENT", "market_cap": np.nan},  # missing
-        ]
-    )
-
-    filtered = filter_by_market_cap(
-        df_test, min_mcap_rupees=10_000_000_000.0, include_missing=False
-    )
-    assert sorted(filtered["symbol"].tolist()) == ["MEGA", "MID"]
 
 
 # ---------------------------------------------------------------------------
