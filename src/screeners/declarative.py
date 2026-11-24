@@ -46,7 +46,7 @@ def create_declarative_screener(spec: dict[str, Any]) -> type[Screener]:
     if not rules:
         raise ValueError(f"Declarative screener '{key}' must define at least one rule expression.")
 
-    from src.strategies.rules import evaluate_rule, validate_rule
+    from src.screeners.rules import evaluate_rule, validate_rule
 
     # Validate rules and compute required columns
     all_req_cols: set[str] = set()

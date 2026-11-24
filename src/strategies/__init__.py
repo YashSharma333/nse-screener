@@ -7,6 +7,7 @@ signal evaluation, and CLI tooling for NSE equity swing strategies.
 
 from __future__ import annotations
 
+from src.screeners.rules import evaluate_rule, validate_rule
 from src.strategies.costs import (
     TradeCosts,
     calculate_buy_costs,
@@ -25,7 +26,6 @@ from src.strategies.risk import (
     target_price,
     trail_next,
 )
-from src.strategies.rules import evaluate_rule, validate_rule
 from src.strategies.signals import (
     evaluate_rules_history,
     evaluate_screener_history,

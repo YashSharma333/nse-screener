@@ -15,7 +15,7 @@ from collections.abc import Sequence
 import pandas as pd
 
 from src.screeners.base import Screener
-from src.strategies.rules import evaluate_rule
+from src.screeners.rules import evaluate_rule
 
 
 def evaluate_screener_history(

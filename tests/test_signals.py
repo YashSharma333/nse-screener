@@ -11,7 +11,7 @@ import pytest
 from src.computation.indicators.calculator import TechnicalCalculator
 from src.screeners.base import MissingIndicatorError
 from src.screeners.registry import get_screener
-from src.strategies.rules import evaluate_rule, validate_rule
+from src.screeners.rules import evaluate_rule, validate_rule
 from src.strategies.signals import evaluate_rules_history, evaluate_screener_history, to_sparse
 
 
