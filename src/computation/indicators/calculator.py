@@ -42,6 +42,7 @@ from src.computation.indicators.grouped import (
     shift,
     stock_keys,
 )
+from src.computation.indicators.pickers import value_ago
 from src.computation.indicators.price_helpers import pct_diff, ratio, window_stat
 
 logger = logging.getLogger("src.computation.indicators")
@@ -329,7 +330,7 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
     for length in (20, 50, 150, 200):
         res[f"sma_{length}"] = sma(res, length=length)
     res["sma_200_slope_21d"] = (
-        res["sma_200"] / shift(res, res["sma_200"], 21).replace(0, np.nan)
+        res["sma_200"] / value_ago(res, "sma_200", 21).replace(0, np.nan)
     ) - 1.0
     for length in (12, 20, 26):
         res[f"ema_{length}"] = ema(res, length=length)
@@ -356,7 +357,7 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
     res["pct_change_12m"] = percent_change(res, length=252)
 
     for days in (60, 120, 180, 252):
-        res[f"close_{days}d"] = shift(res, close, days)
+        res[f"close_{days}d"] = value_ago(res, "close", days)
     for days in (60, 120):
         res[f"return_{days}d"] = pct_diff(close, res[f"close_{days}d"])
 
