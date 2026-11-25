@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -52,7 +52,7 @@ from src.ingestion.corporate_actions_parser import (
     STATUS_REVIEW,
     unparsed_price_share,
 )
-from src.ingestion.renames import load_chains_from_db
+from src.ingestion.renames import family, load_chains_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -180,11 +180,7 @@ def get_price_adjustment_events(
     target_symbols: set[str] = set()
     if actual_symbols is not None:
         for s in actual_symbols:
-            sym_norm = normalise_symbol(s)
-            curr = chains.get_current(sym_norm)
-            target_symbols.add(sym_norm)
-            target_symbols.add(curr)
-            target_symbols.update(chains.get_former(curr))
+            target_symbols.update(family(s, chains))
 
     if target_symbols:
         stored_stmt = (
@@ -221,10 +217,7 @@ def get_price_adjustment_events(
     mapped_exact: list[tuple[str, date, str, str, int, float]] = []
     for row in raw_exact_rows:
         sym = normalise_symbol(row.symbol)
-        curr = chains.get_current(sym)
-        formers = chains.get_former(curr)
-        family = {curr, sym, *formers}
-        stock_stored = family & stored_symbols if stored_symbols else {sym}
+        stock_stored = family(sym, chains) & stored_symbols if stored_symbols else {sym}
         targets = stock_stored if stock_stored else {sym}
         for target_sym in targets:
             mapped_exact.append(
@@ -275,10 +268,7 @@ def get_price_adjustment_events(
     mapped_review: list[tuple[str, date, str, str]] = []
     for row in raw_review_rows:
         sym = normalise_symbol(row.symbol)
-        curr = chains.get_current(sym)
-        formers = chains.get_former(curr)
-        family = {curr, sym, *formers}
-        stock_stored = family & stored_symbols if stored_symbols else {sym}
+        stock_stored = family(sym, chains) & stored_symbols if stored_symbols else {sym}
         targets = stock_stored if stock_stored else {sym}
         for target_sym in targets:
             mapped_review.append((target_sym, row.ex_date, row.action_type, row.subject))
@@ -303,7 +293,6 @@ def run_corporate_actions_download(
     session: Session | None = None,
     output_dir: Path | None = None,
     today: date | None = None,
-    fetch_fn: Callable[..., bytes] | None = None,
 ) -> dict[str, Any]:
     """Download the three NSE reports, check them, keep the raw files, and store them.
 
@@ -318,7 +307,7 @@ def run_corporate_actions_download(
     start = start or default_start
     end = end or default_end
     out_dir = output_dir or settings.CORP_ACTIONS_DIR
-    fetcher = downloader or NSEReportsDownloader(fetch_fn=fetch_fn)
+    fetcher = downloader or NSEReportsDownloader()
     fetched_at = datetime.now().replace(microsecond=0)
 
     # 1. Download everything (no database yet).

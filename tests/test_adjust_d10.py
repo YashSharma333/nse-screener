@@ -6,7 +6,6 @@ Tests run offline without network or MySQL access.
 
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from src.etl.adjust import (
     read_official_events,
     rebuild_adjusted,
 )
-from src.ingestion.corporate_actions import NSEReportsDownloader
 from tests.official_actions import add_official_action, add_prices
 
 
@@ -208,35 +206,6 @@ def test_crosscheck_flags_difference_over_tolerance_and_does_not_modify_prices(
         for r in session.scalars(select(DailyPrice)).all()
     ]
     assert before_prices == after_prices
-
-
-def test_corporate_actions_download_uses_shared_fetch() -> None:
-    """NSEReportsDownloader uses injected fetch_fn for corporate actions."""
-    calls = []
-
-    def fake_fetch(url: str, *args, **kwargs) -> bytes:
-        calls.append(url)
-        return json.dumps(
-            [
-                {
-                    "symbol": "FAKE_SYM",
-                    "comp": "Fake Co",
-                    "isin": "INE123456789",
-                    "series": "EQ",
-                    "faceVal": "10",
-                    "subject": "SPLIT RS 10 TO RS 2",
-                    "exDate": "18-Nov-2024",
-                    "recDate": "19-Nov-2024",
-                }
-            ]
-        ).encode("utf-8")
-
-    downloader = NSEReportsDownloader(fetch_fn=fake_fetch)
-    rows = downloader.fetch_corporate_actions_window(date(2024, 1, 1), date(2024, 1, 31))
-    assert len(rows) == 1
-    assert rows[0]["symbol"] == "FAKE_SYM"
-    assert len(calls) == 1
-    assert "corporates-corporateActions" in calls[0]
 
 
 def test_empty_corporate_actions_table_stops_with_clear_error(session: Session) -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from src.common.trading_calendar import BENCHMARK, load_non_trading_days
 from src.computation.indicators.calculator import calculate_sma
 from src.db.models import Base, BenchmarkPrice, DailyPrice
 from src.etl.adjust import cumulative_factors, rebuild_adjusted
@@ -26,9 +27,7 @@ from src.ingestion.benchmark import (
     NSEIndexSource,
     load_benchmark_range,
 )
-from src.ingestion.benchmark import (
-    load_non_trading_days as load_benchmark_non_trading_days,
-)
+from src.ingestion.nse_files import NoFile
 from tests.official_actions import add_official_action
 
 
@@ -112,7 +111,9 @@ def test_fri_sun_mon_price_sequence_no_false_split_and_normal_bar_indicators():
     assert sma2.iloc[2] == 4035.0  # Monday bar: (4020 + 4050) / 2
 
 
-def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(sqlite_db, tmp_path: Path):
+def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(
+    sqlite_db, tmp_path: Path, monkeypatch
+):
     """Benchmark: weekend index file stored when it exists, skipped/cached when it does not."""
     _engine, session_factory = sqlite_db
     benchmark_cache_dir = tmp_path / "benchmark_cache"
@@ -129,33 +130,23 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(sqlite_db, 
         "Nifty 500,03-11-2024,22000.0,22150.0,21980.0,22100.0,100.0,0.45,5000,500,22,3.5,1.0\n"
     )
 
-    mock_session = MagicMock()
+    def fake_fetch(url: str, **_kwargs):
+        if sun_date.strftime("%d%m%Y") in url:
+            return sample_csv.encode("utf-8")
+        raise NoFile(f"404 {url}")
 
-    def mock_get(url: str, **_kwargs):
-        resp = MagicMock()
-        if sat_date.strftime("%d%m%Y") in url:
-            resp.status_code = 404
-            resp.text = "Not Found"
-        elif sun_date.strftime("%d%m%Y") in url:
-            resp.status_code = 200
-            resp.text = sample_csv
-        else:
-            resp.status_code = 404
-            resp.text = "Not Found"
-        return resp
-
-    mock_session.get.side_effect = mock_get
+    monkeypatch.setattr("src.ingestion.nse_files.fetch", fake_fetch)
 
     with (
         patch("config.settings.BENCHMARK_CACHE_DIR", benchmark_cache_dir),
         patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", benchmark_non_trading_file),
     ):
-        source = NSEIndexSource(session=mock_session)
+        source = NSEIndexSource()
 
         # Saturday fetch: returns None and marks non-trading
         sat_prices = source.fetch_prices(sat_date)
         assert sat_prices is None
-        assert sat_date.isoformat() in load_benchmark_non_trading_days()
+        assert sat_date in load_non_trading_days(BENCHMARK)
 
         # Sunday fetch: returns prices and creates parquet cache
         sun_prices = source.fetch_prices(sun_date)
@@ -164,7 +155,7 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(sqlite_db, 
         assert sun_prices["NIFTY 50"] == 24050.0
         assert "NIFTY 500" in sun_prices
         assert sun_prices["NIFTY 500"] == 22100.0
-        assert sun_date.isoformat() not in load_benchmark_non_trading_days()
+        assert sun_date not in load_non_trading_days(BENCHMARK)
 
         # End-to-end load_benchmark_range test with db session
         @contextmanager

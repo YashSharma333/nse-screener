@@ -18,7 +18,6 @@ Key principles:
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from collections.abc import Callable
@@ -29,23 +28,23 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import NSE_HISTORY_START
 from src.common.db import use_session
+from src.common.trading_calendar import (
+    PRICES,
+    get_trading_dates,
+    load_non_trading_days,
+    record_missing_file,
+)
 from src.db.models import DailyPrice
 from src.db.upsert import upsert_rows
 from src.ingestion.bhavcopy_parser import parse_bhavcopy, write_cache
 from src.ingestion.nse_files import BadFile, NoFile, bhavcopy_url, fetch
 
 logger = logging.getLogger(__name__)
-
-# The confirmed non-trading days file is defined once, in config/settings.py.
-
-# Recent buffer: dates within the last 3 days are never permanently cached as holidays
-RECENT_NON_TRADING_BUFFER_DAYS: int = 3
 
 
 @dataclass
@@ -61,55 +60,6 @@ class LoadPricesSummary:
     last_date: date | None = None
 
 
-def load_non_trading_days(path: Path | None = None) -> set[date]:
-    """Read confirmed non-trading dates (holidays, weekend 404s) from JSON cache.
-
-    Why: Avoids issuing thousands of known-failing HTTP requests to NSE on holidays.
-    """
-    target = path or settings.PRICE_NON_TRADING_DAYS_FILE
-    if not target.exists():
-        return set()
-    try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-        return {date.fromisoformat(d) for d in raw}
-    except Exception as exc:
-        logger.warning("Could not read non-trading days from %s: %s", target, exc)
-        return set()
-
-
-def record_non_trading_day(d: date, path: Path | None = None) -> None:
-    """Atomically record a confirmed non-trading date into JSON cache.
-
-    Why: Uses a .tmp file replacement to guarantee atomic updates without corrupting JSON.
-    """
-    target = path or settings.PRICE_NON_TRADING_DAYS_FILE
-    existing = load_non_trading_days(target)
-    if d in existing:
-        return
-    existing.add(d)
-    iso_list = sorted(x.isoformat() for x in existing)
-    tmp_path = target.with_suffix(".json.tmp")
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_text(json.dumps(iso_list, indent=2), encoding="utf-8")
-        tmp_path.replace(target)
-    except Exception as exc:
-        logger.warning("Could not write non-trading day %s to %s: %s", d, target, exc)
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-
-
-def is_recent_date(d: date, ref_date: date | None = None) -> bool:
-    """Check if date d is within the last 3 calendar days.
-
-    Why: NSE often uploads Bhavcopy files in the late evening or next day.
-    A 404 within the last 3 days could be a temporary publishing delay, so we
-    must NOT permanently mark it as a non-trading holiday.
-    """
-    today = ref_date or date.today()
-    return d >= today - timedelta(days=RECENT_NON_TRADING_BUFFER_DAYS)
-
-
 def find_price_gaps(
     session: Session,
     non_trading_days: set[date] | None = None,
@@ -120,15 +70,14 @@ def find_price_gaps(
     an HTML block page served with HTTP 200) would otherwise never be tried again.
     A day is NOT a gap when it is recorded as a confirmed non-trading day.
     """
-    first_day, last_day = session.execute(
-        select(func.min(DailyPrice.date), func.max(DailyPrice.date))
-    ).one()
-    if first_day is None:
+    stored_dates = get_trading_dates(session)
+    if not stored_dates:
         return []
+    first_day, last_day = stored_dates[0], stored_dates[-1]
 
     if non_trading_days is None:
-        non_trading_days = load_non_trading_days()
-    stored_days = set(session.scalars(select(DailyPrice.date).distinct()).all())
+        non_trading_days = load_non_trading_days(PRICES)
+    stored_days = set(stored_dates)
 
     gaps: list[date] = []
     day = first_day
@@ -175,7 +124,7 @@ def load_raw_prices(
     cache_dir : Path | None
         Directory for storing full-universe parquet cache (data/raw/nse/bhavcopy_all).
     non_trading_path : Path | None
-        Path to non_trading_days.json (reused from existing ETL cache).
+        Override for the price non-trading-days JSON (default: settings, see trading_calendar).
     fetch_fn : Callable
         Function downloading raw URL bytes (default: src.ingestion.nse_files.fetch).
     parse_fn : Callable
@@ -217,10 +166,9 @@ def load_raw_prices(
 
     target_cache_dir = cache_dir or settings.BHAVCOPY_ALL_DIR
     target_cache_dir.mkdir(parents=True, exist_ok=True)
-    target_nt_path = non_trading_path or settings.PRICE_NON_TRADING_DAYS_FILE
 
     # Load known non-trading days once into memory for fast lookup
-    non_trading_days = load_non_trading_days(target_nt_path)
+    non_trading_days = load_non_trading_days(PRICES, non_trading_path)
 
     # Build full sequence of calendar days in range (every single day, including weekends)
     calendar_days: list[date] = []
@@ -231,13 +179,8 @@ def load_raw_prices(
 
     def _execute_load() -> None:
         # Pre-query dates already in database to guarantee fast, safe resume after interruption
-        stmt = (
-            select(DailyPrice.date)
-            .distinct()
-            .where(DailyPrice.date >= start_date, DailyPrice.date <= end_date)
-        )
         with use_session(session) as s:
-            db_dates: set[date] = set(s.scalars(stmt).all())
+            db_dates: set[date] = set(get_trading_dates(s, start_date, end_date))
 
         # Group calendar days by year and month to insert in bounded monthly transactions
         for (year, month), month_group in groupby(calendar_days, key=lambda d: (d.year, d.month)):
@@ -284,8 +227,7 @@ def load_raw_prices(
                     except NoFile:
                         summary.no_file += 1
                         # Only record permanently as holiday if outside the recent 3-day buffer
-                        if not is_recent_date(d, ref_date=today):
-                            record_non_trading_day(d, target_nt_path)
+                        if record_missing_file(PRICES, d, today, non_trading_path):
                             non_trading_days.add(d)
                         continue
 

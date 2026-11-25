@@ -66,105 +66,108 @@ class FakeSession:
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_returns_bytes_on_200():
+def test_fetch_returns_bytes_on_200(fake_nse_session):
     """Successful HTTP 200 returns the raw bytes downloaded."""
     expected_data = b"SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE\nINFY,EQ,1500,1520,1490,1510\n"
-    session = FakeSession([FakeResponse(200, expected_data)])
-    result = fetch("https://nsearchives.nseindia.com/content/cm/test.csv", session=session)
+    session = fake_nse_session(FakeSession([FakeResponse(200, expected_data)]))
+    result = fetch("https://nsearchives.nseindia.com/content/cm/test.csv")
     assert result == expected_data
     assert len(session.calls) == 1
     assert session.calls[0][0] == "https://nsearchives.nseindia.com/content/cm/test.csv"
 
 
-def test_404_raises_nofile_and_does_not_retry():
+def test_404_raises_nofile_and_does_not_retry(fake_nse_session, nse_sleeps):
     """HTTP 404 indicates non-trading day/holiday; raises NoFile immediately (call count 1)."""
-    session = FakeSession([FakeResponse(404, b"Not Found")])
-    sleep_calls: list[float] = []
+    session = fake_nse_session(FakeSession([FakeResponse(404, b"Not Found")]))
 
     with pytest.raises(NoFile) as exc_info:
-        fetch(
-            "https://nsearchives.nseindia.com/content/cm/test.csv",
-            session=session,
-            sleep=lambda s: sleep_calls.append(s),
-        )
+        fetch("https://nsearchives.nseindia.com/content/cm/test.csv")
 
     assert "HTTP 404" in str(exc_info.value)
     # Exactly one request made, no retry on 404
     assert len(session.calls) == 1
-    assert len(sleep_calls) == 0
+    assert nse_sleeps == []
 
 
-def test_retries_on_503_then_succeeds():
+def test_retries_on_503_then_succeeds(fake_nse_session, nse_sleeps):
     """Server error (503) triggers exponential backoff and retries, succeeding on attempt 3."""
     expected_data = b"recovered content"
-    session = FakeSession(
-        [
-            FakeResponse(503, b"Service Unavailable"),
-            FakeResponse(503, b"Service Unavailable"),
-            FakeResponse(200, expected_data),
-        ]
+    session = fake_nse_session(
+        FakeSession(
+            [
+                FakeResponse(503, b"Service Unavailable"),
+                FakeResponse(503, b"Service Unavailable"),
+                FakeResponse(200, expected_data),
+            ]
+        )
     )
-    sleep_calls: list[float] = []
 
-    result = fetch(
-        "https://nsearchives.nseindia.com/content/cm/test.csv",
-        session=session,
-        sleep=lambda s: sleep_calls.append(s),
-    )
+    result = fetch("https://nsearchives.nseindia.com/content/cm/test.csv")
 
     assert result == expected_data
     assert len(session.calls) == 3
     # Exponential backoff sleeps: 2**0 = 1s, 2**1 = 2s
-    assert sleep_calls == [1, 2]
+    assert nse_sleeps == [1, 2]
 
 
-def test_gives_up_after_three_failures_raises_fetchfailed():
-    """Exhausting all 3 attempts on continuous 500 errors raises FetchFailed."""
-    session = FakeSession(
-        [
-            FakeResponse(500, b"Internal Error"),
-            FakeResponse(500, b"Internal Error"),
-            FakeResponse(500, b"Internal Error"),
-        ]
+@pytest.mark.parametrize("status", [403, 429])
+def test_blocked_or_rate_limited_is_retried(fake_nse_session, nse_sleeps, status):
+    """403 (blocked) and 429 (too many requests) are temporary: retried, then succeed."""
+    session = fake_nse_session(
+        FakeSession([FakeResponse(status, b"slow down"), FakeResponse(200, b"data")])
     )
-    sleep_calls: list[float] = []
+    assert fetch("https://nsearchives.nseindia.com/content/cm/test.csv") == b"data"
+    assert len(session.calls) == 2
+    assert nse_sleeps == [1]
+
+
+def test_gives_up_after_three_failures_raises_fetchfailed(fake_nse_session, nse_sleeps):
+    """Exhausting all 3 attempts on continuous 500 errors raises FetchFailed."""
+    session = fake_nse_session(
+        FakeSession(
+            [
+                FakeResponse(500, b"Internal Error"),
+                FakeResponse(500, b"Internal Error"),
+                FakeResponse(500, b"Internal Error"),
+            ]
+        )
+    )
 
     with pytest.raises(FetchFailed) as exc_info:
-        fetch(
-            "https://nsearchives.nseindia.com/content/cm/test.csv",
-            session=session,
-            retries=3,
-            sleep=lambda s: sleep_calls.append(s),
-        )
+        fetch("https://nsearchives.nseindia.com/content/cm/test.csv", retries=3)
 
     assert "Failed to fetch" in str(exc_info.value)
     assert len(session.calls) == 3
-    assert sleep_calls == [1, 2]
+    assert nse_sleeps == [1, 2]
 
 
-def test_connection_error_is_retried():
+def test_fixed_retry_wait_replaces_exponential_backoff(fake_nse_session, nse_sleeps):
+    """retry_wait gives the same pause between attempts (the corporate-actions downloader)."""
+    fake_nse_session(FakeSession([FakeResponse(500), FakeResponse(500), FakeResponse(200)]))
+    fetch("https://nsearchives.nseindia.com/content/cm/test.csv", retry_wait=7)
+    assert nse_sleeps == [7, 7]
+
+
+def test_connection_error_is_retried(fake_nse_session, nse_sleeps):
     """Network connection errors are caught, delayed, and retried."""
     expected_data = b"ok after reconnect"
-    session = FakeSession(
-        [
-            requests.ConnectionError("Connection reset by peer"),
-            FakeResponse(200, expected_data),
-        ]
+    session = fake_nse_session(
+        FakeSession(
+            [
+                requests.ConnectionError("Connection reset by peer"),
+                FakeResponse(200, expected_data),
+            ]
+        )
     )
-    sleep_calls: list[float] = []
 
-    result = fetch(
-        "https://nsearchives.nseindia.com/content/cm/test.csv",
-        session=session,
-        sleep=lambda s: sleep_calls.append(s),
-    )
+    result = fetch("https://nsearchives.nseindia.com/content/cm/test.csv")
 
     assert result == expected_data
     assert len(session.calls) == 2
-    assert sleep_calls == [1]
+    assert nse_sleeps == [1]
 
 
-def test_html_page_with_200_raises_badfile():
+def test_html_page_with_200_raises_badfile(fake_nse_session):
     """An HTML page returned with HTTP 200 (such as an NSE block page) raises BadFile."""
     html_page = (
         b"<!DOCTYPE html>\n<html><head><title>Access Denied</title></head>"
@@ -177,12 +180,9 @@ def test_html_page_with_200_raises_badfile():
     assert "HTML error/block page" in str(exc_info.value)
 
     # Calling fetch with a 200 response containing HTML also raises BadFile
-    session = FakeSession([FakeResponse(200, html_page)])
+    fake_nse_session(FakeSession([FakeResponse(200, html_page)]))
     with pytest.raises(BadFile):
-        fetch(
-            "https://nsearchives.nseindia.com/content/cm/test.csv",
-            session=session,
-        )
+        fetch("https://nsearchives.nseindia.com/content/cm/test.csv")
 
 
 def test_bad_zip_magic_raises_badfile():
@@ -216,34 +216,49 @@ def test_check_date_wrong_date_raises_badfile():
         check_date(date(2024, 1, 1), date(2024, 1, 2))
 
 
-def test_warmup_only_for_www_host():
-    """Only www.nseindia.com triggers cookie warm-up; archives host makes exactly 1 request."""
+def test_warmup_only_for_www_host(fake_nse_session):
+    """Only www.nseindia.com triggers cookie warm-up, and only once for the shared session."""
     # 1. Archives host makes exactly 1 request (no warmup)
-    archives_session = FakeSession([FakeResponse(200, b"data")])
-    fetch(
-        "https://nsearchives.nseindia.com/content/file.csv",
-        session=archives_session,
-    )
-    assert len(archives_session.calls) == 1
-    assert archives_session.calls[0][0] == "https://nsearchives.nseindia.com/content/file.csv"
+    session = fake_nse_session(FakeSession([FakeResponse(200, b"data")]))
+    fetch("https://nsearchives.nseindia.com/content/file.csv")
+    assert len(session.calls) == 1
+    assert session.calls[0][0] == "https://nsearchives.nseindia.com/content/file.csv"
 
-    # 2. www.nseindia.com warms up first with GET https://www.nseindia.com (2 requests total)
-    www_session = FakeSession(
-        [
-            FakeResponse(200, b"cookie"),
-            FakeResponse(200, b"api_data"),
-        ]
-    )
-    fetch("https://www.nseindia.com/api/test", session=www_session)
-    assert len(www_session.calls) == 2
-    assert www_session.calls[0][0] == "https://www.nseindia.com"
-    assert www_session.calls[1][0] == "https://www.nseindia.com/api/test"
+    # 2. www.nseindia.com warms up first with GET https://www.nseindia.com (2 requests more)
+    session.responses += [FakeResponse(200, b"cookie"), FakeResponse(200, b"api_data")]
+    fetch("https://www.nseindia.com/api/test")
+    assert len(session.calls) == 3
+    assert session.calls[1][0] == "https://www.nseindia.com"
+    assert session.calls[2][0] == "https://www.nseindia.com/api/test"
 
-    # 3. Subsequent request with the same session does not repeat warmup
-    www_session.responses.append(FakeResponse(200, b"api_data_2"))
-    fetch("https://www.nseindia.com/api/test2", session=www_session)
-    assert len(www_session.calls) == 3
-    assert www_session.calls[2][0] == "https://www.nseindia.com/api/test2"
+    # 3. The next www request does not repeat the warm-up
+    session.responses.append(FakeResponse(200, b"api_data_2"))
+    fetch("https://www.nseindia.com/api/test2")
+    assert len(session.calls) == 4
+    assert session.calls[3][0] == "https://www.nseindia.com/api/test2"
+
+
+def test_reset_client_starts_a_fresh_session_and_warm_up(fake_nse_session):
+    """A new session has no cookies, so the warm-up must be done again after a reset."""
+    from src.ingestion import nse_files
+
+    fake_nse_session(FakeSession([FakeResponse(), FakeResponse()]))
+    fetch("https://www.nseindia.com/api/a")
+    assert nse_files._warmed_hosts == {"www.nseindia.com"}
+
+    nse_files.reset_client()
+    assert nse_files._session is None
+    assert nse_files._warmed_hosts == set()
+
+
+def test_shared_session_is_reused_and_carries_browser_headers(monkeypatch):
+    """One real requests.Session for all downloads, created once, with the browser headers."""
+    from src.ingestion import nse_files
+
+    nse_files.reset_client()
+    first = nse_files._shared_session()
+    assert nse_files._shared_session() is first
+    assert first.headers["User-Agent"] == nse_files.HEADERS["User-Agent"]
 
 
 def test_url_builders():

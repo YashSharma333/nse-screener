@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from src.common.dates import parse_nse_date
 from src.common.db import use_session
+from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
 
 logger = logging.getLogger(__name__)
@@ -78,16 +79,7 @@ def _identical_count(
 
 
 def _find(session: Session, start: date | None, end: date | None) -> list[dict]:
-    stored = sorted(
-        {
-            _to_day(d)
-            for d in session.execute(
-                select(DailyPrice.date).distinct().order_by(DailyPrice.date.asc())
-            )
-            .scalars()
-            .all()
-        }
-    )
+    stored = sorted({_to_day(d) for d in get_trading_dates(session)})
     if len(stored) < 2:
         return []
 

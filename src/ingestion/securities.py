@@ -24,135 +24,63 @@ Key rules:
 
 from __future__ import annotations
 
-import io
 import logging
-from collections.abc import Callable
-from datetime import date
 from typing import Any
 
-import pandas as pd
 from sqlalchemy.orm import Session
 
-from src.common.dates import is_blank_date, parse_nse_date
 from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import Security
 from src.db.upsert import upsert_rows
-from src.ingestion.nse_files import EQUITY_L_URL, check_not_html, fetch
+from src.ingestion import nse_files
+from src.ingestion.corporate_actions import parse_listing_master
+from src.ingestion.nse_files import EQUITY_L_URL
 
 logger = logging.getLogger(__name__)
 
-# Required columns in EQUITY_L.csv (normalized to stripped uppercase)
-REQUIRED_EQUITY_L_COLUMNS: tuple[str, ...] = (
-    "SYMBOL",
-    "NAME OF COMPANY",
-    "SERIES",
-    "DATE OF LISTING",
-    "ISIN NUMBER",
-)
 
+def listing_rows(content: bytes) -> list[dict[str, Any]]:
+    """Turn EQUITY_L.csv into rows for the ``securities`` table.
 
-def _parse_listing_date(val: Any) -> date | None:
-    """Parse NSE listing date like '19-SEP-2019' or '19-09-2019' (warns if unreadable)."""
-    parsed = parse_nse_date(val)
-    if parsed is None and not is_blank_date(val):
-        logger.warning("Could not parse listing date '%s'", str(val).strip())
-    return parsed
-
-
-def parse_equity_l(content: bytes | str) -> list[dict[str, Any]]:
-    """Parse raw bytes or text of EQUITY_L.csv into a list of row dicts for `securities`.
-
-    Parameters
-    ----------
-    content : bytes or str
-        Raw content of EQUITY_L.csv.
-
-    Returns
-    -------
-    list[dict[str, Any]]
-        List of dicts ready for insertion into the `securities` table.
+    Reading the file is done by ``parse_listing_master`` (the one EQUITY_L parser: strict dates,
+    a changed format stops the run). Here we only pick the table columns and skip blank symbols.
     """
-    check_not_html(content)
-
-    if isinstance(content, bytes):
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = content.decode("latin-1")
-    else:
-        text = content
-
-    df = pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
-
-    # Normalize column names: stripped uppercase
-    df.columns = [str(c).strip().upper() for c in df.columns]
-
-    missing = [c for c in REQUIRED_EQUITY_L_COLUMNS if c not in df.columns]
-    if missing:
-        raise ValueError(
-            f"EQUITY_L.csv missing required columns: {missing}; found: {list(df.columns)}"
-        )
-
-    logger.info("Parsed EQUITY_L header: %s (%d rows)", list(df.columns), len(df))
-
+    frame = parse_listing_master(content)
     rows: list[dict[str, Any]] = []
-    for _, row in df.iterrows():
-        sym = normalise_symbol(row["SYMBOL"])
-        if not sym:
+    for item in frame.itertuples(index=False):
+        symbol = normalise_symbol(item.symbol)
+        if not symbol:
             continue
-
-        isin = str(row["ISIN NUMBER"]).strip() or None
-        name = str(row["NAME OF COMPANY"]).strip() or None
-        series = normalise_symbol(row["SERIES"]) or None
-        listing_date = _parse_listing_date(row["DATE OF LISTING"])
-
         rows.append(
             {
-                "symbol": sym,
-                "isin": isin,
-                "name": name,
-                "series": series,
-                "listing_date": listing_date,
+                "symbol": symbol,
+                "isin": item.isin or None,
+                "name": item.company or None,
+                "series": normalise_symbol(item.series) or None,
+                "listing_date": item.listing_date,
                 "status": "active",
             }
         )
-
     return rows
 
 
-def import_equity_l(
-    session: Session | None = None,
-    fetch_fn: Callable[[str], bytes] | None = None,
-    csv_content: bytes | str | None = None,
-    url: str = EQUITY_L_URL,
-) -> int:
+def import_equity_l(session: Session | None = None) -> int:
     """Download and upsert EQUITY_L.csv into the securities table.
 
     Parameters
     ----------
     session : Session, optional
         Database session. If None, opens its own (committed on success).
-    fetch_fn : callable, optional
-        Custom fetch function (url -> bytes) for testing.
-    csv_content : bytes or str, optional
-        Pre-loaded CSV content, bypassing network download.
-    url : str, default EQUITY_L_URL
-        URL to fetch from.
 
     Returns
     -------
     int
         Number of security rows upserted.
     """
-    if csv_content is not None:
-        raw_data = csv_content
-    elif fetch_fn is not None:
-        raw_data = fetch_fn(url)
-    else:
-        raw_data = fetch(url)
+    raw_data = nse_files.fetch(EQUITY_L_URL)
 
-    records = parse_equity_l(raw_data)
+    records = listing_rows(raw_data)
     if not records:
         logger.warning("No valid securities parsed from EQUITY_L.csv")
         return 0

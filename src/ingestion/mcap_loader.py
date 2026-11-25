@@ -37,6 +37,7 @@ from config import settings
 from config.settings import FIRST_MCAP_DATE
 from src.common.dates import parse_nse_date
 from src.common.db import use_session
+from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
 from src.ingestion.nse_files import BadFile, NoFile, check_date, check_zip, fetch, pr_bundle_url
 
@@ -246,14 +247,8 @@ def load_market_caps(
 
     def _execute() -> None:
         # Query distinct trading dates present in daily_prices in the target range
-        stmt = (
-            select(DailyPrice.date)
-            .distinct()
-            .where(DailyPrice.date >= start_date, DailyPrice.date <= end_date)
-            .order_by(DailyPrice.date)
-        )
         with use_session(session) as s:
-            trading_dates = list(s.scalars(stmt).all())
+            trading_dates = get_trading_dates(s, start_date, end_date)
         logger.info(
             "Found %d trading dates in daily_prices between %s and %s for market cap load.",
             len(trading_dates),
