@@ -25,9 +25,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.common.dates import is_blank_date, parse_nse_date
+from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import DailyPrice, Security, SymbolChange
-from src.db.session import get_db
 from src.db.upsert import upsert_rows
 from src.ingestion.nse_files import SYMBOLCHANGE_URL, check_not_html, fetch
 
@@ -202,15 +202,11 @@ def load_renames(
             rows=records,
             index_elements=["old_symbol", "new_symbol", "effective_date"],
         )
-        s.commit()
         logger.info("Upserted %d symbol changes into `symbol_changes` table", count)
         return count
 
-    if session is not None:
-        return _execute_load(session)
-
-    with get_db() as managed_session:
-        return _execute_load(managed_session)
+    with use_session(session) as s:
+        return _execute_load(s)
 
 
 def build_rename_chains(rows: Sequence[dict[str, Any] | SymbolChange]) -> RenameChains:
@@ -322,13 +318,8 @@ def current_symbol(
     if chains is not None:
         return chains.get_current(sym)
 
-    if session is not None:
-        active_chains = load_chains_from_db(session)
-        return active_chains.get_current(sym)
-
-    with get_db() as managed_session:
-        active_chains = load_chains_from_db(managed_session)
-        return active_chains.get_current(sym)
+    with use_session(session) as s:
+        return load_chains_from_db(s).get_current(sym)
 
 
 def former_names(
@@ -344,13 +335,8 @@ def former_names(
     if chains is not None:
         return chains.get_former(sym)
 
-    if session is not None:
-        active_chains = load_chains_from_db(session)
-        return active_chains.get_former(sym)
-
-    with get_db() as managed_session:
-        active_chains = load_chains_from_db(managed_session)
-        return active_chains.get_former(sym)
+    with use_session(session) as s:
+        return load_chains_from_db(s).get_former(sym)
 
 
 def rename_history(
@@ -363,13 +349,8 @@ def rename_history(
     if chains is not None:
         return chains.get_history(sym)
 
-    if session is not None:
-        active_chains = load_chains_from_db(session)
-        return active_chains.get_history(sym)
-
-    with get_db() as managed_session:
-        active_chains = load_chains_from_db(managed_session)
-        return active_chains.get_history(sym)
+    with use_session(session) as s:
+        return load_chains_from_db(s).get_history(sym)
 
 
 def rename_date(
@@ -489,8 +470,5 @@ def prices_for(
         )
         return list(s.scalars(stmt).all())
 
-    if session is not None:
-        return _query(session)
-
-    with get_db() as managed_session:
-        return _query(managed_session)
+    with use_session(session) as s:
+        return _query(s)

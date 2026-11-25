@@ -26,8 +26,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import settings
+from src.common.db import use_session
 from src.db.models import DailyPrice
-from src.db.session import get_db
 from src.ingestion.bhavcopy_parser import parse_bhavcopy
 from src.ingestion.nse_files import bhavcopy_url, fetch
 
@@ -286,11 +286,8 @@ def verify_prices(
                 }
             )
 
-    if session is not None:
-        _run_verification(session)
-    else:
-        with get_db() as managed_session:
-            _run_verification(managed_session)
+    with use_session(session) as s:
+        _run_verification(s)
 
     report_df = pd.DataFrame(summary_rows)
     report_df.to_csv(rep_path, index=False)

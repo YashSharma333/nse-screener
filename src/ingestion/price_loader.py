@@ -34,8 +34,8 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import NSE_HISTORY_START
+from src.common.db import use_session
 from src.db.models import DailyPrice
-from src.db.session import get_db
 from src.db.upsert import upsert_rows
 from src.ingestion.bhavcopy_parser import parse_bhavcopy, write_cache
 from src.ingestion.nse_files import BadFile, NoFile, bhavcopy_url, fetch
@@ -171,7 +171,7 @@ def load_raw_prices(
         Latest calendar day to process (default: yesterday).
     session : Session | None
         SQLAlchemy database session. If provided, uses it as given without closing.
-        If None, creates and commits within a managed get_db() session.
+        If None, each month is saved in its own session. A given session is never committed here.
     cache_dir : Path | None
         Directory for storing full-universe parquet cache (data/raw/nse/bhavcopy_all).
     non_trading_path : Path | None
@@ -229,14 +229,15 @@ def load_raw_prices(
         calendar_days.append(curr)
         curr += timedelta(days=1)
 
-    def _execute_load(s: Session) -> None:
+    def _execute_load() -> None:
         # Pre-query dates already in database to guarantee fast, safe resume after interruption
         stmt = (
             select(DailyPrice.date)
             .distinct()
             .where(DailyPrice.date >= start_date, DailyPrice.date <= end_date)
         )
-        db_dates: set[date] = set(s.scalars(stmt).all())
+        with use_session(session) as s:
+            db_dates: set[date] = set(s.scalars(stmt).all())
 
         # Group calendar days by year and month to insert in bounded monthly transactions
         for (year, month), month_group in groupby(calendar_days, key=lambda d: (d.year, d.month)):
@@ -309,13 +310,14 @@ def load_raw_prices(
 
             # End of calendar month: upsert accumulated records for this month
             if month_records:
-                upsert_rows(
-                    session=s,
-                    model=DailyPrice,
-                    rows=month_records,
-                    index_elements=["symbol", "date"],
-                )
-                s.commit()
+                # One own session per month: each month is saved as soon as it is done
+                with use_session(session) as s:
+                    upsert_rows(
+                        session=s,
+                        model=DailyPrice,
+                        rows=month_records,
+                        index_elements=["symbol", "date"],
+                    )
                 summary.rows_inserted += len(month_records)
                 logger.info(
                     "Month %04d-%02d: upserted %d rows into daily_prices (cumulative: %d rows)",
@@ -325,12 +327,7 @@ def load_raw_prices(
                     summary.rows_inserted,
                 )
 
-    # Use caller-provided session if passed, otherwise manage a clean session
-    if session is not None:
-        _execute_load(session)
-    else:
-        with get_db() as managed_session:
-            _execute_load(managed_session)
+    _execute_load()
 
     # Final summary output
     logger.info(

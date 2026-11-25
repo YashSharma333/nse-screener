@@ -28,8 +28,8 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from src.common.dates import parse_nse_date
+from src.common.db import use_session
 from src.db.models import BenchmarkPrice, DailyPrice
-from src.db.session import get_db
 from src.db.upsert import upsert_rows
 from src.ingestion.nse_files import BadFile
 from src.ingestion.price_loader import is_recent_date
@@ -296,23 +296,14 @@ def load_benchmarks(
         if not records:
             continue
 
-        if session is not None:
+        with use_session(session) as s:
             upsert_rows(
-                session=session,
+                session=s,
                 model=BenchmarkPrice,
                 rows=records,
                 update_columns=["close", "source"],
                 index_elements=["index_code", "date"],
             )
-        else:
-            with get_db() as s:
-                upsert_rows(
-                    session=s,
-                    model=BenchmarkPrice,
-                    rows=records,
-                    update_columns=["close", "source"],
-                    index_elements=["index_code", "date"],
-                )
 
         total_saved += len(records)
         if delay > 0:

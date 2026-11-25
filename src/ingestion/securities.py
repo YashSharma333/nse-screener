@@ -34,9 +34,9 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from src.common.dates import is_blank_date, parse_nse_date
+from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import Security
-from src.db.session import get_db
 from src.db.upsert import upsert_rows
 from src.ingestion.nse_files import EQUITY_L_URL, check_not_html, fetch
 
@@ -132,7 +132,7 @@ def import_equity_l(
     Parameters
     ----------
     session : Session, optional
-        Database session. If None, acquires one via get_db().
+        Database session. If None, opens its own (committed on success).
     fetch_fn : callable, optional
         Custom fetch function (url -> bytes) for testing.
     csv_content : bytes or str, optional
@@ -165,12 +165,8 @@ def import_equity_l(
             index_elements=["symbol"],
             coalesce_columns=["status"],
         )
-        s.commit()
         logger.info("Successfully imported/upserted %d securities into `securities`", count)
         return count
 
-    if session is not None:
-        return _execute_import(session)
-
-    with get_db() as managed_session:
-        return _execute_import(managed_session)
+    with use_session(session) as s:
+        return _execute_import(s)

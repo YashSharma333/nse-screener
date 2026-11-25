@@ -35,10 +35,10 @@ from config.settings import (
     SPLIT_GUARD_MIN_SYMBOLS,
     SPLIT_REVIEW_MIN_RATIO,
 )
+from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import AdjFactor, CorporateAction, DailyPrice
 from src.db.session import engine as default_engine
-from src.db.session import get_db
 from src.db.upsert import upsert_rows
 from src.ingestion.corporate_actions_store import get_price_adjustment_events
 
@@ -180,10 +180,8 @@ def read_official_events(
             )
         return get_price_adjustment_events(active, symbols=symbols)
 
-    if session is not None:
-        return _read(session)
-    with get_db() as own_session:
-        return _read(own_session)
+    with use_session(session) as s:
+        return _read(s)
 
 
 def _keep_events_inside_price_history(official: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
@@ -639,11 +637,8 @@ def rebuild_adjusted(
             ]
             upsert_rows(active_session, AdjFactor, ev_records)
 
-    if session is not None:
-        _sync_db(session)
-    else:
-        with get_db() as s:
-            _sync_db(s)
+    with use_session(session) as s:
+        _sync_db(s)
 
     save_events_report(
         events_df, review_df=review_df, gaps_df=gaps_df, only_symbols=symbols or None
@@ -725,11 +720,8 @@ def rebuild_adjusted(
         logger.info("Adjusted prices update complete: modified %d rows.", updated_rows)
         return updated_rows
 
-    if session is not None:
-        return _apply_updates(session)
-    else:
-        with get_db() as s:
-            return _apply_updates(s)
+    with use_session(session) as s:
+        return _apply_updates(s)
 
 
 def adjust_new_rows(
@@ -823,11 +815,8 @@ def adjust_new_rows(
         for b_start in range(0, len(records), 1000):
             active_session.execute(update_sql, records[b_start : b_start + 1000])
 
-    if session is not None:
-        _run_adj(session)
-    else:
-        with get_db() as s:
-            _run_adj(s)
+    with use_session(session) as s:
+        _run_adj(s)
 
     return len(records)
 

@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import REGULAR_SERIES
+from src.common.db import use_session
 from src.db.models import DailyPrice
-from src.db.session import get_db
 from src.ingestion.nse_files import cm_52_wk_url, fetch
 from src.ingestion.renames import RenameChains, load_chains_from_db
 
@@ -244,10 +244,8 @@ def crosscheck_52w(
         )
         return res_df
 
-    if session is not None:
-        return _execute(session)
-    with get_db() as managed_session:
-        return _execute(managed_session)
+    with use_session(session) as s:
+        return _execute(s)
 
 
 if __name__ == "__main__":

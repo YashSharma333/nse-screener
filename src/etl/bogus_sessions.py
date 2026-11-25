@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from src.common.dates import parse_nse_date
+from src.common.db import use_session
 from src.db.models import DailyPrice
-from src.db.session import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +133,7 @@ def find_bogus_sessions(
     Genuine special sessions (Diwali Muhurat, Budget Saturdays) have different prices and
     volumes, so they are not flagged.
     """
-    if session is not None:
-        return _find(session, start, end)
-    with get_db() as s:
+    with use_session(session) as s:
         return _find(s, start, end)
 
 

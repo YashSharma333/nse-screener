@@ -22,7 +22,6 @@ import json
 import logging
 from collections import Counter
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +36,7 @@ from config.settings import (
     CORP_ACTIONS_HISTORY_YEARS,
     CORP_ACTIONS_MAX_UNPARSED_SHARE,
 )
+from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import CorporateAction, DailyPrice, Security, SymbolChange
 from src.db.upsert import upsert_rows
@@ -341,7 +341,7 @@ def run_corporate_actions_download(
         )
 
     # 4. Write to the database.
-    with nullcontext(session) if session is not None else _open_session() as db:
+    with use_session(session) as db:
         not_seen = _count_rows_not_seen(db, action_rows, start, end)
         stored = store_corporate_actions(db, action_rows)
         changes_stored = store_symbol_changes(db, symbol_changes)
@@ -366,10 +366,3 @@ def run_corporate_actions_download(
     }
     logger.info("Corporate actions download complete: %s", summary)
     return summary
-
-
-def _open_session() -> Any:
-    """Open the project's database session (commits on success, rolls back on error)."""
-    from src.db.session import get_db
-
-    return get_db()

@@ -179,7 +179,7 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(sqlite_db, 
             finally:
                 session.close()
 
-        with patch("src.ingestion.benchmark.get_db", _get_test_db):
+        with patch("src.common.db.get_db", _get_test_db):
             # Saturday is already in non_trading_days, so only Sunday is requested
             total_saved = load_benchmark_range(sat_date, sun_date)
             assert total_saved == 2  # NIFTY 50 and NIFTY 500
@@ -305,7 +305,7 @@ def test_historical_session_gets_adjusted_for_subsequent_split(sqlite_db, tmp_pa
             session.close()
 
     with (
-        patch("src.etl.adjust.get_db", _get_test_db),
+        patch("src.common.db.get_db", _get_test_db),
         patch("src.etl.adjust.default_engine", engine),
     ):
         rebuild_adjusted(symbols=["SPLIT_STOCK"])
