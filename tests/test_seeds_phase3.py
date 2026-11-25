@@ -19,6 +19,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from src.computation.indicators.calculator import add_all_indicators
+from src.computation.indicators.resolver import ensure_columns
 from src.db.models import Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
 from src.screeners.base import MissingIndicatorError
@@ -246,7 +247,9 @@ def test_seed_g_rename_equivalence_hmm_vs_rsi_momentum():
     )
 
     screener = get_screener("rsi_momentum")
-    screener_res = screener.run(res)
+    prepared = res.copy()
+    ensure_columns(prepared, screener.required_specs())  # the resolver adds the RSI columns
+    screener_res = prepared[screener.explain(prepared)["passed"]]
 
     # The boolean mask of the screener should match rsi_momentum == True
     expected_mask = res["rsi_momentum"].fillna(False).astype(bool)

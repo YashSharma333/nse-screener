@@ -24,6 +24,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from config import settings
+from src.computation.indicators.pickers import trading_date_ago
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +153,43 @@ def read_history(symbols: Sequence[str], columns: Sequence[str] | None = None) -
     return history
 
 
+def read_history_up_to(columns: Sequence[str], end_days_ago: int = 0) -> pd.DataFrame:
+    """Every cached row up to one evaluation day, for the chosen columns, sorted by stock then day.
+
+    ``end_days_ago`` counts real trading sessions back from the newest day in the cache
+    (0 = newest, 1 = the session before, ...). Rows after that day are dropped. All older rows
+    are kept on purpose: they are the warm-up the indicators need, and reading a few columns
+    of the whole cache is cheap (about 0.2 s). Empty if the cache is missing.
+    """
+    if isinstance(end_days_ago, bool) or not isinstance(end_days_ago, int) or end_days_ago < 0:
+        raise ValueError(f"end_days_ago must be a whole number of 0 or more, got {end_days_ago!r}")
+    cache_path = settings.INDICATORS_CACHE_PATH
+    if not cache_path.exists():
+        return pd.DataFrame()
+
+    wanted = ["symbol", "date", *[c for c in dict.fromkeys(columns) if c not in ("symbol", "date")]]
+    try:
+        table = ds.dataset(cache_path, format="parquet").to_table(columns=wanted)
+    except (OSError, pa.ArrowException) as exc:
+        logger.warning("Could not read the indicator cache %s: %s", cache_path, exc)
+        return pd.DataFrame()
+
+    history = table.to_pandas()
+    history["date"] = pd.to_datetime(history["date"]).dt.date
+    trading_dates = history["date"].unique()
+    # trading_date_ago raises a readable ValueError when fewer sessions exist
+    last_day = trading_date_ago(trading_dates, max(trading_dates), end_days_ago)
+    history = history[history["date"] <= last_day]
+    return history.sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
+
+
 __all__ = [
     "NO_CACHE_MESSAGE",
     "date_literal",
     "fill_missing_market_cap",
     "read_data_date",
     "read_history",
+    "read_history_up_to",
     "read_meta",
     "read_snapshot",
 ]

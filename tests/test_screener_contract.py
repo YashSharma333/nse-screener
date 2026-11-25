@@ -15,10 +15,18 @@ import pandas as pd
 import pytest
 
 from src.computation.indicators.calculator import add_all_indicators
+from src.computation.indicators.resolver import ensure_columns
 from src.screeners.base import Screener
 from src.screeners.registry import list_screeners
 
 ALL_SCREENERS = list_screeners()
+
+
+def _with_specs(screener: Screener, df: pd.DataFrame) -> pd.DataFrame:
+    """A copy of the table with the indicators the screener declares (computed on the history)."""
+    prepared = df.copy()
+    ensure_columns(prepared, screener.required_specs())
+    return prepared
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +134,7 @@ def test_screener_condition_evaluation_and_explain(
     5. explain(df) contract: original cols + summary metrics + individual condition cols.
     """
     screener = screener_cls()
-    df = synthetic_full_and_truncated_data["full_indicators"].copy()
+    df = _with_specs(screener, synthetic_full_and_truncated_data["full_indicators"])
 
     # 3. Test conditions return aligned bool Series
     cond_dict = screener.all_conditions(df)
@@ -182,8 +190,8 @@ def test_screener_point_in_time_look_ahead(
     screener = screener_cls()
     t_mid = synthetic_full_and_truncated_data["t_mid"]
 
-    full_df = synthetic_full_and_truncated_data["full_indicators"]
-    trunc_df = synthetic_full_and_truncated_data["trunc_indicators"]
+    full_df = _with_specs(screener, synthetic_full_and_truncated_data["full_indicators"])
+    trunc_df = _with_specs(screener, synthetic_full_and_truncated_data["trunc_indicators"])
 
     full_t = full_df[full_df["date"] == t_mid].sort_values("symbol").reset_index(drop=True)
     trunc_t = trunc_df[trunc_df["date"] == t_mid].sort_values("symbol").reset_index(drop=True)

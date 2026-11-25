@@ -18,6 +18,11 @@ from typing import Any, ClassVar, Literal
 import numpy as np
 import pandas as pd
 
+from src.computation.indicators.resolver import IndicatorSpec, ensure_columns
+
+# Columns every screener may read besides its own: the stock's identity and plain prices.
+BASE_COLUMNS = ("series", "open", "high", "low", "close", "volume", "market_cap")
+
 
 class MissingIndicatorError(Exception):
     """Raised when required precomputed indicator columns are missing from the input."""
@@ -97,6 +102,30 @@ class Screener:
         """
         del df, params
         return {}
+
+    def required_specs(self) -> list[IndicatorSpec]:
+        """The indicators (with the numbers from ``self.params``) this screener reads.
+
+        The resolver adds any of them that the table does not have yet, so a changed
+        ``rsi_period`` works for any length. Override in a subclass; the default needs none.
+        """
+        return []
+
+    def history_columns(self) -> list[str]:
+        """The cached columns to read for ``screen``: the base ones plus ``required_columns``."""
+        return list(dict.fromkeys([*BASE_COLUMNS, *self.required_columns]))
+
+    def screen(self, history: pd.DataFrame) -> pd.DataFrame:
+        """Evaluate the newest day of ``history`` (every stock's rows up to that day).
+
+        Adds the indicators in ``required_specs`` on the whole history first, because rolling
+        indicators need the earlier rows, then explains the one row per stock of the last day.
+        The caller's table is not changed.
+        """
+        working = history.copy(deep=False)  # new columns go on the copy, not on the caller's table
+        ensure_columns(working, self.required_specs())
+        newest = working[working["date"] == working["date"].max()]
+        return self.explain(newest)
 
     # ------------------------------------------------------------------
     # Internal helpers

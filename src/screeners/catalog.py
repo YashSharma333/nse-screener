@@ -21,6 +21,7 @@ from typing import Any, ClassVar, Literal
 import pandas as pd
 
 from src.computation.indicators.price_helpers import pct_diff
+from src.computation.indicators.resolver import IndicatorSpec, ind
 from src.screeners.base import MissingIndicatorError, Screener
 from src.screeners.registry import register_screener
 
@@ -612,28 +613,6 @@ class RsiMomentumScreener(Screener):
     version = "1.0"
     status: Literal["core", "experimental"] = "core"
 
-    evidence_columns = (
-        "rsi_9",
-        "rsi_9_wma_21",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-    )
-    required_columns = (
-        "rsi_9",
-        "rsi_9_wma_21",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-    )
     default_params: ClassVar[dict[str, Any]] = {
         "rsi_period": 9,
         "wma_period": 21,
@@ -645,30 +624,44 @@ class RsiMomentumScreener(Screener):
         "volume_avg_min": 250_000.0,
     }
 
+    def _specs(self) -> dict[str, IndicatorSpec]:
+        """The indicators by short name, with the numbers from the parameters."""
+        rsi = ind("rsi", length=self.params["rsi_period"])
+        return {
+            "ema20": ind("ema", length=20),
+            "sma50": ind("sma", length=50),
+            "sma200": ind("sma", length=200),
+            "high_52w": ind("window", source="high", length=252, stat="max", days_ago=1),
+            "volume_avg": ind("sma", source="volume", length=20),
+            "rsi": rsi,
+            "rsi_wma": ind("wma", source=rsi, length=self.params["wma_period"]),
+        }
+
+    def required_specs(self) -> list[IndicatorSpec]:
+        return list(self._specs().values())
+
     def rules(self, df: pd.DataFrame, p: dict[str, Any]) -> dict[str, pd.Series]:
-        rsi_col = f"rsi_{p['rsi_period']}"
-        wma_col = f"rsi_{p['rsi_period']}_wma_{p['wma_period']}"
+        col = {name: spec.column for name, spec in self._specs().items()}
+        rsi, rsi_wma = df[col["rsi"]], df[col["rsi_wma"]]
         max_pct_below = (1.0 - p["high_52w_pct"]) * 100.0
 
         return {
             # Trend alignment
-            "ema20_gt_sma50": (df["ema_20"] > df["sma_50"]).fillna(False),
-            "sma50_gt_sma200": (df["sma_50"] > df["sma_200"]).fillna(False),
-            "close_gt_sma50": (df["close"] > df["sma_50"]).fillna(False),
-            "close_gt_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52wH": _cond_within_pct_of_52w_high(df, max_pct_below=max_pct_below),
+            "ema20_gt_sma50": (df[col["ema20"]] > df[col["sma50"]]).fillna(False),
+            "sma50_gt_sma200": (df[col["sma50"]] > df[col["sma200"]]).fillna(False),
+            "close_gt_sma50": (df["close"] > df[col["sma50"]]).fillna(False),
+            "close_gt_sma200": (df["close"] > df[col["sma200"]]).fillna(False),
+            "within_15pct_52wH": _cond_within_pct_of_52w_high(
+                df, max_pct_below=max_pct_below, high_col=col["high_52w"]
+            ),
             # Volume
-            "volume_gt_1_5x_avg": (df["volume"] > p["volume_mult"] * df["volume_sma_20"]).fillna(
+            "volume_gt_1_5x_avg": (df["volume"] > p["volume_mult"] * df[col["volume_avg"]]).fillna(
                 False
             ),
-            "avg_volume_gt_250k": (df["volume_sma_20"] > p["volume_avg_min"]).fillna(False),
+            "avg_volume_gt_250k": (df[col["volume_avg"]] > p["volume_avg_min"]).fillna(False),
             # RSI momentum
-            "rsi9_above_wma21_plus_1_1": (df[rsi_col] >= df[wma_col] + p["wma_offset"]).fillna(
-                False
-            ),
-            "rsi9_between_45_and_65": (
-                (df[rsi_col] >= p["rsi_min"]) & (df[rsi_col] <= p["rsi_max"])
-            ).fillna(False),
+            "rsi9_above_wma21_plus_1_1": (rsi >= rsi_wma + p["wma_offset"]).fillna(False),
+            "rsi9_between_45_and_65": ((rsi >= p["rsi_min"]) & (rsi <= p["rsi_max"])).fillna(False),
         }
 
 
@@ -800,7 +793,10 @@ class MinerviniTrendTemplateScreener(Screener):
         "sma_200_slope_21d",
         "low_52w",
         "high_52w",
+        "ret_rank_252d",
+        "rs_63d",
     )
+
     default_params: ClassVar[dict[str, Any]] = {
         "min_pct_above_52w_low": 30.0,
         "max_pct_below_52w_high": 25.0,
@@ -859,7 +855,14 @@ class RsLeadersScreener(Screener):
         "ret_rank_252d",
         "volume_sma_20",
     )
-    required_columns = ("close", "sma_50", "sma_200", "volume_sma_20")
+    required_columns = (
+        "close",
+        "sma_50",
+        "sma_200",
+        "volume_sma_20",
+        "ret_rank_252d",
+        "rs_63d",
+    )
     default_params: ClassVar[dict[str, Any]] = {
         "min_rs_pct": 0.10,
         "min_rank": 80.0,
@@ -900,7 +903,15 @@ class RsiPullbackUptrendScreener(Screener):
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
     evidence_columns = ("close", "sma_50", "sma_200", "rsi_14", "volume", "volume_sma_20")
-    required_columns = ("close", "sma_50", "sma_200", "rsi_14", "volume", "volume_sma_20")
+    required_columns = (
+        "close",
+        "sma_50",
+        "sma_200",
+        "rsi_14",
+        "volume",
+        "volume_sma_20",
+        "vol_dryup",
+    )
     default_params: ClassVar[dict[str, Any]] = {
         "rsi_lower": 40.0,
         "rsi_upper": 55.0,
@@ -929,11 +940,21 @@ class VcpLiteScreener(Screener):
         "Identifies stocks displaying volatility contraction (ATR% <= 75% of 60D max ATR% "
         "or narrow Bollinger Band width) with drying volume in an established uptrend."
     )
+
     category = "breakout"
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
     evidence_columns = ("close", "sma_50", "atr_pct", "atr_pct_max_60d", "volume", "volume_sma_20")
-    required_columns = ("close", "sma_50", "volume", "volume_sma_20")
+    required_columns = (
+        "close",
+        "sma_50",
+        "volume",
+        "volume_sma_20",
+        "atr_pct",
+        "atr_pct_max_60d",
+        "vol_dryup",
+    )
+
     default_params: ClassVar[dict[str, Any]] = {
         "vol_dryup_threshold": 0.7,
         "atr_factor": 0.75,
