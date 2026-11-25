@@ -32,6 +32,18 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.computation.indicators.grouped import (
+    check_length,
+    check_output,
+    ewm,
+    in_table_order,
+    require,
+    roll,
+    shift,
+    stock_keys,
+)
+from src.computation.indicators.price_helpers import pct_diff, ratio, window_stat
+
 logger = logging.getLogger("src.computation.indicators")
 
 # Bumped schema version whenever columns or formulas change
@@ -43,64 +55,10 @@ INDICATORS_SCHEMA_VERSION = 5
 # ===========================================================================
 
 
-def _check_length(length: int, name: str = "length") -> None:
-    """Reject a window that is not a whole number of at least 1."""
-    if isinstance(length, bool) or not isinstance(length, (int, np.integer)) or length < 1:
-        raise ValueError(f"{name} must be a whole number of at least 1, got {length!r}")
-
-
-def _require(df: pd.DataFrame, *columns: str) -> None:
-    """Raise a clear KeyError when a needed column is not in the table."""
-    missing = [name for name in columns if name not in df.columns]
-    if missing:
-        raise KeyError(f"Missing column(s) {missing}; the table has {list(df.columns)}")
-
-
-def _check_output(output: str, allowed: tuple[str, ...]) -> None:
-    if output not in allowed:
-        raise ValueError(f"output must be one of {list(allowed)}, got {output!r}")
-
-
-def _keys(df: pd.DataFrame) -> np.ndarray:
-    """The stock of every row (one constant key when the table has no ``symbol`` column)."""
-    if "symbol" in df.columns:
-        return df["symbol"].to_numpy()
-    return np.zeros(len(df), dtype=np.int8)
-
-
-def _in_table_order(df: pd.DataFrame, grouped: pd.Series) -> pd.Series:
-    """Put a groupby-rolling/ewm result (stock by stock) back in the table's row order."""
-    codes = pd.factorize(_keys(df))[0]
-    order = np.argsort(codes, kind="stable")  # same order groupby(sort=False) produced
-    values = np.empty(len(df), dtype=float)
-    values[order] = grouped.to_numpy(dtype=float)
-    return pd.Series(values, index=df.index)
-
-
-def _roll(
-    df: pd.DataFrame, series: pd.Series, length: int, stat: str, min_periods: int | None = None
-) -> pd.Series:
-    """Rolling ``stat`` ("mean", "max", "min", "sum", "std") of ``series`` inside each stock."""
-    window = series.astype(float).groupby(_keys(df), sort=False)
-    rolled = window.rolling(length, min_periods=length if min_periods is None else min_periods)
-    return _in_table_order(df, getattr(rolled, stat)())
-
-
-def _ewm(df: pd.DataFrame, series: pd.Series, **kwargs: float | bool | int) -> pd.Series:
-    """Exponential moving average of ``series`` inside each stock (pandas ewm arguments)."""
-    grouped = series.astype(float).groupby(_keys(df), sort=False).ewm(**kwargs)
-    return _in_table_order(df, grouped.mean())
-
-
-def _shift(df: pd.DataFrame, series: pd.Series, periods: int) -> pd.Series:
-    """``series`` moved down ``periods`` rows inside each stock (the first rows are NaN)."""
-    return series.groupby(_keys(df), sort=False).shift(periods)
-
-
 def _fraction_change(df: pd.DataFrame, source: str, length: int) -> pd.Series:
     """(value / value ``length`` rows ago) - 1, inside each stock."""
     values = df[source].astype(float)
-    return values / _shift(df, values, length) - 1.0
+    return values / shift(df, values, length) - 1.0
 
 
 # ===========================================================================
@@ -110,31 +68,31 @@ def _fraction_change(df: pd.DataFrame, source: str, length: int) -> pd.Series:
 
 def sma(df: pd.DataFrame, length: int = 20, source: str = "close") -> pd.Series:
     """Simple moving average of ``source`` over ``length`` rows."""
-    _check_length(length)
-    _require(df, source)
-    return _roll(df, df[source], length, "mean")
+    check_length(length)
+    require(df, source)
+    return roll(df, df[source], length, "mean")
 
 
 def ema(df: pd.DataFrame, length: int = 20, source: str = "close") -> pd.Series:
     """Exponential moving average (span = ``length``)."""
-    _check_length(length)
-    _require(df, source)
-    return _ewm(df, df[source], span=length, adjust=False, min_periods=length)
+    check_length(length)
+    require(df, source)
+    return ewm(df, df[source], span=length, adjust=False, min_periods=length)
 
 
 def wma(df: pd.DataFrame, length: int = 20, source: str = "close") -> pd.Series:
     """Weighted moving average with linear weights (the newest row weighs most)."""
-    _check_length(length)
-    _require(df, source)
+    check_length(length)
+    require(df, source)
     weights = np.arange(1, length + 1)
     total = weights.sum()
 
     def weighted_mean(window: np.ndarray) -> float:
         return float(np.dot(window, weights) / total)
 
-    window = df[source].astype(float).groupby(_keys(df), sort=False)
+    window = df[source].astype(float).groupby(stock_keys(df), sort=False)
     rolled = window.rolling(length, min_periods=length).apply(weighted_mean, raw=True)
-    return _in_table_order(df, rolled)
+    return in_table_order(df, rolled)
 
 
 def bollinger_bands(
@@ -145,13 +103,13 @@ def bollinger_bands(
     output: str = "upper",
 ) -> pd.Series:
     """One Bollinger band: ``output`` is "upper", "middle" or "lower"."""
-    _check_length(length)
-    _check_output(output, ("upper", "middle", "lower"))
-    _require(df, source)
-    middle = _roll(df, df[source], length, "mean")
+    check_length(length)
+    check_output(output, ("upper", "middle", "lower"))
+    require(df, source)
+    middle = roll(df, df[source], length, "mean")
     if output == "middle":
         return middle
-    deviation = _roll(df, df[source], length, "std")
+    deviation = roll(df, df[source], length, "std")
     if output == "upper":
         return middle + (deviation * std)
     return middle - (deviation * std)
@@ -164,8 +122,8 @@ def bollinger_bands(
 
 def true_range(df: pd.DataFrame) -> pd.Series:
     """True range: the largest of high-low, |high-previous close|, |low-previous close|."""
-    _require(df, "high", "low", "close")
-    previous_close = _shift(df, df["close"], 1)
+    require(df, "high", "low", "close")
+    previous_close = shift(df, df["close"], 1)
     spans = [
         df["high"] - df["low"],
         (df["high"] - previous_close).abs(),
@@ -176,9 +134,9 @@ def true_range(df: pd.DataFrame) -> pd.Series:
 
 def atr(df: pd.DataFrame, length: int = 14, output: str = "value") -> pd.Series:
     """Average true range; ``output`` is "value" or "percent" (of the close)."""
-    _check_length(length)
-    _check_output(output, ("value", "percent"))
-    average = _ewm(df, true_range(df), span=length, adjust=False, min_periods=length)
+    check_length(length)
+    check_output(output, ("value", "percent"))
+    average = ewm(df, true_range(df), span=length, adjust=False, min_periods=length)
     if output == "value":
         return average
     return (average / df["close"].replace(0, np.nan)) * 100.0
@@ -186,16 +144,16 @@ def atr(df: pd.DataFrame, length: int = 14, output: str = "value") -> pd.Series:
 
 def volatility(df: pd.DataFrame, length: int = 20, source: str = "close") -> pd.Series:
     """Standard deviation of the 1-day fractional change of ``source`` over ``length`` rows."""
-    _check_length(length)
-    _require(df, source)
+    check_length(length)
+    require(df, source)
     daily = _fraction_change(df, source, 1)
-    return _roll(df, daily, length, "std")
+    return roll(df, daily, length, "std")
 
 
 def percent_change(df: pd.DataFrame, length: int = 1, source: str = "close") -> pd.Series:
     """Percent change of ``source`` over ``length`` rows (10.0 means +10%)."""
-    _check_length(length)
-    _require(df, source)
+    check_length(length)
+    require(df, source)
     return _fraction_change(df, source, length) * 100.0
 
 
@@ -206,15 +164,15 @@ def percent_change(df: pd.DataFrame, length: int = 1, source: str = "close") -> 
 
 def rsi(df: pd.DataFrame, length: int = 14, source: str = "close") -> pd.Series:
     """Relative strength index with Wilder's smoothing."""
-    _check_length(length)
-    _require(df, source)
+    check_length(length)
+    require(df, source)
     values = df[source].astype(float)
-    delta = values - _shift(df, values, 1)
+    delta = values - shift(df, values, 1)
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    average_gain = _ewm(df, gain, alpha=1.0 / length, min_periods=length, adjust=False)
-    average_loss = _ewm(df, loss, alpha=1.0 / length, min_periods=length, adjust=False)
+    average_gain = ewm(df, gain, alpha=1.0 / length, min_periods=length, adjust=False)
+    average_loss = ewm(df, loss, alpha=1.0 / length, min_periods=length, adjust=False)
 
     strength = average_gain / average_loss.replace(0, np.nan)
     result = 100.0 - (100.0 / (1.0 + strength))
@@ -232,15 +190,15 @@ def macd(
 ) -> pd.Series:
     """MACD; ``output`` is "line", "signal" or "histogram"."""
     for name, value in (("fast", fast), ("slow", slow), ("signal", signal)):
-        _check_length(value, name)
-    _check_output(output, ("line", "signal", "histogram"))
-    _require(df, source)
-    fast_average = _ewm(df, df[source], span=fast, adjust=False, min_periods=fast)
-    slow_average = _ewm(df, df[source], span=slow, adjust=False, min_periods=slow)
+        check_length(value, name)
+    check_output(output, ("line", "signal", "histogram"))
+    require(df, source)
+    fast_average = ewm(df, df[source], span=fast, adjust=False, min_periods=fast)
+    slow_average = ewm(df, df[source], span=slow, adjust=False, min_periods=slow)
     line = fast_average - slow_average
     if output == "line":
         return line
-    signal_line = _ewm(df, line, span=signal, adjust=False, min_periods=signal)
+    signal_line = ewm(df, line, span=signal, adjust=False, min_periods=signal)
     if output == "signal":
         return signal_line
     return line - signal_line
@@ -270,19 +228,19 @@ def relative_strength(
 
     ``benchmark`` has the columns ``date`` and ``close``; without one the result is NaN.
     """
-    _check_length(length)
-    _require(df, "close")
+    check_length(length)
+    require(df, "close")
     bench_close = _benchmark_close(df, benchmark)
     if bench_close is None:
         return pd.Series(np.nan, index=df.index, dtype=float)
-    stock_ratio = df["close"] / _shift(df, df["close"], length)
-    bench_ratio = bench_close / _shift(df, bench_close, length)
+    stock_ratio = df["close"] / shift(df, df["close"], length)
+    bench_ratio = bench_close / shift(df, bench_close, length)
     return (stock_ratio / bench_ratio.replace(0, np.nan)) - 1.0
 
 
 def rs_line(df: pd.DataFrame, benchmark: pd.DataFrame | None) -> pd.Series:
     """The ratio line: stock close divided by the benchmark close on the same date."""
-    _require(df, "close")
+    require(df, "close")
     bench_close = _benchmark_close(df, benchmark)
     if bench_close is None:
         return pd.Series(np.nan, index=df.index, dtype=float)
@@ -291,7 +249,7 @@ def rs_line(df: pd.DataFrame, benchmark: pd.DataFrame | None) -> pd.Series:
 
 def cross_sectional_rank(df: pd.DataFrame, source: str, by: str = "date") -> pd.Series:
     """Percentile rank (0 to 100) of ``source`` among all stocks on the same date."""
-    _require(df, source, by)
+    require(df, source, by)
     return df.groupby(by)[source].rank(pct=True) * 100.0
 
 
@@ -302,21 +260,21 @@ def cross_sectional_rank(df: pd.DataFrame, source: str, by: str = "date") -> pd.
 
 def crossed_above(df: pd.DataFrame, a: str, b: str) -> pd.Series:
     """True on the row where column ``a`` moves from at-or-below ``b`` to above it."""
-    _require(df, a, b)
-    return ((df[a] > df[b]) & (_shift(df, df[a], 1) <= _shift(df, df[b], 1))).astype(bool)
+    require(df, a, b)
+    return ((df[a] > df[b]) & (shift(df, df[a], 1) <= shift(df, df[b], 1))).astype(bool)
 
 
 def crossed_below(df: pd.DataFrame, a: str, b: str) -> pd.Series:
     """True on the row where column ``a`` moves from at-or-above ``b`` to below it."""
-    _require(df, a, b)
-    return ((df[a] < df[b]) & (_shift(df, df[a], 1) >= _shift(df, df[b], 1))).astype(bool)
+    require(df, a, b)
+    return ((df[a] < df[b]) & (shift(df, df[a], 1) >= shift(df, df[b], 1))).astype(bool)
 
 
 def occurred_within(df: pd.DataFrame, source: str, length: int = 10) -> pd.Series:
     """True when the true/false column ``source`` was true in any of the last ``length`` rows."""
-    _check_length(length)
-    _require(df, source)
-    recent = _roll(df, df[source].astype(int), length, "max", min_periods=1)
+    check_length(length)
+    require(df, source)
+    recent = roll(df, df[source].astype(int), length, "max", min_periods=1)
     return recent > 0
 
 
@@ -336,19 +294,6 @@ def _sort_order(df: pd.DataFrame) -> np.ndarray:
     if not by:
         return np.arange(len(plain))
     return plain.sort_values(by=by, kind="stable").index.to_numpy()
-
-
-def _quirky_52_week(df: pd.DataFrame, source: str, stat: str) -> pd.Series:
-    """TEMPORARY, copies the old rule: a 252-row window that needs only min(20, rows) rows.
-
-    The old code accepted 20 rows of history for a "52-week" value (finding B9). CL-23B replaces
-    this with the strict ``window_stat``; until then the cache must keep its values.
-    """
-    rolled = _roll(df, df[source], 252, stat, min_periods=1)
-    position = pd.Series(np.arange(len(df)), index=df.index).groupby(_keys(df), sort=False)
-    seen = position.cumcount().to_numpy() + 1
-    rows = position.transform("size").to_numpy()
-    return rolled.where(seen >= np.minimum(20, rows))
 
 
 def _rsi_momentum(res: pd.DataFrame) -> pd.Series:
@@ -384,7 +329,7 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
     for length in (20, 50, 150, 200):
         res[f"sma_{length}"] = sma(res, length=length)
     res["sma_200_slope_21d"] = (
-        res["sma_200"] / _shift(res, res["sma_200"], 21).replace(0, np.nan)
+        res["sma_200"] / shift(res, res["sma_200"], 21).replace(0, np.nan)
     ) - 1.0
     for length in (12, 20, 26):
         res[f"ema_{length}"] = ema(res, length=length)
@@ -396,11 +341,11 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
 
     res["atr_14"] = atr(res)
     res["atr_pct"] = atr(res, output="percent")
-    res["atr_pct_max_60d"] = _roll(res, res["atr_pct"], 60, "max", min_periods=1)
+    res["atr_pct_max_60d"] = roll(res, res["atr_pct"], 60, "max", min_periods=1)
 
-    res["high_52w"] = _quirky_52_week(res, "high", "max")
-    res["low_52w"] = _quirky_52_week(res, "low", "min")
-    res["high_252d_prev"] = _shift(res, res["high_52w"], 1)
+    res["high_52w"] = window_stat(res, "high", 252, "max")
+    res["low_52w"] = window_stat(res, "low", 252, "min")
+    res["high_252d_prev"] = window_stat(res, "high", 252, "max", days_ago=1)
 
     res["daily_returns"] = _fraction_change(res, "close", 1)
     res["volatility_20"] = volatility(res)
@@ -411,20 +356,17 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
     res["pct_change_12m"] = percent_change(res, length=252)
 
     for days in (60, 120, 180, 252):
-        res[f"close_{days}d"] = _shift(res, close, days)
+        res[f"close_{days}d"] = shift(res, close, days)
     for days in (60, 120):
-        earlier = res[f"close_{days}d"]
-        res[f"return_{days}d"] = ((close - earlier) / earlier.replace(0, np.nan)) * 100.0
+        res[f"return_{days}d"] = pct_diff(close, res[f"close_{days}d"])
 
     res["volume_sma_20"] = sma(res, length=20, source="volume")
-    volume_average = res["volume_sma_20"].replace(0, np.nan)
-    res["volume_ratio"] = volume / volume_average
-    short_average = _roll(res, volume, 5, "mean")
-    long_average = _roll(res, volume, 50, "mean", min_periods=5)  # old rule: partial window
+    res["volume_ratio"] = ratio(volume, res["volume_sma_20"])
+    short_average = roll(res, volume, 5, "mean")
+    long_average = roll(res, volume, 50, "mean", min_periods=5)  # old rule: partial window
     res["vol_dryup"] = short_average / long_average.replace(0, np.nan)
-    res["vol_multiple"] = volume / volume_average
-    high_prev = res["high_252d_prev"]
-    res["pct_from_52w_high"] = ((close - high_prev) / high_prev.replace(0, np.nan)) * 100.0
+    res["vol_multiple"] = ratio(volume, res["volume_sma_20"])
+    res["pct_from_52w_high"] = pct_diff(close, res["high_252d_prev"])
 
     res["rsi_9"] = rsi(res, length=9)
     res["rsi_9_wma_21"] = wma(res, length=21, source="rsi_9")
@@ -459,7 +401,7 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
 def _blank_one_row_stocks(res: pd.DataFrame, original_columns: pd.Index) -> None:
     """Old behaviour: a stock with fewer than 2 rows got no indicator values at all."""
     rows_per_stock = pd.Series(np.arange(len(res)), index=res.index)
-    rows_per_stock = rows_per_stock.groupby(_keys(res), sort=False).transform("size")
+    rows_per_stock = rows_per_stock.groupby(stock_keys(res), sort=False).transform("size")
     too_short = (rows_per_stock < 2).to_numpy()
     if not too_short.any():
         return

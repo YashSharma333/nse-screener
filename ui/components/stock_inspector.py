@@ -83,7 +83,7 @@ def render_stock_inspector(
         stock_df = stock_df.iloc[-lookback_days:]
 
     # Missing columns mean an old cache: fail loudly instead of inventing values.
-    needed = ["volume_sma_20", "rsi_14", "high_252d_prev"]
+    needed = ["volume_sma_20", "rsi_14", "pct_from_52w_high"]
     missing = [c for c in needed if c not in stock_df.columns]
     if missing:
         st.error(
@@ -116,8 +116,7 @@ def render_stock_inspector(
         rsi_status = "Overbought" if rsi_val >= 70 else ("Oversold" if rsi_val <= 30 else "Neutral")
         st.metric(label="RSI (14)", value=f"{rsi_val:.1f}", delta=rsi_status, delta_color="off")
     with m4:
-        high_prev = latest["high_252d_prev"]
-        dist_52w = (latest["close"] - high_prev) / high_prev * 100.0
+        dist_52w = latest["pct_from_52w_high"]
         st.metric(label="Distance from 52W High", value=f"{dist_52w:+.1f}%")
     with m5:
         # Last known market cap in the window (the newest session may not have one yet).

@@ -598,8 +598,10 @@ nse-screener/
 │   ├── computation/
 │   │   ├── cache_reader.py       # Read-only access to the indicator cache (used by the UI)
 │   │   └── indicators/           # Technical indicators grouped by nature:
-│   │       └── calculator.py     # One plain function per indicator (sma, ema, rsi, macd, ...);
-│   │                             # add_all_indicators builds the cache columns (temporary)
+│   │       ├── calculator.py     # One plain function per indicator (sma, ema, rsi, macd, ...);
+│   │       │                     # add_all_indicators builds the cache columns (temporary)
+│   │       ├── price_helpers.py  # window_stat (N-day high/low/mean/sum/count), pct_diff, ratio, absolute
+│   │       └── grouped.py        # shared "inside each stock" helpers (rolling, ewm, shift, checks)
 │   ├── db/
 │   │   ├── data_service.py       # Indicator cache loader, sidecar validation & benchmark returns
 │   │   ├── models.py             # SQLAlchemy models (DailyPrice, Security, AdjFactor, etc.)

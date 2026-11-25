@@ -20,6 +20,7 @@ from typing import Any, ClassVar, Literal
 
 import pandas as pd
 
+from src.computation.indicators.price_helpers import pct_diff
 from src.screeners.base import MissingIndicatorError, Screener
 from src.screeners.registry import register_screener
 
@@ -100,9 +101,7 @@ def _cond_near_52w_low(df: pd.DataFrame, threshold_pct: float = 5.0) -> pd.Serie
     missing = [c for c in ("close", "low_52w") if c not in df.columns]
     if missing:
         raise MissingIndicatorError(missing)
-    low_series = df["low_52w"].replace(0, float("nan"))
-    pct_from_low = ((df["close"] - df["low_52w"]) / low_series) * 100.0
-    return (pct_from_low <= threshold_pct).fillna(False)
+    return (pct_diff(df["close"], df["low_52w"]) <= threshold_pct).fillna(False)
 
 
 def _cond_bollinger_squeeze(df: pd.DataFrame, threshold: float = 0.1) -> pd.Series:
@@ -505,9 +504,9 @@ class SwingVolumeScreener(Screener):
             ),
             "price_above_sma50": (df["close"] > df["sma_50"]).fillna(False),
             "price_above_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52w_high": (
-                df["close"] >= (1.0 - p["max_pct_from_high"] / 100.0) * df["high_252d_prev"]
-            ).fillna(False),
+            "within_15pct_52w_high": _cond_within_pct_of_52w_high(
+                df, max_pct_below=p["max_pct_from_high"]
+            ),
             "volume_surge": (df["volume"] > p["vol_multiplier"] * df["volume_sma_20"]).fillna(
                 False
             ),
@@ -573,9 +572,9 @@ class SwingMomentumScreener(Screener):
             ),
             "price_above_sma50": (df["close"] > df["sma_50"]).fillna(False),
             "price_above_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52w_high": (
-                df["close"] >= (1.0 - p["max_pct_from_high"] / 100.0) * df["high_252d_prev"]
-            ).fillna(False),
+            "within_15pct_52w_high": _cond_within_pct_of_52w_high(
+                df, max_pct_below=p["max_pct_from_high"]
+            ),
             "volume_surge": (df["volume"] > p["vol_multiplier"] * df["volume_sma_20"]).fillna(
                 False
             ),
@@ -657,9 +656,7 @@ class RsiMomentumScreener(Screener):
             "sma50_gt_sma200": (df["sma_50"] > df["sma_200"]).fillna(False),
             "close_gt_sma50": (df["close"] > df["sma_50"]).fillna(False),
             "close_gt_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52wH": (
-                df["close"] >= (1.0 - max_pct_below / 100.0) * df["high_252d_prev"]
-            ).fillna(False),
+            "within_15pct_52wH": _cond_within_pct_of_52w_high(df, max_pct_below=max_pct_below),
             # Volume
             "volume_gt_1_5x_avg": (df["volume"] > p["volume_mult"] * df["volume_sma_20"]).fillna(
                 False
