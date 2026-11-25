@@ -29,6 +29,12 @@ SAMPLE_EQUITY_L_CSV = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _nse_serves_sample_file(serve_nse_file) -> None:
+    """Every test downloads SAMPLE_EQUITY_L_CSV unless it serves something else."""
+    serve_nse_file(SAMPLE_EQUITY_L_CSV)
+
+
 @pytest.fixture
 def sqlite_session() -> Generator[Session, None, None]:
     """Provide an isolated in-memory SQLite database session."""
@@ -44,14 +50,14 @@ def sqlite_session() -> Generator[Session, None, None]:
 
 def test_equity_l_import_idempotent(sqlite_session: Session) -> None:
     """Running import_equity_l twice with the same data produces the exact same row count."""
-    count1 = import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    count1 = import_equity_l(session=sqlite_session)
     assert count1 == 4
 
     rows1 = sqlite_session.scalars(select(Security)).all()
     assert len(rows1) == 4
 
     # Run a second time
-    count2 = import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    count2 = import_equity_l(session=sqlite_session)
     assert count2 == 4
 
     rows2 = sqlite_session.scalars(select(Security)).all()
@@ -67,7 +73,7 @@ def test_equity_l_import_idempotent(sqlite_session: Session) -> None:
 
 def test_etf_and_sme_not_in_securities_because_not_in_file(sqlite_session: Session) -> None:
     """ETFs and SME stocks not published in EQUITY_L.csv are not inserted into securities."""
-    import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    import_equity_l(session=sqlite_session)
 
     # NIFTYBEES (ETF) and SMESYMBOL (SME) were not in EQUITY_L.csv
     niftybees = sqlite_session.get(Security, "NIFTYBEES")
@@ -82,7 +88,7 @@ def test_demerger_two_symbols_stay_separate(sqlite_session: Session) -> None:
 
     Company name prefix is never used as the primary key; symbol is the key.
     """
-    import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    import_equity_l(session=sqlite_session)
 
     tmcv = sqlite_session.get(Security, "TMCV")
     tmpv = sqlite_session.get(Security, "TMPV")
@@ -98,38 +104,38 @@ def test_demerger_two_symbols_stay_separate(sqlite_session: Session) -> None:
 
 def test_securities_default_status_active(sqlite_session: Session) -> None:
     """Newly imported securities have default status active."""
-    import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    import_equity_l(session=sqlite_session)
 
     infy = sqlite_session.get(Security, "INFY")
     assert infy is not None
     assert infy.status == "active"
 
 
-def test_missing_required_columns_raises_error(sqlite_session: Session) -> None:
+def test_missing_required_columns_raises_error(sqlite_session: Session, serve_nse_file) -> None:
     """EQUITY_L.csv missing critical columns stops the import and stores nothing."""
-    bad_csv = "SYMBOL,SERIES\nINFY,EQ\n"
+    serve_nse_file("SYMBOL,SERIES\nINFY,EQ\n")
     with pytest.raises(NSEFormatChangedError, match="missing columns"):
-        import_equity_l(session=sqlite_session, csv_content=bad_csv)
+        import_equity_l(session=sqlite_session)
     assert sqlite_session.scalars(select(Security)).all() == []
 
 
-def test_blank_symbol_rows_are_skipped(sqlite_session: Session) -> None:
+def test_blank_symbol_rows_are_skipped(sqlite_session: Session, serve_nse_file) -> None:
     """A row without a symbol cannot be a security; the other rows still load."""
-    csv = SAMPLE_EQUITY_L_CSV + " ,No Symbol Co,EQ,01-JAN-2020,1,1,INE000000000,1\n"
-    assert import_equity_l(session=sqlite_session, csv_content=csv) == 4
+    serve_nse_file(SAMPLE_EQUITY_L_CSV + " ,No Symbol Co,EQ,01-JAN-2020,1,1,INE000000000,1\n")
+    assert import_equity_l(session=sqlite_session) == 4
 
 
-def test_bad_listing_date_stops_the_import(sqlite_session: Session) -> None:
+def test_bad_listing_date_stops_the_import(sqlite_session: Session, serve_nse_file) -> None:
     """A date NSE writes in a new format must not be stored as a wrong or empty date."""
-    csv = SAMPLE_EQUITY_L_CSV.replace("29-NOV-1995", "1995/11/29")
+    serve_nse_file(SAMPLE_EQUITY_L_CSV.replace("29-NOV-1995", "1995/11/29"))
     with pytest.raises(NSEFormatChangedError):
-        import_equity_l(session=sqlite_session, csv_content=csv)
+        import_equity_l(session=sqlite_session)
     assert sqlite_session.scalars(select(Security)).all() == []
 
 
 def test_import_does_not_commit_a_given_session(sqlite_session: Session) -> None:
     """The caller owns the transaction: a rollback by the caller undoes the import."""
-    import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    import_equity_l(session=sqlite_session)
     sqlite_session.rollback()
 
     assert sqlite_session.scalars(select(Security)).all() == []

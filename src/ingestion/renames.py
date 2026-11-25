@@ -14,7 +14,7 @@ Architectural Rules:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -27,8 +27,9 @@ from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import DailyPrice, Security, SymbolChange
 from src.db.upsert import upsert_rows
+from src.ingestion import nse_files
 from src.ingestion.corporate_actions import parse_symbol_changes
-from src.ingestion.nse_files import SYMBOLCHANGE_URL, fetch
+from src.ingestion.nse_files import SYMBOLCHANGE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -78,38 +79,20 @@ class RenameChains:
         ]
 
 
-def load_renames(
-    session: Session | None = None,
-    fetch_fn: Callable[[str], bytes] | None = None,
-    csv_content: bytes | str | None = None,
-    url: str = SYMBOLCHANGE_URL,
-) -> int:
+def load_renames(session: Session | None = None) -> int:
     """Download and upsert symbol changes from symbolchange.csv into symbol_changes.
 
     Parameters
     ----------
     session : Session, optional
         Database session.
-    fetch_fn : callable, optional
-        Fetch function for testing.
-    csv_content : bytes or str, optional
-        Raw CSV content if already downloaded.
-    url : str, default SYMBOLCHANGE_URL
-        URL to fetch from.
 
     Returns
     -------
     int
         Number of symbol change records upserted.
     """
-    if csv_content is not None:
-        raw_data = csv_content
-    elif fetch_fn is not None:
-        raw_data = fetch_fn(url)
-    else:
-        raw_data = fetch(url)
-
-    content = raw_data.encode("utf-8") if isinstance(raw_data, str) else raw_data
+    content = nse_files.fetch(SYMBOLCHANGE_URL)
     records = parse_symbol_changes(content).to_dict("records")
     if not records:
         logger.warning("No valid symbol change records to store.")

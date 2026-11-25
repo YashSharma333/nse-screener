@@ -105,3 +105,14 @@ def fake_nse_session(monkeypatch):
         return session
 
     return install
+
+
+@pytest.fixture
+def serve_nse_file(monkeypatch):
+    """Return a function that makes ``nse_files.fetch`` answer with the given file content."""
+
+    def serve(content: str | bytes) -> None:
+        data = content.encode("utf-8") if isinstance(content, str) else content
+        monkeypatch.setattr("src.ingestion.nse_files.fetch", lambda url, **kwargs: data)
+
+    return serve

@@ -25,7 +25,6 @@ Key rules:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -34,19 +33,19 @@ from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import Security
 from src.db.upsert import upsert_rows
+from src.ingestion import nse_files
 from src.ingestion.corporate_actions import parse_listing_master
-from src.ingestion.nse_files import EQUITY_L_URL, fetch
+from src.ingestion.nse_files import EQUITY_L_URL
 
 logger = logging.getLogger(__name__)
 
 
-def listing_rows(raw: bytes | str) -> list[dict[str, Any]]:
+def listing_rows(content: bytes) -> list[dict[str, Any]]:
     """Turn EQUITY_L.csv into rows for the ``securities`` table.
 
     Reading the file is done by ``parse_listing_master`` (the one EQUITY_L parser: strict dates,
     a changed format stops the run). Here we only pick the table columns and skip blank symbols.
     """
-    content = raw.encode("utf-8") if isinstance(raw, str) else raw
     frame = parse_listing_master(content)
     rows: list[dict[str, Any]] = []
     for item in frame.itertuples(index=False):
@@ -66,36 +65,20 @@ def listing_rows(raw: bytes | str) -> list[dict[str, Any]]:
     return rows
 
 
-def import_equity_l(
-    session: Session | None = None,
-    fetch_fn: Callable[[str], bytes] | None = None,
-    csv_content: bytes | str | None = None,
-    url: str = EQUITY_L_URL,
-) -> int:
+def import_equity_l(session: Session | None = None) -> int:
     """Download and upsert EQUITY_L.csv into the securities table.
 
     Parameters
     ----------
     session : Session, optional
         Database session. If None, opens its own (committed on success).
-    fetch_fn : callable, optional
-        Custom fetch function (url -> bytes) for testing.
-    csv_content : bytes or str, optional
-        Pre-loaded CSV content, bypassing network download.
-    url : str, default EQUITY_L_URL
-        URL to fetch from.
 
     Returns
     -------
     int
         Number of security rows upserted.
     """
-    if csv_content is not None:
-        raw_data = csv_content
-    elif fetch_fn is not None:
-        raw_data = fetch_fn(url)
-    else:
-        raw_data = fetch(url)
+    raw_data = nse_files.fetch(EQUITY_L_URL)
 
     records = listing_rows(raw_data)
     if not records:

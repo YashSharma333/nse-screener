@@ -303,8 +303,8 @@ def run_daily_update(
             )
             pre_renames_count = s.scalar(select(func.count(SymbolChange.old_symbol))) or 0
 
-            eq_count = import_equity_l(session=s, fetch_fn=fetch_fn)
-            rn_count = load_renames(session=s, fetch_fn=fetch_fn)
+            eq_count = import_equity_l(session=s)
+            rn_count = load_renames(session=s)
 
             post_active = set(
                 s.scalars(select(Security.symbol).where(Security.status == "active")).all()

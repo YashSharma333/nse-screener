@@ -231,18 +231,19 @@ def test_prices_for_joins_old_and_new_rows_in_date_order_and_price_rows_never_mo
     assert after_rows[2].symbol == "TATACONSUM"
 
 
-def test_load_renames_idempotent(sqlite_session: Session) -> None:
+def test_load_renames_idempotent(sqlite_session: Session, serve_nse_file) -> None:
     """Running load_renames multiple times produces identical state without duplicates."""
     csv_data = (
         "NAME OF THE COMPANY,OLD SYMBOL,NEW SYMBOL,EFFECTIVE DATE\n"
         "Tata Global Beverages Limited,TATAGLOBAL,TATACONSUM,10-FEB-2020\n"
         "Cadila Healthcare Limited,CADILAHC,ZYDUSLIFE,07-MAR-2022\n"
     )
-    count1 = load_renames(session=sqlite_session, csv_content=csv_data)
+    serve_nse_file(csv_data)
+    count1 = load_renames(session=sqlite_session)
     assert count1 == 2
     assert len(sqlite_session.scalars(select(SymbolChange)).all()) == 2
 
     # Rerun
-    count2 = load_renames(session=sqlite_session, csv_content=csv_data)
+    count2 = load_renames(session=sqlite_session)
     assert count2 == 2
     assert len(sqlite_session.scalars(select(SymbolChange)).all()) == 2
