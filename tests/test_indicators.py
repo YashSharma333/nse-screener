@@ -1,28 +1,43 @@
 """
-Scenario-based unit tests for TechnicalCalculator.
+Unit tests for the plain indicator functions (CL-23).
 
-Each test constructs a minimal synthetic DataFrame with deterministic
-values so the expected output can be hand-verified.  Tests cover:
-  - 20-day Volume SMA accuracy
-  - 252-day shifted rolling high
-  - RSI mathematical correctness
-  - Percentage-change lookbacks (1M / 3M / 6M / 12M)
-  - Historical price shifts
-  - apply_all_indicators column completeness
-  - Edge cases (empty / single row)
+Each indicator is one function: ``sma(df, length=20, source="close")`` and so on. It takes the
+whole price table (many stocks at once), works inside each stock, and returns one Series aligned
+to the table. Tests use small hand-made tables so every expected number can be checked by hand.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.computation.indicators import TechnicalCalculator
+from src.computation.indicators.calculator import (
+    add_all_indicators,
+    atr,
+    bollinger_bands,
+    cross_sectional_rank,
+    crossed_above,
+    crossed_below,
+    ema,
+    macd,
+    occurred_within,
+    percent_change,
+    relative_strength,
+    rs_line,
+    rsi,
+    sma,
+    true_range,
+    volatility,
+    wma,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _flat_df(n: int, close: float = 100.0, volume: int = 300_000) -> pd.DataFrame:
-    """Return a DataFrame with *n* rows, constant OHLCV values."""
+def _flat_df(n: int, close: float = 100.0, volume: float = 300_000.0) -> pd.DataFrame:
+    """One stock (no symbol column), n rows, constant OHLCV."""
     dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
     return pd.DataFrame(
         {
@@ -36,222 +51,287 @@ def _flat_df(n: int, close: float = 100.0, volume: int = 300_000) -> pd.DataFram
     )
 
 
-def _make_calc() -> TechnicalCalculator:
-    return TechnicalCalculator()
-
-
-# ---------------------------------------------------------------------------
-# Scenario: Volume SMA-20 accuracy
-# ---------------------------------------------------------------------------
-class TestVolumeSMA20:
-    def test_constant_volume_sma_equals_volume(self):
-        """When volume is constant, SMA-20 == volume after 20 rows."""
-        calc = _make_calc()
-        df = _flat_df(30, volume=500_000)
-        result = calc.calculate_sma(df, window=20, column="volume")
-        # First 19 rows are NaN (need 20 to form a window)
-        assert pd.isna(result.iloc[18])
-        # 20th row onward: SMA == 500 000
-        assert not pd.isna(result.iloc[19])
-        assert abs(result.iloc[29] - 500_000) < 1e-6
-
-    def test_sma_of_increasing_volume(self):
-        """SMA-20 of [1, 2, …, 20] == 10.5 (mean of 1..20)."""
-        calc = _make_calc()
-        n = 25
-        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "open": 100.0,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.0,
-                "volume": [float(i + 1) for i in range(n)],
-            }
+def _two_stocks(n: int = 30) -> pd.DataFrame:
+    """Stock AAA rises 1..n, stock BBB rises 1000..1000+n-1; rows sorted by symbol, date."""
+    frames = []
+    for symbol, start in (("AAA", 1.0), ("BBB", 1000.0)):
+        closes = [start + i for i in range(n)]
+        frames.append(
+            pd.DataFrame(
+                {
+                    "symbol": symbol,
+                    "date": pd.date_range(end="2024-06-30", periods=n, freq="B"),
+                    "open": closes,
+                    "high": [c + 1 for c in closes],
+                    "low": [c - 1 for c in closes],
+                    "close": closes,
+                    "volume": [c * 10 for c in closes],
+                }
+            )
         )
-        result = calc.calculate_sma(df, window=20, column="volume")
-        # At index 19 the window covers values 1..20 → mean = 10.5
-        assert abs(result.iloc[19] - 10.5) < 1e-6
-        # At index 24 the window covers values 6..25 → mean = 15.5
-        assert abs(result.iloc[24] - 15.5) < 1e-6
+    return pd.concat(frames, ignore_index=True)
 
 
 # ---------------------------------------------------------------------------
-# Scenario: 252-day shifted rolling high
+# Moving averages: any length, any source column
 # ---------------------------------------------------------------------------
-class TestHigh252dPrev:
-    def test_flat_high_equals_value(self):
-        """Constant high+1 series → rolling max == high+1, shifted 1 day.
-
-        rolling(252).max() first produces a valid value at index 251 (0-based).
-        After .shift(1) that value moves to index 252, so:
-          - index 251 is NaN (shift consumed the first valid rolling value)
-          - index 252 onward is valid = 101.0
-        """
-        calc = _make_calc()
-        n = 300
-        df = _flat_df(n, close=100.0)
-        result = calc.calculate_shifted_rolling_high(df, window=252, shift_days=1)
-        # Index 251 is NaN: rolling needs 252 rows (0–251), shift moves it to 252.
-        assert pd.isna(result.iloc[251])
-        # Index 252 is the first valid value
-        assert not pd.isna(result.iloc[252])
-        # high column is close + 1 = 101
-        assert abs(result.iloc[260] - 101.0) < 1e-6
-
-    def test_high_tracks_maximum(self):
-        """Inject a spike at index 10; the shifted rolling high captures it
-        for all valid rows where the spike is still within the 252-day window.
-
-        The spike at index 10 enters the rolling window at row 10 and exits
-        when the window moves past it (after row 10 + 252 - 1 = 261 in the
-        un-shifted series, which maps to shifted index 262). We only assert
-        over rows where the spike is definitely in-window.
-        """
-        calc = _make_calc()
-        n = 270
-        df = _flat_df(n, close=100.0)
-        df.loc[10, "high"] = 999.0
-        result = calc.calculate_shifted_rolling_high(df, window=252, shift_days=1)
-        # First valid shifted value is at index 252 (rolling needs 252 rows then +1 shift)
-        # The spike at index 10 is within the window for shifted indices 252..262
-        in_window = result.iloc[252:263].dropna()
-        assert len(in_window) > 0
-        assert (in_window == 999.0).all(), f"Expected all 999.0, got: {in_window.tolist()}"
+def test_sma_default_length_is_20() -> None:
+    df = _flat_df(30)
+    pd.testing.assert_series_equal(sma(df), sma(df, length=20))
+    assert pd.isna(sma(df).iloc[18]) and not pd.isna(sma(df).iloc[19])
 
 
-# ---------------------------------------------------------------------------
-# Scenario: RSI mathematical correctness
-# ---------------------------------------------------------------------------
-class TestRSI:
-    def test_rsi_all_gains_returns_100(self):
-        """Strictly increasing prices → all gains, no losses → RSI ≈ 100."""
-        calc = _make_calc()
-        n = 50
-        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "open": [float(i + 100) for i in range(n)],
-                "high": [float(i + 101) for i in range(n)],
-                "low": [float(i + 99) for i in range(n)],
-                "close": [float(i + 100) for i in range(n)],
-                "volume": 100_000.0,
-            }
-        )
-        rsi = calc.calculate_rsi(df, periods=14)
-        # After the warm-up period, RSI should be very close to 100
-        valid = rsi.dropna()
-        assert (valid > 99.0).all(), f"Expected RSI ~100, got min={valid.min():.2f}"
+def test_sma_custom_length_is_the_hand_computed_mean() -> None:
+    df = _two_stocks(60)
+    result = sma(df, length=50)
+    stock = df[df["symbol"] == "AAA"]["close"].reset_index(drop=True)
+    assert result.iloc[49] == pytest.approx(stock.iloc[:50].mean())
+    assert result.iloc[59] == pytest.approx(stock.iloc[10:60].mean())
+    assert result.iloc[:49].isna().all()
 
-    def test_rsi_all_losses_returns_0(self):
-        """Strictly decreasing prices → all losses, no gains → RSI ≈ 0."""
-        calc = _make_calc()
-        n = 50
-        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "open": [float(100 - i) for i in range(n)],
-                "high": [float(101 - i) for i in range(n)],
-                "low": [float(99 - i) for i in range(n)],
-                "close": [float(100 - i) for i in range(n)],
-                "volume": 100_000.0,
-            }
-        )
-        rsi = calc.calculate_rsi(df, periods=14)
-        valid = rsi.dropna()
-        assert (valid < 1.0).all(), f"Expected RSI ~0, got max={valid.max():.2f}"
 
-    def test_rsi_nan_boundary(self):
-        """RSI requires 15 rows (1 diff + 14-period window) — check exact NaN boundary."""
-        calc = _make_calc()
-        df = _flat_df(20, close=100.0)
-        # Inject variation so we don't get a degenerate 0/0
-        df["close"] = [100.0 + (i % 3) for i in range(20)]
-        rsi = calc.calculate_rsi(df, periods=14)
-        # diff() makes index 0 NaN; rolling(14) needs 14 more → first valid at index 14
-        assert pd.isna(rsi.iloc[13])
-        assert not pd.isna(rsi.iloc[14])
+def test_sma_of_volume_uses_the_same_function() -> None:
+    df = _flat_df(25)
+    df["volume"] = [float(i + 1) for i in range(25)]
+    result = sma(df, length=20, source="volume")
+    assert result.iloc[19] == pytest.approx(10.5)  # mean of 1..20
+    assert result.iloc[24] == pytest.approx(15.5)  # mean of 6..25
+
+
+def test_sma_of_an_indicator_column_by_name() -> None:
+    """An indicator is passed in by column name: SMA of an EMA column."""
+    df = _flat_df(60)
+    df["ema_10"] = ema(df, length=10)
+    result = sma(df, length=5, source="ema_10")
+    assert result.iloc[13] == pytest.approx(df["ema_10"].iloc[9:14].mean())
+
+
+@pytest.mark.parametrize("function", [sma, ema, wma, rsi, volatility, percent_change])
+def test_stocks_never_leak_into_each_other(function) -> None:
+    """The second stock's first rows are NaN, not the first stock's last values."""
+    df = _two_stocks(30)
+    result = function(df, length=5)
+    second = result[df["symbol"] == "BBB"]
+    assert second.iloc[:4].isna().all()
+
+
+def test_percent_change_default_is_one_day_in_percent() -> None:
+    df = _two_stocks(5)
+    result = percent_change(df)
+    assert result.iloc[1] == pytest.approx((2.0 - 1.0) / 1.0 * 100.0)
+    assert pd.isna(result.iloc[5])  # first row of BBB
+
+
+def test_percent_change_21_days_on_a_ramp() -> None:
+    n = 50
+    closes = [100.0 * (1 + 0.005 * i) for i in range(n)]
+    df = _flat_df(n)
+    df["close"] = closes
+    result = percent_change(df, length=21)
+    assert pd.isna(result.iloc[20]) and not pd.isna(result.iloc[21])
+    assert result.iloc[21] == pytest.approx((closes[21] - closes[0]) / closes[0] * 100)
+
+
+def test_ema_wma_known_values() -> None:
+    df = _flat_df(10)
+    df["close"] = [float(i + 1) for i in range(10)]
+    assert pd.isna(ema(df, length=3).iloc[1])
+    assert wma(df, length=3).iloc[2] == pytest.approx((1 * 1 + 2 * 2 + 3 * 3) / 6)
+
+
+def test_bad_length_and_missing_column_are_clear_errors() -> None:
+    df = _flat_df(30)
+    with pytest.raises(ValueError, match="length"):
+        sma(df, length=0)
+    with pytest.raises(KeyError, match="nonexistent"):
+        sma(df, source="nonexistent")
+
+
+def test_length_longer_than_the_data_gives_nan_not_a_crash() -> None:
+    assert sma(_flat_df(10), length=50).isna().all()
 
 
 # ---------------------------------------------------------------------------
-# Scenario: Percentage-change lookbacks
+# Multi-output indicators: one Series each, chosen with output=
 # ---------------------------------------------------------------------------
-class TestPctChange:
-    def test_1m_pct_change_accuracy(self):
-        """21-period pct change on a +10% linear ramp: first valid = exactly 21-period return."""
-        calc = _make_calc()
-        n = 50
-        # close[i] = 100 * (1 + 0.005 * i)  → each row +0.5%
-        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
-        closes = [100.0 * (1 + 0.005 * i) for i in range(n)]
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "open": closes,
-                "high": [c + 1 for c in closes],
-                "low": [c - 1 for c in closes],
-                "close": closes,
-                "volume": 100_000.0,
-            }
-        )
-        result = calc.calculate_pct_change(df, periods=21)
-        # Index 20 is NaN (shift of 21 requires at least 22 rows, but pct_change
-        # on a shift-based approach: first non-NaN is at index 21)
-        assert pd.isna(result.iloc[20])
-        assert not pd.isna(result.iloc[21])
-        # Expected: (close[21] - close[0]) / close[0] * 100
-        expected = (closes[21] - closes[0]) / closes[0] * 100
-        assert abs(result.iloc[21] - expected) < 1e-6
+def test_bollinger_outputs() -> None:
+    df = _flat_df(30)
+    df["close"] = [100.0 + (i % 5) for i in range(30)]
+    middle = bollinger_bands(df, output="middle")
+    upper = bollinger_bands(df, output="upper")
+    lower = bollinger_bands(df, length=20, std=2.0, output="lower")
+    window = df["close"].iloc[:20]
+    assert middle.iloc[19] == pytest.approx(window.mean())
+    assert upper.iloc[19] == pytest.approx(window.mean() + 2 * window.std())
+    assert lower.iloc[19] == pytest.approx(window.mean() - 2 * window.std())
+    with pytest.raises(ValueError, match="output"):
+        bollinger_bands(df, output="side")
 
-    def test_lookback_shift_accuracy(self):
-        """Shifted price at index i should equal close[i - shift_days]."""
-        calc = _make_calc()
-        n = 80
-        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
-        closes = [float(i + 1) * 10 for i in range(n)]  # 10, 20, ..., 800
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "open": closes,
-                "high": [c + 1 for c in closes],
-                "low": [c - 1 for c in closes],
-                "close": closes,
-                "volume": 100_000.0,
-            }
-        )
-        shift_60 = calc.calculate_shifted_price(df, shift_days=60)
-        # close_60[60] == close[0] == 10
-        assert pd.isna(shift_60.iloc[59])
-        assert not pd.isna(shift_60.iloc[60])
-        assert abs(shift_60.iloc[60] - closes[0]) < 1e-6
-        assert abs(shift_60.iloc[61] - closes[1]) < 1e-6
+
+def test_macd_outputs_are_consistent() -> None:
+    df = _flat_df(80)
+    df["close"] = [100.0 + np.sin(i / 5.0) * 5 for i in range(80)]
+    line = macd(df, output="line")
+    signal = macd(df, output="signal")
+    hist = macd(df, output="histogram")
+    valid = hist.dropna().index
+    assert len(valid) > 0
+    pd.testing.assert_series_equal((line - signal).loc[valid], hist.loc[valid])
+    with pytest.raises(ValueError, match="output"):
+        macd(df, output="x")
+
+
+def test_true_range_and_atr() -> None:
+    df = _flat_df(30)
+    tr = true_range(df)
+    assert tr.iloc[1] == pytest.approx(2.0)  # high - low = 2, no gap
+    assert atr(df, length=14).iloc[13] == pytest.approx(2.0)
+    assert atr(df, output="percent").iloc[13] == pytest.approx(2.0)  # 2 / close 100 * 100
+    assert pd.isna(atr(df, length=14).iloc[12])
 
 
 # ---------------------------------------------------------------------------
-# Scenario: apply_all_indicators column completeness
+# RSI
+# ---------------------------------------------------------------------------
+def test_rsi_all_gains_is_100_and_all_losses_is_0() -> None:
+    up = _flat_df(50)
+    up["close"] = [float(100 + i) for i in range(50)]
+    down = _flat_df(50)
+    down["close"] = [float(100 - i) for i in range(50)]
+    assert (rsi(up, length=14).dropna() > 99.0).all()
+    assert (rsi(down, length=14).dropna() < 1.0).all()
+
+
+def test_rsi_nan_boundary() -> None:
+    """One diff plus a 14-row window: the first valid value is at index 14."""
+    df = _flat_df(20)
+    df["close"] = [100.0 + (i % 3) for i in range(20)]
+    result = rsi(df, length=14)
+    assert pd.isna(result.iloc[13]) and not pd.isna(result.iloc[14])
+
+
+# ---------------------------------------------------------------------------
+# Crossovers: one pair of functions for golden, death and MACD crosses
+# ---------------------------------------------------------------------------
+def test_crossed_above_and_below_fire_on_the_crossing_row_only() -> None:
+    df = pd.DataFrame(
+        {
+            "symbol": "AAA",
+            "fast": [1.0, 2.0, 4.0, 5.0, 3.0, 2.0],
+            "slow": [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+        }
+    )
+    assert list(crossed_above(df, "fast", "slow")) == [False, False, True, False, False, False]
+    assert list(crossed_below(df, "fast", "slow")) == [False, False, False, False, False, True]
+
+
+def test_crossover_does_not_use_the_previous_stock_row() -> None:
+    """Stock 2's first row must not be compared with stock 1's last row."""
+    df = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA", "BBB", "BBB"],
+            "fast": [1.0, 1.0, 5.0, 5.0],
+            "slow": [3.0, 3.0, 3.0, 3.0],
+        }
+    )
+    assert not crossed_above(df, "fast", "slow").iloc[2]
+
+
+def test_occurred_within_looks_back_inside_each_stock() -> None:
+    df = pd.DataFrame(
+        {
+            "symbol": ["AAA"] * 5 + ["BBB"] * 3,
+            "flag": [False, True, False, False, False, False, False, False],
+        }
+    )
+    result = occurred_within(df, "flag", length=3)
+    assert list(result[:5]) == [False, True, True, True, False]
+    assert not result[5:].any()  # the cross in AAA is not seen by BBB
+
+
+# ---------------------------------------------------------------------------
+# Benchmark based: relative strength, RS line, cross-sectional rank
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("as_date", [True, False])
+def test_relative_strength_flat_and_falling_benchmark(as_date: bool) -> None:
+    """(stock ratio) / (benchmark ratio) - 1, with python-date or datetime benchmark dates."""
+    n = 70
+    dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
+    bench_dates = dates.date if as_date else dates
+    stock = _flat_df(n)
+    stock["date"] = dates.date
+    stock["close"] = [100.0 if i < 63 else 110.0 for i in range(n)]
+
+    flat = pd.DataFrame({"date": bench_dates, "close": 20000.0})
+    assert relative_strength(stock, flat, length=63).iloc[-1] == pytest.approx(0.10, abs=1e-4)
+
+    falling = pd.DataFrame({"date": bench_dates, "close": [20000.0] * 63 + [19000.0] * 7})
+    flat_stock = _flat_df(n)
+    flat_stock["date"] = dates.date
+    rs_value = relative_strength(flat_stock, falling, length=63).iloc[63]
+    assert rs_value == pytest.approx(1.0 / 0.95 - 1.0, abs=1e-4)
+
+
+def test_relative_strength_without_a_benchmark_is_nan() -> None:
+    assert relative_strength(_flat_df(30), None).isna().all()
+    assert rs_line(_flat_df(30), pd.DataFrame(columns=["date", "close"])).isna().all()
+
+
+def test_rs_line_is_stock_close_over_benchmark_close() -> None:
+    df = _two_stocks(5)
+    df["date"] = df["date"].dt.date
+    bench = pd.DataFrame({"date": df["date"].unique(), "close": [10.0, 20.0, 40.0, 80.0, 160.0]})
+    result = rs_line(df, bench)
+    assert result.iloc[2] == pytest.approx(3.0 / 40.0)
+    assert result.iloc[7] == pytest.approx(1002.0 / 40.0)
+
+
+def test_cross_sectional_rank_is_per_date_percentile() -> None:
+    df = pd.DataFrame(
+        {
+            "symbol": ["A", "B", "C", "A", "B", "C"],
+            "date": ["d1"] * 3 + ["d2"] * 3,
+            "ret": [1.0, 2.0, 3.0, 3.0, 2.0, 1.0],
+        }
+    )
+    result = cross_sectional_rank(df, "ret")
+    assert result.iloc[2] == pytest.approx(100.0)
+    assert result.iloc[0] == pytest.approx(100.0 / 3)
+    assert result.iloc[3] == pytest.approx(100.0)  # A is top on d2
+
+
+# ---------------------------------------------------------------------------
+# The temporary add_all_indicators (same columns as before; deleted in CL-25)
 # ---------------------------------------------------------------------------
 EXPECTED_COLUMNS = [
+    "sma_20",
     "sma_50",
+    "sma_150",
     "sma_200",
+    "sma_200_slope_21d",
     "ema_12",
     "ema_20",
     "ema_26",
+    "rsi_9",
     "rsi_14",
+    "rsi_9_wma_21",
     "high_52w",
     "low_52w",
+    "high_252d_prev",
     "bb_upper",
     "bb_middle",
     "bb_lower",
+    "bb_width",
     "macd_line",
     "macd_signal",
     "macd_histogram",
     "daily_returns",
     "volatility_20",
     "volume_sma_20",
-    "high_252d_prev",
+    "volume_ratio",
+    "vol_dryup",
+    "vol_multiple",
+    "pct_from_52w_high",
     "pct_change_daily",
     "pct_change_1m",
     "pct_change_3m",
@@ -265,124 +345,71 @@ EXPECTED_COLUMNS = [
     "return_120d",
     "atr_14",
     "atr_pct",
-    "donchian_high_20",
-    "donchian_low_20",
-    "donchian_high_55",
-    "donchian_low_55",
-    "volume_ratio",
+    "atr_pct_max_60d",
     "golden_cross",
+    "golden_cross_10d",
     "death_cross",
     "macd_cross_up",
     "macd_cross_down",
     "rs_63d",
     "rs_126d",
     "rs_252d",
-    "rsi_9_wma_21",
     "rsi_momentum",
+    "ret_rank_126d",
+    "ret_rank_252d",
 ]
 
 
-class TestApplyAllIndicators:
-    def test_all_expected_columns_present(self):
-        """apply_all_indicators must add every expected column to the output."""
-        calc = _make_calc()
-        df = _flat_df(300)
-        result = calc.apply_all_indicators(df.copy())
-        missing = [c for c in EXPECTED_COLUMNS if c not in result.columns]
-        assert not missing, f"Missing columns: {missing}"
-
-    def test_no_crash_on_empty_df(self):
-        """Empty input must return empty output without raising."""
-        calc = _make_calc()
-        empty = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-        result = calc.apply_all_indicators(empty)
-        assert len(result) == 0
-
-    def test_no_crash_on_single_row(self):
-        """Single-row input must return single-row output (all indicators NaN is OK)."""
-        calc = _make_calc()
-        df = _flat_df(1)
-        result = calc.apply_all_indicators(df.copy())
-        assert len(result) == 1
-
-    def test_multi_stock_dispatch(self):
-        """apply_all_indicators must handle a multi-symbol DataFrame correctly."""
-        calc = _make_calc()
-        df_a = _flat_df(300, close=100.0)
-        df_a["symbol"] = "AAA"
-        df_b = _flat_df(300, close=200.0)
-        df_b["symbol"] = "BBB"
-        combined = pd.concat([df_a, df_b], ignore_index=True)
-        result = calc.apply_all_indicators(combined)
-        assert set(result["symbol"].unique()) == {"AAA", "BBB"}
-        missing = [c for c in EXPECTED_COLUMNS if c not in result.columns]
-        assert not missing, f"Missing columns in multi-stock mode: {missing}"
-
-    def test_new_indicators_and_crossover_accuracy(self):
-        """Test ATR, Donchian channels, volume ratio, crossovers, and RSI Momentum."""
-        calc = _make_calc()
-        n = 60
-        dates = pd.date_range(end="2024-06-30", periods=n, freq="B")
-        # Build synthetic price series with known crossover
-        df = pd.DataFrame(
-            {
-                "date": dates,
-                "open": 100.0,
-                "high": 105.0,
-                "low": 95.0,
-                "close": [90.0 + i * 2.0 for i in range(n)],
-                "volume": [300_000.0 if i == n - 1 else 100_000.0 for i in range(n)],
-                "symbol": "TEST",
-            }
-        )
-        res = calc.apply_all_indicators(df)
-        assert "atr_14" in res.columns
-        assert not res["atr_14"].dropna().empty
-        assert "donchian_high_20" in res.columns
-        assert "volume_ratio" in res.columns
-        assert "golden_cross" in res.columns
-        assert "rsi_9_wma_21" in res.columns
-        assert "rsi_momentum" in res.columns
-        assert isinstance(res["rsi_momentum"].iloc[-1], (bool, np.bool_))
-
-    def test_crossover_cross_stock_isolation(self):
-        """Two different symbols in a snapshot must not cross-pollinate shift(1)."""
-        # Stock 1 has SMA 50=100, 200=90. Stock 2 has SMA 50=90, 200=100.
-        # Computing golden_cross per symbol in time-series avoids snapshot cross-stock shift bugs.
-        calc = _make_calc()
-        df1 = _flat_df(60, close=100.0)
-        df1["symbol"] = "SYM1"
-        df2 = _flat_df(60, close=50.0)
-        df2["symbol"] = "SYM2"
-        combined = pd.concat([df1, df2], ignore_index=True)
-        res = calc.apply_all_indicators(combined)
-        # Check that SYM2's first row doesn't evaluate crossovers using SYM1's last row
-        sym2_first_idx = res[res["symbol"] == "SYM2"].index[0]
-        assert not res.loc[sym2_first_idx, "golden_cross"]
+def test_add_all_indicators_has_every_expected_column() -> None:
+    result = add_all_indicators(_flat_df(300))
+    assert [c for c in EXPECTED_COLUMNS if c not in result.columns] == []
 
 
-def test_seed_c_relative_strength_misaligned():
-    """Seed C: Three symbols concatenated with default RangeIndex plus a benchmark frame.
+def test_add_all_indicators_handles_empty_and_single_row() -> None:
+    empty = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+    assert len(add_all_indicators(empty)) == 0
+    assert len(add_all_indicators(_flat_df(1))) == 1
 
-    apply_all_indicators(df, benchmark_df=b) gives non-null rs_63d only for the first
-    symbol; the others are all NaN due to index misalignment when merging.
-    Expected: every symbol has non-null rs_63d values after the 63-day lookback.
-    """
+
+def test_add_all_indicators_multi_stock_columns_and_isolation() -> None:
+    a = _flat_df(60, close=100.0)
+    a["symbol"] = "SYM1"
+    b = _flat_df(60, close=50.0)
+    b["symbol"] = "SYM2"
+    result = add_all_indicators(pd.concat([a, b], ignore_index=True))
+    assert [c for c in EXPECTED_COLUMNS if c not in result.columns] == []
+    first_b = result[result["symbol"] == "SYM2"].index[0]
+    assert not result.loc[first_b, "golden_cross"]  # not compared with SYM1's last row
+
+
+def test_shifted_closes_come_from_the_same_stock() -> None:
+    df = _two_stocks(80)
+    result = add_all_indicators(df)
+    second = result[result["symbol"] == "BBB"].reset_index(drop=True)
+    assert second["close_60d"].iloc[:60].isna().all()
+    assert second["close_60d"].iloc[60] == pytest.approx(1000.0)  # BBB's own first close
+
+
+def test_rsi_momentum_is_a_plain_bool_on_a_trending_table() -> None:
+    n = 60
+    df = _flat_df(n)
+    df["close"] = [90.0 + i * 2.0 for i in range(n)]
+    df["volume"] = [300_000.0 if i == n - 1 else 100_000.0 for i in range(n)]
+    result = add_all_indicators(df)
+    assert not result["atr_14"].dropna().empty
+    assert isinstance(result["rsi_momentum"].iloc[-1], (bool, np.bool_))
+
+
+def test_relative_strength_columns_for_every_stock_after_misaligned_concat() -> None:
+    """Three stocks concatenated with a fresh index all get rs_63d after the lookback."""
     n = 100
     dates = pd.date_range(end="2024-06-30", periods=n, freq="B").date
-    bench_df = pd.DataFrame(
-        {
-            "date": dates,
-            "close": [20000.0 + i * 10.0 for i in range(n)],
-        }
-    )
-
-    frames = []
-    for sym in ["SYM1", "SYM2", "SYM3"]:
-        sub = pd.DataFrame(
+    bench = pd.DataFrame({"date": dates, "close": [20000.0 + i * 10.0 for i in range(n)]})
+    frames = [
+        pd.DataFrame(
             {
                 "date": dates,
-                "symbol": sym,
+                "symbol": symbol,
                 "open": 100.0,
                 "high": 105.0,
                 "low": 95.0,
@@ -390,69 +417,8 @@ def test_seed_c_relative_strength_misaligned():
                 "volume": 300_000.0,
             }
         )
-        frames.append(sub)
-
-    combined = pd.concat(frames, ignore_index=True)
-    res = TechnicalCalculator.apply_all_indicators(combined, benchmark_df=bench_df)
-
-    for sym in ["SYM1", "SYM2", "SYM3"]:
-        sym_res = res[res["symbol"] == sym]
-        valid_rs = sym_res["rs_63d"].dropna()
-        assert not valid_rs.empty, f"Symbol {sym} has all NaN rs_63d!"
-        assert len(valid_rs) == n - 63, (
-            f"Symbol {sym} expected {n - 63} non-null rs_63d, got {len(valid_rs)}"
-        )
-
-
-def test_relative_strength_flat_and_falling_benchmark():
-    """F4: Verify relative performance formula behaves properly when benchmark is flat or falling.
-
-    Formula: (close / close.shift(N)) / (bench / bench.shift(N)) - 1
-    0.10 means 10% outperformance.
-    """
-    n = 70
-    dates = pd.date_range(end="2024-06-30", periods=n, freq="B").date
-
-    # Case 1: Benchmark is flat (20000 -> 20000, ratio=1.0)
-    flat_bench = pd.DataFrame({"date": dates, "close": 20000.0})
-    # Stock gained 10% (100 -> 110)
-    stock_df = pd.DataFrame(
-        {
-            "date": dates,
-            "open": 100.0,
-            "high": 110.0,
-            "low": 95.0,
-            "close": [100.0 if i < 63 else 110.0 for i in range(n)],
-            "volume": 300_000.0,
-        }
-    )
-    res_flat = TechnicalCalculator.apply_all_indicators(stock_df, benchmark_df=flat_bench)
-    # stock ratio = 110 / 100 = 1.10. Bench ratio = 1.0. RS = 1.10 / 1.0 - 1 = 0.10
-    rs_val = res_flat["rs_63d"].iloc[-1]
-    assert abs(rs_val - 0.10) < 1e-4
-
-    # Case 2: Benchmark fell 5% (ratio = 0.95), stock remained flat at 100.0 (ratio = 1.0)
-    falling_bench = pd.DataFrame(
-        {
-            "date": dates,
-            "close": [20000.0 if i < 63 else 19000.0 for i in range(n)],
-        }
-    )
-    flat_stock_df = pd.DataFrame(
-        {
-            "date": dates,
-            "open": 100.0,
-            "high": 105.0,
-            "low": 95.0,
-            "close": 100.0,
-            "volume": 300_000.0,
-        }
-    )
-    res_falling = TechnicalCalculator.apply_all_indicators(
-        flat_stock_df, benchmark_df=falling_bench
-    )
-    # Stock ratio on day 63 was 1.0 (flat). Bench ratio = 0.95. RS = 1.0 / 0.95 - 1 = +0.05263
-    # Stock outperformed falling benchmark -> positive RS!
-    rs_falling_val = res_falling["rs_63d"].iloc[63]
-    assert rs_falling_val > 0
-    assert abs(rs_falling_val - (1.0 / 0.95 - 1.0)) < 1e-4
+        for symbol in ("SYM1", "SYM2", "SYM3")
+    ]
+    result = add_all_indicators(pd.concat(frames, ignore_index=True), benchmark_df=bench)
+    for symbol in ("SYM1", "SYM2", "SYM3"):
+        assert result[result["symbol"] == symbol]["rs_63d"].notna().sum() == n - 63

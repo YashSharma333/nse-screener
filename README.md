@@ -9,7 +9,7 @@
 
 A clean, fast, and automated stock screener and market terminal for stocks on the **National Stock Exchange of India (NSE)**.
 
-The system automatically downloads official daily NSE Bhavcopy market reports, saves clean price history into a MySQL database with corporate action adjustments (splits/bonuses), calculates modular technical indicators (grouped by price, volume, crossovers, and momentum), and displays filtered stock setups on a modern, dark-themed **Streamlit** web terminal.
+The system automatically downloads official daily NSE Bhavcopy market reports, saves clean price history into a MySQL database with corporate action adjustments (splits/bonuses), calculates technical indicators (one plain function per indicator, any length, any column), and displays filtered stock setups on a modern, dark-themed **Streamlit** web terminal.
 
 ---
 
@@ -598,11 +598,8 @@ nse-screener/
 │   ├── computation/
 │   │   ├── cache_reader.py       # Read-only access to the indicator cache (used by the UI)
 │   │   └── indicators/           # Technical indicators grouped by nature:
-│   │       ├── price.py          # Price indicators (MAs, BB, ATR, 52W High/Low)
-│   │       ├── volume.py         # Volume indicators (Volume SMA, Volume ratio)
-│   │       ├── crossovers.py     # Crossover indicators (Golden/Death cross, MACD)
-│   │       ├── momentum.py       # Momentum indicators (RSI, RS vs benchmark)
-│   │       └── calculator.py     # TechnicalCalculator orchestrator facade
+│   │       └── calculator.py     # One plain function per indicator (sma, ema, rsi, macd, ...);
+│   │                             # add_all_indicators builds the cache columns (temporary)
 │   ├── db/
 │   │   ├── data_service.py       # Indicator cache loader, sidecar validation & benchmark returns
 │   │   ├── models.py             # SQLAlchemy models (DailyPrice, Security, AdjFactor, etc.)

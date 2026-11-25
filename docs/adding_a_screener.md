@@ -73,7 +73,7 @@ class MyBreakoutScreener(Screener):
 ```
 
 > [!IMPORTANT]
-> **No Look-Ahead or Runtime Shifts:** All technical indicators must be precomputed by `TechnicalCalculator`. Never call `.shift()`, `.rolling()`, or `.pct_change()` inside screener condition helpers. Missing columns must raise `MissingIndicatorError`.
+> **No Look-Ahead or Runtime Shifts:** All technical indicators must be precomputed by the indicator functions (`add_all_indicators` in `src/computation/indicators/calculator.py`). Never call `.shift()`, `.rolling()`, or `.pct_change()` inside screener condition helpers. Missing columns must raise `MissingIndicatorError`.
 
 ### 3. Register in `src/screeners/__init__.py`
 

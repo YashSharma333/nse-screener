@@ -11,7 +11,7 @@ The system decouples **Screeners** (stock selection) from **Strategies** (trade 
 ```
 +----------------------------------------------------------------+
 |                     1. Market Data Panel                       |
-|   MySQL daily_prices -> Adjusted Prices -> TechnicalCalculator |
+|   MySQL daily_prices -> Adjusted Prices -> add_all_indicators  |
 +-------------------------------+--------------------------------+
                                 |
                                 v

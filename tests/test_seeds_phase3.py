@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from src.computation.indicators.calculator import TechnicalCalculator
+from src.computation.indicators.calculator import add_all_indicators
 from src.db.models import Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
 from src.screeners.base import MissingIndicatorError
@@ -236,7 +236,7 @@ def _generate_synthetic_400d_dataset() -> pd.DataFrame:
 def test_seed_g_rename_equivalence_hmm_vs_rsi_momentum():
     """Seed G: New rsi_momentum column and screener produce identical results to old HMM."""
     df = _generate_synthetic_400d_dataset()
-    res = TechnicalCalculator.apply_all_indicators(df)
+    res = add_all_indicators(df)
 
     # After rename G1:
     assert "rsi_momentum" in res.columns, "rsi_momentum must be present in calculated indicators"

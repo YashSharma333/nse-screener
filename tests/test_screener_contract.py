@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.computation.indicators.calculator import TechnicalCalculator
+from src.computation.indicators.calculator import add_all_indicators
 from src.screeners.base import Screener
 from src.screeners.registry import list_screeners
 
@@ -60,13 +60,12 @@ def synthetic_full_and_truncated_data():
         benchmark_records.append({"date": d, "close": b_price})
     bench_df = pd.DataFrame(benchmark_records)
 
-    calc = TechnicalCalculator()
-    full_indicators = calc.apply_all_indicators(raw_df, benchmark_df=bench_df)
+    full_indicators = add_all_indicators(raw_df, benchmark_df=bench_df)
 
     t_mid = dates[220]
     raw_truncated = raw_df[raw_df["date"] <= t_mid].copy()
     bench_truncated = bench_df[bench_df["date"] <= t_mid].copy()
-    trunc_indicators = calc.apply_all_indicators(raw_truncated, benchmark_df=bench_truncated)
+    trunc_indicators = add_all_indicators(raw_truncated, benchmark_df=bench_truncated)
 
     return {
         "dates": dates,

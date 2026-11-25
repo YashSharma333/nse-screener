@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.computation.indicators.calculator import TechnicalCalculator
+from src.computation.indicators.calculator import add_all_indicators
 from src.screeners.base import MissingIndicatorError
 from src.screeners.registry import get_screener
 from src.screeners.rules import evaluate_rule, validate_rule
@@ -120,8 +120,7 @@ def test_evaluate_screener_history_and_to_sparse():
             )
     raw_df = pd.DataFrame(records)
 
-    calc = TechnicalCalculator()
-    indicators_df = calc.apply_all_indicators(raw_df)
+    indicators_df = add_all_indicators(raw_df)
 
     screener = get_screener("above_50_sma")
     signals_df = evaluate_screener_history(screener, indicators_df)
@@ -164,12 +163,11 @@ def test_signals_point_in_time_truncation():
             )
     raw_df = pd.DataFrame(records)
 
-    calc = TechnicalCalculator()
-    full_df = calc.apply_all_indicators(raw_df)
+    full_df = add_all_indicators(raw_df)
 
     t_eval = dates[100]
     raw_trunc = raw_df[raw_df["date"] <= t_eval].copy()
-    trunc_df = calc.apply_all_indicators(raw_trunc)
+    trunc_df = add_all_indicators(raw_trunc)
 
     screener = get_screener("breakout_52w_volume")
     full_signals = evaluate_screener_history(screener, full_df)
