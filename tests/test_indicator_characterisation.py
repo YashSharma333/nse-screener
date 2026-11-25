@@ -27,6 +27,26 @@ FIXTURES = Path(__file__).parent / "fixtures"
 DELETED_COLUMNS = ["donchian_high_20", "donchian_low_20", "donchian_high_55", "donchian_low_55"]
 
 
+# The fixture was made on a Mac; Linux rounds the last digit of some ewm values differently
+# (1e-16 relative). That is platform noise, not a logic change (golden proved bit-exact equality
+# on one machine), so floats are compared to 10 significant digits; booleans and NaN positions
+# stay exact.
+FLOAT_TOLERANCE = {"check_exact": False, "rtol": 1e-10, "atol": 1e-12}
+
+
+def _assert_same(result: pd.DataFrame, frozen: pd.DataFrame) -> None:
+    """Float columns to 10 digits, every other column (bool, text, dates) exactly."""
+    floats = [c for c in frozen.columns if pd.api.types.is_float_dtype(frozen[c])]
+    others = [c for c in frozen.columns if c not in floats]
+    pd.testing.assert_frame_equal(
+        result[floats], frozen[floats], check_like=True, **FLOAT_TOLERANCE
+    )
+    if others:
+        pd.testing.assert_frame_equal(
+            result[others], frozen[others], check_like=True, check_exact=True
+        )
+
+
 def _load() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     table = pd.read_parquet(FIXTURES / "indicators_before_input.parquet")
     bench = pd.read_parquet(FIXTURES / "indicators_before_benchmark.parquet")
@@ -52,21 +72,17 @@ def _rows_of_history(table: pd.DataFrame) -> pd.Series:
 
 
 def test_add_all_indicators_matches_frozen_output_except_the_strict_52_week_window() -> None:
-    """Every other column exactly equal; the 52-week columns equal once there is full history."""
+    """Other columns equal (floats to 10 digits); the 52-week ones once there is full history."""
     table, bench, frozen = _load()
     result = add_all_indicators(table, benchmark_df=bench)
 
     unchanged = [name for name in frozen.columns if name not in STRICT_52_WEEK_COLUMNS]
-    pd.testing.assert_frame_equal(
-        result[unchanged], frozen[unchanged], check_exact=True, check_like=True
-    )
+    _assert_same(result[unchanged], frozen[unchanged])
 
     history = _rows_of_history(table)
     for name, needed in STRICT_52_WEEK_COLUMNS.items():
         enough = history >= needed
-        pd.testing.assert_series_equal(
-            result.loc[enough, name], frozen.loc[enough, name], check_exact=True
-        )
+        _assert_same(result.loc[enough, [name]], frozen.loc[enough, [name]])
         too_short = result.loc[~enough, name]
         if name == "rsi_momentum":  # a boolean rule: False (or empty for a 1-row stock)
             assert too_short.fillna(False).eq(False).all()
