@@ -25,7 +25,13 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.computation.indicators.grouped import check_length, require, roll, shift
+from src.computation.indicators.grouped import (
+    check_days_ago,
+    check_length,
+    require,
+    roll,
+    shift,
+)
 
 STATS = ("max", "min", "mean", "sum", "count")
 
@@ -43,8 +49,7 @@ def window_stat(
     returns how many of the rows were true). The window ends ``days_ago`` rows ago (0 = today).
     """
     check_length(length)
-    if isinstance(days_ago, bool) or not isinstance(days_ago, (int, np.integer)) or days_ago < 0:
-        raise ValueError(f"days_ago must be a whole number of 0 or more, got {days_ago!r}")
+    check_days_ago(days_ago)
     if stat not in STATS:
         raise ValueError(f"stat must be one of {list(STATS)}, got {stat!r}")
     require(df, source)

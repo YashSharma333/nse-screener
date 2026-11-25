@@ -25,6 +25,12 @@ def require(df: pd.DataFrame, *columns: str) -> None:
         raise KeyError(f"Missing column(s) {missing}; the table has {list(df.columns)}")
 
 
+def check_days_ago(days_ago: int) -> None:
+    """Reject a look-back that is not a whole number of 0 or more (0 means today)."""
+    if isinstance(days_ago, bool) or not isinstance(days_ago, (int, np.integer)) or days_ago < 0:
+        raise ValueError(f"days_ago must be a whole number of 0 or more, got {days_ago!r}")
+
+
 def check_output(output: str, allowed: tuple[str, ...]) -> None:
     if output not in allowed:
         raise ValueError(f"output must be one of {list(allowed)}, got {output!r}")
