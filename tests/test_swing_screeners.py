@@ -21,6 +21,7 @@ def test_swing_screeners_return_symbol_that_passes_every_rule() -> None:
         "high_252d_prev": 220.0,  # within 15% of 52W high (0.85 * 220 = 187 <= 200)
         "volume": 500_000,  # volume > 1.5 * volume_sma_20
         "volume_sma_20": 300_000,  # volume_sma_20 > 250k
+        "sma_volume_20_ago1": 300_000,
         "close_60d": 200.0 / 1.20,  # return over 60 days = 20% (<= 40)
         "close_120d": 200.0 / 1.35,  # return over 120 days = 35% (>= 30)
         "close_180d": 120.0,

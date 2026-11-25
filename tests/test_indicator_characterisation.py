@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.computation.indicators.calculator import add_all_indicators
@@ -61,8 +62,11 @@ STRICT_52_WEEK_COLUMNS = {
     "low_52w": 252,
     "high_252d_prev": 253,
     "pct_from_52w_high": 253,
-    "rsi_momentum": 253,
 }
+
+# CL-24 (LOG-025): the volume multiple compares today's volume with the 20-day average as of
+# yesterday. These columns changed on purpose; the test below checks them against the rule.
+VOLUME_RULE_COLUMNS = {"volume_ratio", "vol_multiple", "rsi_momentum"}
 
 
 def _rows_of_history(table: pd.DataFrame) -> pd.Series:
@@ -76,18 +80,44 @@ def test_add_all_indicators_matches_frozen_output_except_the_strict_52_week_wind
     table, bench, frozen = _load()
     result = add_all_indicators(table, benchmark_df=bench)
 
-    unchanged = [name for name in frozen.columns if name not in STRICT_52_WEEK_COLUMNS]
+    changed_on_purpose = STRICT_52_WEEK_COLUMNS.keys() | VOLUME_RULE_COLUMNS
+    unchanged = [name for name in frozen.columns if name not in changed_on_purpose]
     _assert_same(result[unchanged], frozen[unchanged])
 
     history = _rows_of_history(table)
     for name, needed in STRICT_52_WEEK_COLUMNS.items():
         enough = history >= needed
         _assert_same(result.loc[enough, [name]], frozen.loc[enough, [name]])
-        too_short = result.loc[~enough, name]
-        if name == "rsi_momentum":  # a boolean rule: False (or empty for a 1-row stock)
-            assert too_short.fillna(False).eq(False).all()
-        else:
-            assert too_short.isna().all()
+        assert result.loc[~enough, name].isna().all()
+
+
+def test_volume_multiple_and_rsi_momentum_use_yesterdays_20_day_average() -> None:
+    """The volume rule of LOG-025, written out from the frozen columns."""
+    table, bench, frozen = _load()
+    result = add_all_indicators(table, benchmark_df=bench)
+
+    average = frozen["volume_sma_20"]  # unchanged column: today's 20-day average
+    ordered = table.sort_values(["symbol", "date"], kind="stable")  # the input is unsorted
+    yesterday = average.loc[ordered.index].groupby(ordered["symbol"]).shift(1).reindex(table.index)
+    expected_multiple = table["volume"] / yesterday.replace(0, np.nan)
+    _assert_same(result[["vol_multiple"]], expected_multiple.to_frame("vol_multiple"))
+    _assert_same(result[["volume_ratio"]], expected_multiple.to_frame("volume_ratio"))
+
+    close = table["close"]
+    rsi_9 = frozen["rsi_9"]
+    expected_momentum = (
+        (rsi_9 >= frozen["rsi_9_wma_21"] + 1.1)
+        & (rsi_9 >= 45.0)
+        & (rsi_9 <= 65.0)
+        & (frozen["ema_20"] > frozen["sma_50"])
+        & (frozen["sma_50"] > frozen["sma_200"])
+        & (close > frozen["sma_50"])
+        & (close > frozen["sma_200"])
+        & (close >= 0.85 * result["high_252d_prev"])
+        & (table["volume"] > 1.5 * yesterday)
+        & (average > 250_000)
+    ).fillna(False)
+    assert result["rsi_momentum"].fillna(False).astype(bool).equals(expected_momentum)
 
 
 def test_stocks_with_under_252_rows_lose_their_52_week_values() -> None:

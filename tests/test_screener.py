@@ -40,6 +40,7 @@ def _base_s1_row(**overrides) -> dict:
         "high_252d_prev": 120.0,  # 0.85 * 120 = 102 <= 110
         "volume": 400_000,  # > 1.5 * 260_000 = 390_000
         "volume_sma_20": 260_000,  # > 250_000
+        "sma_volume_20_ago1": 260_000,  # yesterday's average
     }
     row.update(overrides)
     return row
@@ -57,6 +58,7 @@ def _base_s2_row(**overrides) -> dict:
             "high_252d_prev": 220.0,  # 0.85 * 220 = 187 <= 200
             "volume": 500_000,
             "volume_sma_20": 300_000,
+            "sma_volume_20_ago1": 300_000,
             "close_60d": 200.0 / 1.20,  # return over 60 days = 20% (<= 40%)
             "close_120d": 200.0 / 1.35,  # return over 120 days = 35% (>= 30%)
             "close_180d": 120.0,

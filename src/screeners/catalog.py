@@ -267,7 +267,10 @@ def _trend_specs(p: dict[str, Any]) -> dict[str, IndicatorSpec]:
         "sma_long": ind("sma", length=p["sma_long_length"]),
         # the high of the window ending yesterday: today's close may break it
         "high_52w": ind("window", source="high", length=p["high_window"], stat="max", days_ago=1),
+        # the liquidity rule uses this latest average (it includes today)
         "volume_avg": ind("sma", source="volume", length=p["volume_avg_length"]),
+        # the surge rule compares today's volume with the average as of yesterday (Chartink style)
+        "volume_avg_prev": ind("sma", source="volume", length=p["volume_avg_length"], days_ago=1),
     }
 
 
@@ -284,7 +287,9 @@ def _swing_conditions(
         "within_pct_of_52w_high": _cond_within_pct_of_52w_high(
             df, max_pct_below=p["max_pct_from_high"], high_col=col["high_52w"]
         ),
-        "volume_surge": (df["volume"] > p["vol_multiplier"] * volume_avg).fillna(False),
+        "volume_surge": (df["volume"] > p["vol_multiplier"] * df[col["volume_avg_prev"]]).fillna(
+            False
+        ),
         "min_liquidity": (volume_avg > p["min_volume"]).fillna(False),
     }
 
@@ -670,7 +675,9 @@ class RsiMomentumScreener(Screener):
                 df, max_pct_below=max_pct_below, high_col=col["high_52w"]
             ),
             # Volume
-            "volume_surge": (df["volume"] > p["volume_mult"] * volume_avg).fillna(False),
+            "volume_surge": (df["volume"] > p["volume_mult"] * df[col["volume_avg_prev"]]).fillna(
+                False
+            ),
             "min_liquidity": (volume_avg > p["volume_avg_min"]).fillna(False),
             # RSI momentum
             "rsi_above_wma_plus_offset": (rsi >= rsi_wma + p["wma_offset"]).fillna(False),

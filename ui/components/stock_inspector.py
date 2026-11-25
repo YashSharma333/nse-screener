@@ -104,7 +104,11 @@ def render_stock_inspector(
             delta=f"{daily_change:+.2f}%",
         )
     with m2:
-        vol_multiple = latest["volume"] / latest["volume_sma_20"]
+        # today's volume against the 20-day average as of yesterday (the screeners' definition)
+        yesterday_average = (
+            stock_df.iloc[-2]["volume_sma_20"] if len(stock_df) > 1 else latest["volume_sma_20"]
+        )
+        vol_multiple = latest["volume"] / yesterday_average
         st.metric(
             label="Volume Multiple",
             value=f"{vol_multiple:.2f}x",
