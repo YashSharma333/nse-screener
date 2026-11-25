@@ -54,6 +54,7 @@ from src.ingestion.nse_files import (
     BadFile,
     FetchFailed,
     NoFile,
+    check_not_html,
     decode_csv_bytes,
 )
 
@@ -259,6 +260,7 @@ def build_action_rows(
 
 def _read_report_csv(content: bytes, required: tuple[str, ...], name: str) -> pd.DataFrame:
     """Read a CSV report as text, normalise header names and check the needed columns exist."""
+    check_not_html(content)
     frame = pd.read_csv(io.StringIO(decode_csv_bytes(content)), dtype=str, keep_default_na=False)
     frame.columns = [str(col).strip().upper() for col in frame.columns]
     missing = [col for col in required if col not in frame.columns]
@@ -279,7 +281,11 @@ def _date_column(frame: pd.DataFrame, column: str, name: str) -> list[date | Non
 
 
 def parse_symbol_changes(content: bytes) -> pd.DataFrame:
-    """Parse ``symbolchange.csv`` into ``company, old_symbol, new_symbol, effective_date``."""
+    """Parse ``symbolchange.csv`` into ``company, old_symbol, new_symbol, effective_date``.
+
+    Rows that are not a real equity rename are dropped: a blank company name (bonds and
+    debentures) and ``old == new`` (a re-listing line, not a rename). Repeated lines are merged.
+    """
     frame = _read_report_csv(content, SYMBOL_CHANGE_COLUMNS, "symbolchange.csv")
     result = pd.DataFrame(
         {
@@ -291,8 +297,13 @@ def parse_symbol_changes(content: bytes) -> pd.DataFrame:
     )
     complete = (result.old_symbol != "") & (result.new_symbol != "")
     complete &= result.effective_date.notna()
+    complete &= result.company != ""
+    complete &= result.old_symbol != result.new_symbol
     if not complete.all():
-        logger.warning("symbolchange.csv: skipped %d incomplete rows", int((~complete).sum()))
+        logger.warning(
+            "symbolchange.csv: skipped %d rows (blank company, same symbol or missing field)",
+            int((~complete).sum()),
+        )
     result = result[complete]
     return result.drop_duplicates(["old_symbol", "new_symbol", "effective_date"], keep="last")
 

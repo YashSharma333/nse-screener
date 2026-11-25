@@ -300,3 +300,11 @@ def test_bad_csv_date_is_an_error() -> None:
 def test_decode_falls_back_to_latin1_and_strips_a_bom() -> None:
     assert decode_csv_bytes(b"\xef\xbb\xbfA,B") == "A,B"
     assert decode_csv_bytes("Zoë".encode("latin-1")) == "Zoë"
+
+
+def test_html_block_page_is_rejected_by_both_csv_parsers() -> None:
+    """An HTML page served as a CSV must stop the run with BadFile, not be read as a table."""
+    html = b"<html><body>Access Denied</body></html>"
+    for parse in (parse_symbol_changes, parse_listing_master):
+        with pytest.raises(nse_files.BadFile):
+            parse(html)

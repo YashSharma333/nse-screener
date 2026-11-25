@@ -15,7 +15,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, Security
-from src.ingestion.securities import import_equity_l, parse_equity_l
+from src.ingestion.corporate_actions import NSEFormatChangedError
+from src.ingestion.securities import import_equity_l
 
 # Sample EQUITY_L.csv with typical leading header spaces and formatting
 SAMPLE_EQUITY_L_CSV = (
@@ -104,11 +105,26 @@ def test_securities_default_status_active(sqlite_session: Session) -> None:
     assert infy.status == "active"
 
 
-def test_missing_required_columns_raises_error() -> None:
-    """EQUITY_L.csv missing critical columns raises ValueError."""
+def test_missing_required_columns_raises_error(sqlite_session: Session) -> None:
+    """EQUITY_L.csv missing critical columns stops the import and stores nothing."""
     bad_csv = "SYMBOL,SERIES\nINFY,EQ\n"
-    with pytest.raises(ValueError, match="missing required columns"):
-        parse_equity_l(bad_csv)
+    with pytest.raises(NSEFormatChangedError, match="missing columns"):
+        import_equity_l(session=sqlite_session, csv_content=bad_csv)
+    assert sqlite_session.scalars(select(Security)).all() == []
+
+
+def test_blank_symbol_rows_are_skipped(sqlite_session: Session) -> None:
+    """A row without a symbol cannot be a security; the other rows still load."""
+    csv = SAMPLE_EQUITY_L_CSV + " ,No Symbol Co,EQ,01-JAN-2020,1,1,INE000000000,1\n"
+    assert import_equity_l(session=sqlite_session, csv_content=csv) == 4
+
+
+def test_bad_listing_date_stops_the_import(sqlite_session: Session) -> None:
+    """A date NSE writes in a new format must not be stored as a wrong or empty date."""
+    csv = SAMPLE_EQUITY_L_CSV.replace("29-NOV-1995", "1995/11/29")
+    with pytest.raises(NSEFormatChangedError):
+        import_equity_l(session=sqlite_session, csv_content=csv)
+    assert sqlite_session.scalars(select(Security)).all() == []
 
 
 def test_import_does_not_commit_a_given_session(sqlite_session: Session) -> None:

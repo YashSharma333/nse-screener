@@ -13,14 +13,12 @@ Architectural Rules:
 
 from __future__ import annotations
 
-import io
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,16 +27,10 @@ from src.common.db import use_session
 from src.common.symbols import normalise_symbol
 from src.db.models import DailyPrice, Security, SymbolChange
 from src.db.upsert import upsert_rows
-from src.ingestion.nse_files import SYMBOLCHANGE_URL, check_not_html, fetch
+from src.ingestion.corporate_actions import parse_symbol_changes
+from src.ingestion.nse_files import SYMBOLCHANGE_URL, fetch
 
 logger = logging.getLogger(__name__)
-
-REQUIRED_SYMBOLCHANGE_COLUMNS: tuple[str, ...] = (
-    "NAME OF THE COMPANY",
-    "OLD SYMBOL",
-    "NEW SYMBOL",
-    "EFFECTIVE DATE",
-)
 
 
 def _parse_effective_date(val: Any) -> date | None:
@@ -73,9 +65,7 @@ class RenameChains:
     def get_history(self, symbol: str) -> list[dict[str, Any]]:
         """Return all rename events for this security in chronological order."""
         sym = normalise_symbol(symbol)
-        curr = self.get_current(sym)
-        formers = self.get_former(curr)
-        all_syms = {*formers, curr, sym}
+        all_syms = family(sym, self)
         return [
             {
                 "old_symbol": old_s,
@@ -86,77 +76,6 @@ class RenameChains:
             for old_s, new_s, dt, comp in self.transitions
             if old_s in all_syms or new_s in all_syms
         ]
-
-
-def parse_symbol_changes_csv(content: bytes | str) -> list[dict[str, Any]]:
-    """Parse raw bytes or text of symbolchange.csv into valid change records.
-
-    Rules applied:
-    - Skips rows with a blank company name (filters out bonds/debentures).
-    - Skips rows where old_symbol == new_symbol.
-    - Normalizes symbol text to uppercase.
-    """
-    check_not_html(content)
-
-    if isinstance(content, bytes):
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = content.decode("latin-1")
-    else:
-        text = content
-
-    df = pd.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
-    df.columns = [str(c).strip().upper() for c in df.columns]
-
-    missing = [c for c in REQUIRED_SYMBOLCHANGE_COLUMNS if c not in df.columns]
-    if missing:
-        raise ValueError(
-            f"symbolchange.csv missing required columns: {missing}; found: {list(df.columns)}"
-        )
-
-    records: list[dict[str, Any]] = []
-    skipped_blank_comp = 0
-    skipped_same_sym = 0
-
-    for _, row in df.iterrows():
-        comp = str(row["NAME OF THE COMPANY"]).strip()
-        # Rule: skip rows with a blank company name (bonds / debt instruments)
-        if not comp:
-            skipped_blank_comp += 1
-            continue
-
-        old_sym = normalise_symbol(row["OLD SYMBOL"])
-        new_sym = normalise_symbol(row["NEW SYMBOL"])
-        if not old_sym or not new_sym:
-            continue
-
-        # Rule: skip old == new
-        if old_sym == new_sym:
-            skipped_same_sym += 1
-            continue
-
-        eff_date = _parse_effective_date(row["EFFECTIVE DATE"])
-        if eff_date is None:
-            logger.warning("Skipping row with invalid effective date: %s -> %s", old_sym, new_sym)
-            continue
-
-        records.append(
-            {
-                "old_symbol": old_sym,
-                "new_symbol": new_sym,
-                "effective_date": eff_date,
-                "company": comp,
-            }
-        )
-
-    logger.info(
-        "Parsed %d symbol changes (skipped %d blank company rows, %d same-symbol rows)",
-        len(records),
-        skipped_blank_comp,
-        skipped_same_sym,
-    )
-    return records
 
 
 def load_renames(
@@ -190,7 +109,8 @@ def load_renames(
     else:
         raw_data = fetch(url)
 
-    records = parse_symbol_changes_csv(raw_data)
+    content = raw_data.encode("utf-8") if isinstance(raw_data, str) else raw_data
+    records = parse_symbol_changes(content).to_dict("records")
     if not records:
         logger.warning("No valid symbol change records to store.")
         return 0
@@ -207,6 +127,17 @@ def load_renames(
 
     with use_session(session) as s:
         return _execute_load(s)
+
+
+def family(symbol: str, chains: RenameChains) -> set[str]:
+    """Every name one stock has had, as a set: the symbol itself, its current name, old names.
+
+    Why: prices and corporate actions can sit under any of these names, so every place that
+    follows renames must build this set the same way.
+    """
+    sym = normalise_symbol(symbol)
+    current = chains.get_current(sym)
+    return {current, sym, *chains.get_former(current)}
 
 
 def build_rename_chains(rows: Sequence[dict[str, Any] | SymbolChange]) -> RenameChains:

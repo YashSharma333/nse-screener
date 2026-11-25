@@ -16,12 +16,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, DailyPrice, Security, SymbolChange
+from src.ingestion.corporate_actions import parse_symbol_changes
 from src.ingestion.renames import (
     build_rename_chains,
     current_symbol,
+    family,
     former_names,
     load_renames,
-    parse_symbol_changes_csv,
     prices_for,
     rename_date,
     rename_history,
@@ -114,10 +115,36 @@ def test_blank_company_rows_ignored() -> None:
         "   ,DEBA,DEBB,01-JAN-2020\n"
         "Tata Global Beverages Limited,TATAGLOBAL,TATACONSUM,10-FEB-2020\n"
     )
-    records = parse_symbol_changes_csv(csv_data)
+    records = parse_symbol_changes(csv_data.encode()).to_dict("records")
     assert len(records) == 1
     assert records[0]["old_symbol"] == "TATAGLOBAL"
     assert records[0]["new_symbol"] == "TATACONSUM"
+
+
+def test_same_old_and_new_symbol_rows_ignored() -> None:
+    """NSE lists some re-listings with old == new; that is not a rename."""
+    csv_data = (
+        "NAME OF THE COMPANY,OLD SYMBOL,NEW SYMBOL,EFFECTIVE DATE\n"
+        "Interise Trust,INTERISE,INTERISE,12-NOV-2024\n"
+        "Tata Global Beverages Limited,TATAGLOBAL,TATACONSUM,10-FEB-2020\n"
+    )
+    frame = parse_symbol_changes(csv_data.encode())
+    assert list(frame.old_symbol) == ["TATAGLOBAL"]
+
+
+def test_family_holds_every_name_of_one_stock() -> None:
+    """family() = the symbol, its current name and all earlier names, from any starting name."""
+    chains = build_rename_chains(
+        [
+            {"old_symbol": "A", "new_symbol": "B", "effective_date": date(2019, 1, 1)},
+            {"old_symbol": "B", "new_symbol": "C", "effective_date": date(2020, 1, 1)},
+        ]
+    )
+    assert family("a", chains) == {"A", "B", "C"}
+    assert family("B", chains) == {"A", "B", "C"}
+    assert family("C", chains) == {"A", "B", "C"}
+    assert family("ZZZ", chains) == {"ZZZ"}  # never renamed
+    assert chains.get_history("A") == chains.get_history("C")
 
 
 def test_cycle_raises_clear_error() -> None:

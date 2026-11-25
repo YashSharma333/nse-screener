@@ -28,7 +28,7 @@ from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
 from src.ingestion.nse_files import cm_52_wk_url, fetch
-from src.ingestion.renames import RenameChains, load_chains_from_db
+from src.ingestion.renames import RenameChains, family, load_chains_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -149,17 +149,13 @@ def run_crosscheck_for_date(
     for row in official_df.itertuples():
         sym = row.symbol
         # Incorporate former names if renamed
-        curr = chains.get_current(sym)
-        formers = chains.get_former(curr)
-        family = {curr, sym, *formers}
+        names = family(sym, chains)
 
         # Find best high and low across all family symbols in DB
         highs = [
-            db_metrics[s][0] for s in family if s in db_metrics and db_metrics[s][0] is not None
+            db_metrics[s][0] for s in names if s in db_metrics and db_metrics[s][0] is not None
         ]
-        lows = [
-            db_metrics[s][1] for s in family if s in db_metrics and db_metrics[s][1] is not None
-        ]
+        lows = [db_metrics[s][1] for s in names if s in db_metrics and db_metrics[s][1] is not None]
 
         if not highs or not lows:
             continue
