@@ -159,7 +159,8 @@ def read_history_up_to(columns: Sequence[str], end_days_ago: int = 0) -> pd.Data
     ``end_days_ago`` counts real trading sessions back from the newest day in the cache
     (0 = newest, 1 = the session before, ...). Rows after that day are dropped. All older rows
     are kept on purpose: they are the warm-up the indicators need, and reading a few columns
-    of the whole cache is cheap (about 0.2 s). Empty if the cache is missing.
+    of the whole cache is cheap (about 0.2 s). Columns the cache lacks are skipped. Empty if the
+    cache is missing.
     """
     if isinstance(end_days_ago, bool) or not isinstance(end_days_ago, int) or end_days_ago < 0:
         raise ValueError(f"end_days_ago must be a whole number of 0 or more, got {end_days_ago!r}")
@@ -169,7 +170,10 @@ def read_history_up_to(columns: Sequence[str], end_days_ago: int = 0) -> pd.Data
 
     wanted = ["symbol", "date", *[c for c in dict.fromkeys(columns) if c not in ("symbol", "date")]]
     try:
-        table = ds.dataset(cache_path, format="parquet").to_table(columns=wanted)
+        dataset = ds.dataset(cache_path, format="parquet")
+        # a column the cache does not hold (an old name, a newer one) is skipped, not an error
+        wanted = [name for name in wanted if name in dataset.schema.names]
+        table = dataset.to_table(columns=wanted)
     except (OSError, pa.ArrowException) as exc:
         logger.warning("Could not read the indicator cache %s: %s", cache_path, exc)
         return pd.DataFrame()

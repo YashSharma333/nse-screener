@@ -16,8 +16,7 @@ import pytest
 
 from src.computation.indicators.calculator import add_all_indicators
 from src.computation.indicators.resolver import ensure_columns
-from src.screeners.base import Screener
-from src.screeners.registry import list_screeners
+from src.screeners.base import Screener, list_screeners
 from tests.screener_utils import passed_rows
 
 ALL_SCREENERS = list_screeners()

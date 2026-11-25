@@ -19,7 +19,7 @@ from pathlib import Path
 
 from config.settings import PROJECT_ROOT, setup_logging
 from src.db.data_service import load_indicator_snapshot
-from src.screeners.registry import get_screener
+from src.screeners.base import get_screener
 from src.strategies.risk import initial_stop, position_size, target_price
 from src.strategies.signals import evaluate_rules_history, evaluate_screener_history, to_sparse
 from src.strategies.spec import StrategySpec

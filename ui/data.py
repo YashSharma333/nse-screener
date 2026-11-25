@@ -20,8 +20,7 @@ import streamlit as st
 
 from config import settings
 from src.computation import cache_reader
-from src.screeners.base import Screener
-from src.screeners.registry import get_screener
+from src.screeners.base import Screener, get_screener
 
 logger = logging.getLogger(__name__)
 

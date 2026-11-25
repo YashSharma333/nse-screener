@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.screeners.registry import get_screener_keys
+from src.screeners.base import get_screener_keys
 from src.screeners.rules import validate_rule
 
 # Valid strategy lifecycle statuses

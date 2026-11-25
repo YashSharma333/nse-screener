@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from src.screeners.registry import get_screener
+from src.screeners.base import get_screener
 from ui.components.dashboard_helpers import SERIES_LABELS
 from ui.components.screener_helpers import (
     apply_market_cap_filter,

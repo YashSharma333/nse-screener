@@ -32,7 +32,7 @@ import pandas as pd
 from src.screeners.base import Screener
 from src.screeners.catalog import _cond_above_sma as cond_above_sma
 from src.screeners.catalog import _cond_volume_surge as cond_volume_surge
-from src.screeners.registry import register_screener
+from src.screeners.base import register_screener
 
 
 @dataclass(frozen=True)

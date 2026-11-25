@@ -27,7 +27,7 @@ logger = logging.getLogger("ui.screener_explorer")
 
 import streamlit as st
 
-from src.screeners.registry import get_screener, list_screeners
+from src.screeners.base import get_screener, list_screeners
 from ui.components.screener_sidebar import render_indicator_settings, render_market_cap_filter
 from ui.components.screener_view import render_results
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header

@@ -4,7 +4,7 @@ Provides extensible, categorized systematic stock screens with condition-level
 explainability and near-miss diagnostics.
 
 Import names from their own module, for example
-``from src.screeners.registry import get_screener``.
+``from src.screeners.base import get_screener``.
 """
 
 from __future__ import annotations

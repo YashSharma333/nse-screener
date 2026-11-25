@@ -22,9 +22,8 @@ from src.computation.indicators.calculator import add_all_indicators
 from src.computation.indicators.resolver import ensure_columns
 from src.db.models import Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, rebuild_adjusted
-from src.screeners.base import MissingIndicatorError
+from src.screeners.base import MissingIndicatorError, get_screener
 from src.screeners.catalog import cond_golden_cross, cond_sma_trending_up
-from src.screeners.registry import get_screener
 from tests.official_actions import add_official_action
 
 

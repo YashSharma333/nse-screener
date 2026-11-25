@@ -22,8 +22,7 @@ import pandas as pd
 
 from src.computation.indicators.price_helpers import pct_diff
 from src.computation.indicators.resolver import IndicatorSpec, ind
-from src.screeners.base import MissingIndicatorError, Screener
-from src.screeners.registry import register_screener
+from src.screeners.base import MissingIndicatorError, Screener, register_screener
 
 # ---------------------------------------------------------------------------
 # Private condition helpers (inlined from the old conditions/ sub-package)

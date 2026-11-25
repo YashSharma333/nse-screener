@@ -15,8 +15,8 @@ from typing import Any, ClassVar
 import pandas as pd
 import pytest
 
-from src.screeners.base import Screener
-from src.screeners.registry import (
+from src.screeners.base import (
+    Screener,
     get_screener,
     get_screener_keys,
     list_screeners,

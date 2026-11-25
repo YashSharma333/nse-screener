@@ -143,7 +143,7 @@ All screening conditions and the built-in screeners live in `src/screeners/catal
 ### 3. Programmatic Usage Example
 
 ```python
-from src.screeners.registry import get_screener
+from src.screeners.base import get_screener
 
 # Instantiate any registered screener
 screener = get_screener("minervini_trend_template")

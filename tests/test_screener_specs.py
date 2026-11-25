@@ -128,6 +128,14 @@ def test_read_history_up_to_without_a_cache_is_empty(tmp_path, monkeypatch) -> N
 )
 def test_history_columns_cover_the_cached_columns_the_rules_read(key: str, needed: set) -> None:
     """These four screeners read these cached columns, so the reader must load them."""
-    from src.screeners.registry import get_screener
+    from src.screeners.base import get_screener
 
     assert needed <= set(get_screener(key).history_columns())
+
+
+def test_read_history_up_to_skips_columns_the_cache_does_not_have(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "cache.parquet"
+    _write_cache(path, [date(2026, 4, 1), date(2026, 4, 2)])
+    monkeypatch.setattr("config.settings.INDICATORS_CACHE_PATH", path)
+    result = cache_reader.read_history_up_to(["close", "no_such_column"])
+    assert list(result.columns) == ["symbol", "date", "close"]

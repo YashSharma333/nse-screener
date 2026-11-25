@@ -11,8 +11,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.screeners.base import get_screener
 from src.screeners.declarative import create_declarative_screener, load_custom_screeners
-from src.screeners.registry import get_screener
 from tests.screener_utils import passed_rows
 
 

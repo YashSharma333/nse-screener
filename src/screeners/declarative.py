@@ -16,8 +16,7 @@ from typing import Any, Literal
 import pandas as pd
 
 from config.settings import PROJECT_ROOT
-from src.screeners.base import Screener
-from src.screeners.registry import register_screener
+from src.screeners.base import Screener, register_screener
 
 logger = logging.getLogger(__name__)
 
