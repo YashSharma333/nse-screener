@@ -17,7 +17,7 @@ CI runs a MySQL upgrade, downgrade, upgrade job. A migration must work in both.
 4. Add a test that upgrades and downgrades on SQLite.
 5. Update the "Database Migrations" section of `README.md`.
 6. Back up with `bash scripts/backup_db.sh`, then run `alembic upgrade head`. In
-   the PR "Commands" give the owner the same two commands for their own machine.
+   the PR "Commands" list the same two commands to run locally.
 
 ## MySQL compatibility checklist
 

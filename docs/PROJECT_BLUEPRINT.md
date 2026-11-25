@@ -484,7 +484,7 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 - Pre-compute only 1 to 2 years of indicators. Full history on demand.
 - Streamlit now; private deployment only; no static IP; no paid data.
 - Every prompt files GitHub issues for problems and updates the README.
-- The AI states in every PR when to merge and which method (squash by default, merge commit when each commit stands alone); see "Git and pull requests" in CLAUDE.md.
+- Pull requests are merged by a person, never by an agent; see "Git and pull requests" in CLAUDE.md.
 
 ## 16. Open items and known risks
 
@@ -502,11 +502,11 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 
 ## 17. How an agent should work here (short)
 
-1. Read `CLAUDE.md`, this file, and the task prompt. Run `/start-task` (branch check).
+1. Read `CLAUDE.md`, this file, and the task prompt. Check the branch first (skill `branch-guard`).
 2. Verify claims with the read-only `mysql` MCP and by running code. Say what you did NOT verify.
-3. One PR per task, small, Conventional Commits, task ID in branch, commit and PR title.
+3. One PR per task, small, Conventional Commits, task ID in the branch name.
 4. Offline, deterministic tests with real column types. A regression test for every bug fix.
 5. File a GitHub issue for every problem outside scope. Never silently work around one.
-6. End with `/pr-ready`: the PR link, a plain-English summary, exact commands for the owner,
-   verification results, what was not verified, issues filed, and questions for the owner.
+6. End with `/pr-ready`: the PR link, a plain-English summary, commands to run,
+   verification results, what was not verified, issues filed, and open questions.
 7. Never merge. Work on the database only by the "Working on the real database" section of `CLAUDE.md` (backup first). Never print secrets.

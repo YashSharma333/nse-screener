@@ -26,6 +26,10 @@ reports/*
 # Scratch notes for GitHub issues
 issue.md
 
+# Personal Claude Code instructions and private notes (never committed)
+CLAUDE.local.md
+notes/
+
 # Packaging output
 dist/
 build/
