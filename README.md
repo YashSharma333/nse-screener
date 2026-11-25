@@ -150,6 +150,7 @@ screener = get_screener("minervini_trend_template")
 
 # Evaluate the newest day of every stock's history (indicators are added from the history)
 from src.computation import cache_reader
+
 history = cache_reader.read_history_up_to(screener.history_columns())
 explained_df = screener.screen(history)
 passing_stocks = explained_df[explained_df["passed"]]
