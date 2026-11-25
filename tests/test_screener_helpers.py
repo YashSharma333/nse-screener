@@ -55,7 +55,9 @@ def test_group_by_series_puts_eq_first():
 
 def test_editable_params_follow_each_screener_defaults():
     volume = editable_params(SwingVolumeScreener.default_params)
-    assert set(volume) == {"vol_multiplier", "min_volume", "max_pct_from_high"}
+    assert {"vol_multiplier", "min_volume", "max_pct_from_high"} <= set(volume)
+    # the indicator lengths are editable too, so the sidebar can change any of them
+    assert {"ema_length", "sma_mid_length", "sma_long_length", "high_window"} <= set(volume)
     momentum = editable_params(SwingMomentumScreener.default_params)
     assert "max_return_60d" in momentum
 

@@ -11,8 +11,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from src.screeners.base import get_screener
 from src.screeners.declarative import create_declarative_screener, load_custom_screeners
-from src.screeners.registry import get_screener
+from tests.screener_utils import passed_rows
 
 
 def test_declarative_screener_creation_and_execution():
@@ -46,11 +47,11 @@ def test_declarative_screener_creation_and_execution():
         }
     )
 
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 1
     assert passed.iloc[0]["symbol"] == "INFY"
 
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert "passed" in explained.columns
     assert "cond_rule_1" in explained.columns
     assert "cond_rule_2" in explained.columns

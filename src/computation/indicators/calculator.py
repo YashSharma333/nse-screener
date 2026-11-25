@@ -317,7 +317,8 @@ def _rsi_momentum(res: pd.DataFrame) -> pd.Series:
         & (close > res["sma_200"])
     )
     cond_c = close >= (0.85 * res["high_252d_prev"])
-    cond_d = (res["volume"] > 1.5 * res["volume_sma_20"]) & (res["volume_sma_20"] > 250_000)
+    previous_average = value_ago(res, "volume_sma_20", 1)  # as of yesterday (LOG-025)
+    cond_d = (res["volume"] > 1.5 * previous_average) & (res["volume_sma_20"] > 250_000)
     return (cond_a & cond_b & cond_c & cond_d).fillna(False)
 
 
@@ -370,11 +371,13 @@ def add_all_indicators(df: pd.DataFrame, benchmark_df: pd.DataFrame | None = Non
         res[f"return_{days}d"] = pct_diff(close, res[f"close_{days}d"])
 
     res["volume_sma_20"] = sma(res, length=20, source="volume")
-    res["volume_ratio"] = ratio(volume, res["volume_sma_20"])
+    # the volume multiple compares today's volume with the average as of yesterday (LOG-025)
+    previous_average = value_ago(res, "volume_sma_20", 1)
+    res["volume_ratio"] = ratio(volume, previous_average)
     short_average = roll(res, volume, 5, "mean")
     long_average = roll(res, volume, 50, "mean", min_periods=5)  # old rule: partial window
     res["vol_dryup"] = short_average / long_average.replace(0, np.nan)
-    res["vol_multiple"] = ratio(volume, res["volume_sma_20"])
+    res["vol_multiple"] = ratio(volume, previous_average)
     res["pct_from_52w_high"] = pct_diff(close, res["high_252d_prev"])
 
     res["rsi_9"] = rsi(res, length=9)

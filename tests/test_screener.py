@@ -26,6 +26,7 @@ from src.screeners.catalog import (
     SwingMomentumScreener,
     SwingVolumeScreener,
 )
+from tests.screener_utils import passed_rows
 
 
 def _base_s1_row(**overrides) -> dict:
@@ -39,6 +40,7 @@ def _base_s1_row(**overrides) -> dict:
         "high_252d_prev": 120.0,  # 0.85 * 120 = 102 <= 110
         "volume": 400_000,  # > 1.5 * 260_000 = 390_000
         "volume_sma_20": 260_000,  # > 250_000
+        "sma_volume_20_ago1": 260_000,  # yesterday's average
     }
     row.update(overrides)
     return row
@@ -56,8 +58,9 @@ def _base_s2_row(**overrides) -> dict:
             "high_252d_prev": 220.0,  # 0.85 * 220 = 187 <= 200
             "volume": 500_000,
             "volume_sma_20": 300_000,
-            "return_60d": 20.0,  # <= 40%
-            "return_120d": 35.0,  # >= 30%
+            "sma_volume_20_ago1": 300_000,
+            "close_60d": 200.0 / 1.20,  # return over 60 days = 20% (<= 40%)
+            "close_120d": 200.0 / 1.35,  # return over 120 days = 35% (>= 30%)
             "close_180d": 120.0,
             "close_252d": 100.0,
             # ratio_252_180 = (200 - 100) / 120 * 100 = 83.33 <= 300
@@ -74,14 +77,14 @@ def _base_s2_row(**overrides) -> dict:
 class TestScreener1SwingVolume:
     def test_passes_all_conditions(self):
         df = pd.DataFrame([_base_s1_row(symbol="PASS")])
-        result = SwingVolumeScreener().run(df)
+        result = passed_rows(SwingVolumeScreener(), df)
         assert len(result) == 1
         assert result.iloc[0]["symbol"] == "PASS"
 
     def test_fails_volume_not_1_5x_sma(self):
         row = _base_s1_row(symbol="FAIL_VOL", volume=260_000)
         df = pd.DataFrame([row])
-        result = SwingVolumeScreener().run(df)
+        result = passed_rows(SwingVolumeScreener(), df)
         assert len(result) == 0
 
     def test_fails_volume_sma_below_liquidity_floor(self):
@@ -91,13 +94,13 @@ class TestScreener1SwingVolume:
             volume=310_000,
         )
         df = pd.DataFrame([row])
-        result = SwingVolumeScreener().run(df)
+        result = passed_rows(SwingVolumeScreener(), df)
         assert len(result) == 0
 
     def test_fails_close_below_sma50(self):
         row = _base_s1_row(symbol="FAIL_MA", close=90.0, ema_20=85.0)
         df = pd.DataFrame([row])
-        result = SwingVolumeScreener().run(df)
+        result = passed_rows(SwingVolumeScreener(), df)
         assert len(result) == 0
 
     def test_fails_52w_proximity(self):
@@ -110,7 +113,7 @@ class TestScreener1SwingVolume:
             high_252d_prev=200.0,
         )
         df = pd.DataFrame([row])
-        result = SwingVolumeScreener().run(df)
+        result = passed_rows(SwingVolumeScreener(), df)
         assert len(result) == 0
 
     def test_mixed_pass_fail(self):
@@ -119,7 +122,7 @@ class TestScreener1SwingVolume:
             _base_s1_row(symbol="FAIL_VOL", volume=260_000),
         ]
         df = pd.DataFrame(rows)
-        result = SwingVolumeScreener().run(df)
+        result = passed_rows(SwingVolumeScreener(), df)
         assert len(result) == 1
         assert result.iloc[0]["symbol"] == "PASS"
 
@@ -130,20 +133,20 @@ class TestScreener1SwingVolume:
 class TestScreener2SwingMomentum:
     def test_passes_all_conditions(self):
         df = pd.DataFrame([_base_s2_row(symbol="PASS_S2")])
-        result = SwingMomentumScreener().run(df)
+        result = passed_rows(SwingMomentumScreener(), df)
         assert len(result) == 1
         assert result.iloc[0]["symbol"] == "PASS_S2"
 
     def test_fails_60d_return_too_high(self):
-        row = _base_s2_row(symbol="FAIL_60D", return_60d=45.0)
+        row = _base_s2_row(symbol="FAIL_60D", close_60d=200.0 / 1.45)  # a 45% return
         df = pd.DataFrame([row])
-        result = SwingMomentumScreener().run(df)
+        result = passed_rows(SwingMomentumScreener(), df)
         assert len(result) == 0
 
     def test_fails_120d_return_too_low(self):
-        row = _base_s2_row(symbol="FAIL_120D", return_120d=25.0)
+        row = _base_s2_row(symbol="FAIL_120D", close_120d=200.0 / 1.25)  # a 25% return
         df = pd.DataFrame([row])
-        result = SwingMomentumScreener().run(df)
+        result = passed_rows(SwingMomentumScreener(), df)
         assert len(result) == 0
 
     def test_fails_ratio_180_252_below_floor(self):
@@ -154,7 +157,7 @@ class TestScreener2SwingMomentum:
             close_252d=100.0,
         )
         df = pd.DataFrame([row])
-        result = SwingMomentumScreener().run(df)
+        result = passed_rows(SwingMomentumScreener(), df)
         assert len(result) == 0
 
     def test_fails_ratio_180_252_above_cap(self):
@@ -169,24 +172,24 @@ class TestScreener2SwingMomentum:
             high_252d_prev=520.0,
             volume=600_000,
             volume_sma_20=300_000,
-            return_60d=30.0,
-            return_120d=35.0,
+            close_60d=500.0 / 1.30,  # 30% over 60 days
+            close_120d=500.0 / 1.35,  # 35% over 120 days
         )
         df = pd.DataFrame([row])
-        result = SwingMomentumScreener().run(df)
+        result = passed_rows(SwingMomentumScreener(), df)
         assert len(result) == 0
 
     def test_s2_inherits_s1_filters(self):
         row = _base_s2_row(symbol="FAIL_S1_IN_S2", volume=260_000)
         df = pd.DataFrame([row])
-        result = SwingMomentumScreener().run(df)
+        result = passed_rows(SwingMomentumScreener(), df)
         assert len(result) == 0
 
     def test_empty_df_returns_empty(self):
         cols = list(_base_s1_row().keys())
         empty = pd.DataFrame(columns=cols)
-        assert len(SwingVolumeScreener().run(empty)) == 0
-        assert len(SwingMomentumScreener().run(empty)) == 0
+        assert len(passed_rows(SwingVolumeScreener(), empty)) == 0
+        assert len(passed_rows(SwingMomentumScreener(), empty)) == 0
 
 
 # ============================================================
@@ -202,10 +205,10 @@ class TestClassicFilters:
                 "sma_200": [90.0, 100.0],
             }
         )
-        s50 = Above50SmaScreener().run(df)
+        s50 = passed_rows(Above50SmaScreener(), df)
         assert list(s50["symbol"]) == ["A"]
 
-        s200 = Above200SmaScreener().run(df)
+        s200 = passed_rows(Above200SmaScreener(), df)
         assert list(s200["symbol"]) == ["A"]
 
     def test_golden_and_death_cross(self):
@@ -216,8 +219,8 @@ class TestClassicFilters:
                 "death_cross": [False, True],
             }
         )
-        assert list(GoldenCrossScreener().run(df)["symbol"]) == ["A"]
-        assert list(DeathCrossScreener().run(df)["symbol"]) == ["B"]
+        assert list(passed_rows(GoldenCrossScreener(), df)["symbol"]) == ["A"]
+        assert list(passed_rows(DeathCrossScreener(), df)["symbol"]) == ["B"]
 
     def test_near_52w_high_and_low(self):
         df = pd.DataFrame(
@@ -228,10 +231,10 @@ class TestClassicFilters:
                 "low_52w": [50.0, 100.0],
             }
         )
-        near_hi = Near52WeekHighScreener(threshold_pct=5.0).run(df)
+        near_hi = passed_rows(Near52WeekHighScreener(threshold_pct=5.0), df)
         assert list(near_hi["symbol"]) == ["NEAR_HI"]
 
-        near_lo = Near52WeekLowScreener(threshold_pct=5.0).run(df)
+        near_lo = passed_rows(Near52WeekLowScreener(threshold_pct=5.0), df)
         assert list(near_lo["symbol"]) == ["NEAR_LO"]
 
     def test_rsi_oversold_and_overbought(self):
@@ -241,8 +244,8 @@ class TestClassicFilters:
                 "rsi_14": [25.0, 75.0],
             }
         )
-        assert list(RsiOversoldScreener().run(df)["symbol"]) == ["OVERSOLD"]
-        assert list(RsiOverboughtScreener().run(df)["symbol"]) == ["OVERBOUGHT"]
+        assert list(passed_rows(RsiOversoldScreener(), df)["symbol"]) == ["OVERSOLD"]
+        assert list(passed_rows(RsiOverboughtScreener(), df)["symbol"]) == ["OVERBOUGHT"]
 
     def test_bullish_macd_crossover(self):
         df = pd.DataFrame(
@@ -251,7 +254,7 @@ class TestClassicFilters:
                 "macd_cross_up": [True, False],
             }
         )
-        assert list(BullishMacdCrossoverScreener().run(df)["symbol"]) == ["CROSS"]
+        assert list(passed_rows(BullishMacdCrossoverScreener(), df)["symbol"]) == ["CROSS"]
 
     def test_high_volatility_and_bollinger_squeeze(self):
         df = pd.DataFrame(
@@ -264,5 +267,5 @@ class TestClassicFilters:
             }
         )
         # band_width = 20, position for A = (101 - 100) / 20 = 0.05 < 0.1 -> squeeze!
-        assert list(HighVolatilityScreener().run(df)["symbol"]) == ["A"]
-        assert list(BollingerSqueezeScreener().run(df)["symbol"]) == ["A"]
+        assert list(passed_rows(HighVolatilityScreener(), df)["symbol"]) == ["A"]
+        assert list(passed_rows(BollingerSqueezeScreener(), df)["symbol"]) == ["A"]

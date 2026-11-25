@@ -20,6 +20,7 @@ import streamlit as st
 
 from config import settings
 from src.computation import cache_reader
+from src.screeners.base import Screener, get_screener
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,42 @@ def get_symbol_history(symbol: str, columns: Sequence[str] | None = None) -> pd.
     """History for one symbol with PyArrow projection and a per-symbol Streamlit cache."""
     col_tuple = tuple(columns) if columns is not None else None
     return _get_symbol_history_cached(symbol, col_tuple, get_cache_invalidation_token())
+
+
+@st.cache_data(show_spinner="Computing the indicators for these settings...", max_entries=8)
+def _indicator_columns_cached(
+    screener_key: str,
+    params: tuple[tuple[str, Any], ...],
+    cache_token: tuple[float, str],
+) -> pd.DataFrame:
+    """The screener's indicator columns for the newest day, one row per stock.
+
+    Computed from each stock's cached history (rolling indicators need the earlier rows), and
+    remembered per parameter set, so moving a number back and forth is instant the second time.
+    """
+    del cache_token  # only here so Streamlit forgets the result when the cache file changes
+    screener = get_screener(screener_key, **dict(params))
+    history = cache_reader.read_history_up_to(screener.history_columns())
+    if history.empty:
+        return pd.DataFrame(columns=["symbol"])
+    prepared = screener.prepare(history)
+    newest = prepared[prepared["date"] == prepared["date"].max()]
+    return newest[["symbol", *[spec.column for spec in screener.required_specs()]]]
+
+
+def with_indicators(snapshot: pd.DataFrame, screener: Screener) -> pd.DataFrame:
+    """The snapshot with every indicator the screener needs, for any numbers set in the sidebar.
+
+    With the default numbers the cached columns are enough. When the sidebar asks for another
+    length (SMA 75, RSI 7 ...) those columns come from the history and are joined by symbol.
+    """
+    if not screener.missing_specs(snapshot):
+        return screener.prepare(snapshot)
+    computed = _indicator_columns_cached(
+        screener.key, tuple(sorted(screener.params.items())), get_cache_invalidation_token()
+    )
+    wanted = [c for c in computed.columns if c == "symbol" or c not in snapshot.columns]
+    return snapshot.merge(computed[wanted], on="symbol", how="left")
 
 
 def render_uninitialized_prompt() -> None:

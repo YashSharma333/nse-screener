@@ -180,7 +180,7 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
 | `src/computation/cache_reader.py` | Read-only access to the indicator cache. The UI uses only this; it never builds the cache. |
-| `src/screeners/` | `base.py`, `registry.py`, `catalog.py` (all conditions and screeners), `declarative.py` (JSON screeners). |
+| `src/screeners/` | `base.py` (also the registry), `catalog.py` (all conditions and screeners), `declarative.py` (JSON screeners). |
 | `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
 | `config/` | `settings.py`, `costs.json`, `adjustment_overrides.csv`. |
 | `migrations/versions/` | Alembic 001 to 010. |

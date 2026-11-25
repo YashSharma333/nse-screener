@@ -41,6 +41,7 @@ REGISTRY: dict[str, Callable[..., pd.Series]] = {
     "volatility": calculator.volatility,
     "percent_change": calculator.percent_change,
     "window": price_helpers.window_stat,
+    "value": price_helpers.value,
 }
 
 # Parameters the resolver owns, so the user never passes them to the function.

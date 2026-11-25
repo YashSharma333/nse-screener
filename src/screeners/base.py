@@ -13,10 +13,19 @@ detection automatically — no boilerplate needed in subclasses.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, ClassVar, Literal
 
 import numpy as np
 import pandas as pd
+
+from src.computation.indicators.resolver import IndicatorSpec, ensure_columns
+from src.screeners.legacy_columns import CACHED_NAME
+
+logger = logging.getLogger("src.screeners.base")
+
+# Columns every screener may read besides its own: the stock's identity and plain prices.
+BASE_COLUMNS = ("series", "open", "high", "low", "close", "volume", "market_cap")
 
 
 class MissingIndicatorError(Exception):
@@ -98,6 +107,62 @@ class Screener:
         del df, params
         return {}
 
+    def specs(self) -> dict[str, IndicatorSpec]:
+        """The indicators this screener reads by short name, with the numbers from ``self.params``.
+
+        Override in a subclass; ``rules`` then reads a column with ``self.col("short name")``.
+        """
+        return {}
+
+    def col(self, name: str) -> str:
+        """The column name of the indicator declared under ``name`` in ``specs``."""
+        return self.specs()[name].column
+
+    def required_specs(self) -> list[IndicatorSpec]:
+        """Every indicator in ``specs``. The resolver adds those the table does not have yet,
+        so a changed ``rsi_period`` works for any length.
+        """
+        return list(self.specs().values())
+
+    def history_columns(self) -> list[str]:
+        """The cached columns to read for ``screen``: the base ones plus ``required_columns``."""
+        cached = [CACHED_NAME[s.column] for s in self.required_specs() if s.column in CACHED_NAME]
+        return list(dict.fromkeys([*BASE_COLUMNS, *self.required_columns, *cached]))
+
+    def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+        """A copy of ``df`` with every indicator in ``specs`` present as a column.
+
+        A column the cache already holds under its old name is copied (exact and fast); any
+        other is computed by the resolver on the whole table, so the table must hold each
+        stock's history. The caller's table is not changed.
+        """
+        if df.empty:
+            return df.copy()
+        working = df.copy(deep=False)  # new columns go on the copy, not on the caller's table
+        for spec in self.required_specs():
+            cached = CACHED_NAME.get(spec.column)
+            if cached in working.columns and spec.column not in working.columns:
+                working[spec.column] = working[cached]
+        return ensure_columns(working, self.required_specs())
+
+    def missing_specs(self, df: pd.DataFrame) -> list[IndicatorSpec]:
+        """The specs ``df`` cannot give (no such column, and no cached one under the old name)."""
+        return [
+            spec
+            for spec in self.required_specs()
+            if spec.column not in df.columns and CACHED_NAME.get(spec.column) not in df.columns
+        ]
+
+    def screen(self, history: pd.DataFrame) -> pd.DataFrame:
+        """Explain the newest day of ``history`` (every stock's rows up to that day).
+
+        Rolling indicators need the earlier rows, so they are added on the whole history first;
+        then the one row per stock of the last day is explained.
+        """
+        prepared = self.prepare(history)
+        newest = prepared[prepared["date"] == prepared["date"].max()]
+        return self.explain(newest)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -125,23 +190,8 @@ class Screener:
         return result
 
     # ------------------------------------------------------------------
-    # Public API: run() and explain()
+    # Public API: screen() and explain()
     # ------------------------------------------------------------------
-    def run(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Return rows from df that pass every screening condition."""
-        if df.empty:
-            return df.copy()
-
-        conditions = self.all_conditions(df)
-        if not conditions:
-            return df.copy()
-
-        mask = pd.Series(True, index=df.index)
-        for cond_series in conditions.values():
-            mask &= cond_series
-
-        return df[mask].copy()
-
     def explain(self, df: pd.DataFrame) -> pd.DataFrame:
         """Evaluate all conditions and add diagnostic columns.
 
@@ -210,3 +260,78 @@ class Screener:
         res["failed_conditions"] = failed_lists
 
         return res
+
+
+# ---------------------------------------------------------------------------
+# Registry: screener key -> class (merged here from registry.py in CL-24)
+# ---------------------------------------------------------------------------
+_REGISTRY: dict[str, type[Screener]] = {}
+
+
+def register_screener(key: str | None = None):
+    """Class decorator that registers a Screener subclass into the global registry.
+
+    Usage:
+        @register_screener()          # uses the class's own ``key`` attribute
+        class MyScreener(Screener):
+            key = "my_screener"
+            ...
+
+        @register_screener(key="alt_key")  # explicit override
+        class MyScreener(Screener): ...
+    """
+
+    def decorator(cls: type[Screener]) -> type[Screener]:
+        screener_key = key or getattr(cls, "key", "")
+        if not screener_key:
+            raise ValueError(
+                f"Screener {cls.__name__} must define a non-empty 'key' attribute "
+                "or specify a key in @register_screener."
+            )
+        if screener_key in _REGISTRY:
+            reg_name = _REGISTRY[screener_key].__name__
+            raise ValueError(
+                f"Screener key '{screener_key}' already registered by {reg_name}. "
+                f"Cannot overwrite with {cls.__name__}."
+            )
+        _REGISTRY[screener_key] = cls
+        return cls
+
+    return decorator
+
+
+def get_screener(key: str, **params: Any) -> Screener:
+    """Return an instantiated screener for the given key.
+
+    Parameters
+    ----------
+    key : str
+        The screener's registered key (e.g. ``"swing_volume"``).
+    **params
+        Optional parameter overrides passed to the screener's ``__init__``.
+    """
+    if key not in _REGISTRY:
+        available = ", ".join(sorted(_REGISTRY.keys()))
+        raise KeyError(f"Unknown screener '{key}'. Available screeners: {available}")
+    return _REGISTRY[key](**params)
+
+
+def list_screeners(
+    category: str | None = None,
+    status: Literal["core", "experimental"] | None = None,
+) -> list[type[Screener]]:
+    """Return registered screener classes, optionally filtered by category or status."""
+    screeners = list(_REGISTRY.values())
+    if category is not None:
+        screeners = [s for s in screeners if s.category.lower() == category.lower()]
+    if status is not None:
+        screeners = [s for s in screeners if getattr(s, "status", "experimental") == status]
+    return sorted(screeners, key=lambda s: (s.category, s.name))
+
+
+def get_screener_keys(
+    category: str | None = None,
+    status: Literal["core", "experimental"] | None = None,
+) -> list[str]:
+    """Return all registered screener keys, optionally filtered."""
+    return [s.key for s in list_screeners(category=category, status=status)]

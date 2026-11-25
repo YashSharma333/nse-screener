@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from src.screeners.registry import get_screener
+from src.screeners.base import get_screener
 from ui.components.dashboard_helpers import SERIES_LABELS
 from ui.components.screener_helpers import (
     apply_market_cap_filter,
@@ -28,7 +28,7 @@ from ui.components.screener_helpers import (
 from ui.components.screener_sidebar import render_indicator_settings, render_market_cap_filter
 from ui.components.stock_inspector import render_stock_inspector
 from ui.components.terminal_styles import apply_terminal_theme, render_terminal_header
-from ui.data import get_snapshot, render_uninitialized_prompt
+from ui.data import get_snapshot, render_uninitialized_prompt, with_indicators
 
 logger = logging.getLogger("ui.screener_view")
 
@@ -112,7 +112,7 @@ def render_results(
     if hidden:
         st.caption(f"{hidden:,} EQ stocks below ₹{min_market_cap_cr:,.0f} Cr are hidden.")
 
-    explained = screener.explain(universe)
+    explained = screener.explain(with_indicators(universe, screener))
     qualifying = explained[explained["passed"]]
     near_misses = explained[explained["near_miss"]]
 

@@ -155,6 +155,7 @@ class TestSwingVolumePageSidebar(unittest.TestCase):
                 "pct_from_52w_high": (100.0 - 105.0) / 105.0 * 100.0,
                 "volume": volume,
                 "volume_sma_20": 400_000.0,
+                "sma_volume_20_ago1": 400_000.0,  # yesterday's 20-day average (the surge rule)
                 "rsi_14": 60.0,
             }
 

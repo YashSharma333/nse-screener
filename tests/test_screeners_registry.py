@@ -15,13 +15,14 @@ from typing import Any, ClassVar
 import pandas as pd
 import pytest
 
-from src.screeners.base import Screener
-from src.screeners.registry import (
+from src.screeners.base import (
+    Screener,
     get_screener,
     get_screener_keys,
     list_screeners,
     register_screener,
 )
+from tests.screener_utils import passed_rows
 
 
 class DummySampleScreener(Screener):
@@ -88,12 +89,12 @@ def test_screener_run_and_explain() -> None:
     df = pd.DataFrame(data)
 
     # 1. run(df) returns only Row 0
-    passed_df = screener.run(df)
+    passed_df = passed_rows(screener, df)
     assert len(passed_df) == 1
     assert passed_df.iloc[0]["symbol"] == "STOCK1"
 
     # 2. explain(df) diagnostics
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert len(explained) == 3
 
     # Check condition columns
@@ -130,10 +131,10 @@ def test_screener_empty_dataframe() -> None:
     screener = DummySampleScreener()
     empty = pd.DataFrame()
 
-    res_run = screener.run(empty)
+    res_run = passed_rows(screener, empty)
     assert res_run.empty
 
-    res_explain = screener.explain(empty)
+    res_explain = screener.explain(screener.prepare(empty))
     assert res_explain.empty
     assert "passed" in res_explain.columns
     assert "near_miss" in res_explain.columns

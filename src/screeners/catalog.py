@@ -21,8 +21,8 @@ from typing import Any, ClassVar, Literal
 import pandas as pd
 
 from src.computation.indicators.price_helpers import pct_diff
-from src.screeners.base import MissingIndicatorError, Screener
-from src.screeners.registry import register_screener
+from src.computation.indicators.resolver import IndicatorSpec, ind
+from src.screeners.base import MissingIndicatorError, Screener, register_screener
 
 # ---------------------------------------------------------------------------
 # Private condition helpers (inlined from the old conditions/ sub-package)
@@ -94,35 +94,44 @@ def _cond_sma_trending_up(
     return (df[slope_col] >= 0.0).fillna(False)
 
 
-def _cond_near_52w_low(df: pd.DataFrame, threshold_pct: float = 5.0) -> pd.Series:
+def _cond_near_52w_low(
+    df: pd.DataFrame, threshold_pct: float = 5.0, low_col: str = "low_52w"
+) -> pd.Series:
     """Close price is within threshold_pct% of 52-week Low."""
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    missing = [c for c in ("close", "low_52w") if c not in df.columns]
+    missing = [c for c in ("close", low_col) if c not in df.columns]
     if missing:
         raise MissingIndicatorError(missing)
-    return (pct_diff(df["close"], df["low_52w"]) <= threshold_pct).fillna(False)
+    return (pct_diff(df["close"], df[low_col]) <= threshold_pct).fillna(False)
 
 
-def _cond_bollinger_squeeze(df: pd.DataFrame, threshold: float = 0.1) -> pd.Series:
+def _cond_bollinger_squeeze(
+    df: pd.DataFrame,
+    threshold: float = 0.1,
+    upper_col: str = "bb_upper",
+    lower_col: str = "bb_lower",
+) -> pd.Series:
     """Price position within Bollinger Bands is near lower band."""
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    missing = [c for c in ("close", "bb_upper", "bb_lower") if c not in df.columns]
+    missing = [c for c in ("close", upper_col, lower_col) if c not in df.columns]
     if missing:
         raise MissingIndicatorError(missing)
-    band_width = (df["bb_upper"] - df["bb_lower"]).replace(0, float("nan"))
-    position = (df["close"] - df["bb_lower"]) / band_width
+    band_width = (df[upper_col] - df[lower_col]).replace(0, float("nan"))
+    position = (df["close"] - df[lower_col]) / band_width
     return (position <= threshold).fillna(False)
 
 
-def _cond_high_volatility(df: pd.DataFrame, threshold: float = 0.03) -> pd.Series:
+def _cond_high_volatility(
+    df: pd.DataFrame, threshold: float = 0.03, vol_col: str = "volatility_20"
+) -> pd.Series:
     """20-day return volatility exceeds threshold."""
     if df.empty:
         return pd.Series(False, index=df.index, dtype=bool)
-    if "volatility_20" not in df.columns:
-        raise MissingIndicatorError(["volatility_20"])
-    return (df["volatility_20"] >= threshold).fillna(False)
+    if vol_col not in df.columns:
+        raise MissingIndicatorError([vol_col])
+    return (df[vol_col] >= threshold).fillna(False)
 
 
 def _cond_atr_contracting(df: pd.DataFrame, threshold_factor: float = 0.75) -> pd.Series:
@@ -240,6 +249,51 @@ def cond_sma_trending_up(
     return _cond_sma_trending_up(df, sma_col=sma_col, periods=periods)
 
 
+# Numbers shared by the core trend screeners. Each is a parameter, so the sidebar can change it.
+TREND_PARAMS: dict[str, Any] = {
+    "ema_length": 20,
+    "sma_mid_length": 50,
+    "sma_long_length": 200,
+    "high_window": 252,
+    "volume_avg_length": 20,
+}
+
+
+def _trend_specs(p: dict[str, Any]) -> dict[str, IndicatorSpec]:
+    """The indicators the core trend screeners read, with the numbers from the parameters."""
+    return {
+        "ema": ind("ema", length=p["ema_length"]),
+        "sma_mid": ind("sma", length=p["sma_mid_length"]),
+        "sma_long": ind("sma", length=p["sma_long_length"]),
+        # the high of the window ending yesterday: today's close may break it
+        "high_52w": ind("window", source="high", length=p["high_window"], stat="max", days_ago=1),
+        # the liquidity rule uses this latest average (it includes today)
+        "volume_avg": ind("sma", source="volume", length=p["volume_avg_length"]),
+        # the surge rule compares today's volume with the average as of yesterday (Chartink style)
+        "volume_avg_prev": ind("sma", source="volume", length=p["volume_avg_length"], days_ago=1),
+    }
+
+
+def _swing_conditions(
+    df: pd.DataFrame, col: dict[str, str], p: dict[str, Any]
+) -> dict[str, pd.Series]:
+    """The six conditions of the swing screens (trend, near the 52-week high, volume, liquidity)."""
+    ema, mid, long_ = df[col["ema"]], df[col["sma_mid"]], df[col["sma_long"]]
+    volume_avg = df[col["volume_avg"]]
+    return {
+        "ma_alignment": ((ema > mid) & (mid > long_)).fillna(False),
+        "price_above_mid_sma": (df["close"] > mid).fillna(False),
+        "price_above_long_sma": (df["close"] > long_).fillna(False),
+        "within_pct_of_52w_high": _cond_within_pct_of_52w_high(
+            df, max_pct_below=p["max_pct_from_high"], high_col=col["high_52w"]
+        ),
+        "volume_surge": (df["volume"] > p["vol_multiplier"] * df[col["volume_avg_prev"]]).fillna(
+            False
+        ),
+        "min_liquidity": (volume_avg > p["min_volume"]).fillna(False),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CLASSIC SCREENERS
 # ---------------------------------------------------------------------------
@@ -247,7 +301,7 @@ def cond_sma_trending_up(
 
 @register_screener()
 class Above50SmaScreener(Screener):
-    """Stocks with Close price above 50-day Simple Moving Average."""
+    """Stocks with Close price above a Simple Moving Average (default 50 days)."""
 
     key = "above_50_sma"
     name = "Above 50 SMA"
@@ -255,17 +309,18 @@ class Above50SmaScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "sma_50")
-    required_columns = ("close", "sma_50")
-    default_params: ClassVar[dict[str, Any]] = {}
+    default_params: ClassVar[dict[str, Any]] = {"length": 50}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"sma": ind("sma", length=self.params["length"])}
 
     def rules(self, df: pd.DataFrame, _p: dict) -> dict[str, pd.Series]:
-        return {"close_above_sma50": _cond_above_sma(df, "sma_50")}
+        return {"close_above_sma": _cond_above_sma(df, self.col("sma"))}
 
 
 @register_screener()
 class Above200SmaScreener(Screener):
-    """Stocks with Close price above 200-day Simple Moving Average."""
+    """Stocks with Close price above a Simple Moving Average (default 200 days)."""
 
     key = "above_200_sma"
     name = "Above 200 SMA"
@@ -273,12 +328,13 @@ class Above200SmaScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "sma_200")
-    required_columns = ("close", "sma_200")
-    default_params: ClassVar[dict[str, Any]] = {}
+    default_params: ClassVar[dict[str, Any]] = {"length": 200}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"sma": ind("sma", length=self.params["length"])}
 
     def rules(self, df: pd.DataFrame, _p: dict) -> dict[str, pd.Series]:
-        return {"close_above_sma200": _cond_above_sma(df, "sma_200")}
+        return {"close_above_sma": _cond_above_sma(df, self.col("sma"))}
 
 
 @register_screener()
@@ -345,14 +401,15 @@ class Near52WeekHighScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "high_52w")
-    required_columns = ("close", "high_52w")
-    default_params: ClassVar[dict[str, Any]] = {"threshold_pct": 5.0}
+    default_params: ClassVar[dict[str, Any]] = {"threshold_pct": 5.0, "window": 252}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"high": ind("window", source="high", length=self.params["window"], stat="max")}
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         return {
             "within_52w_high": _cond_within_pct_of_52w_high(
-                df, max_pct_below=p["threshold_pct"], high_col="high_52w"
+                df, max_pct_below=p["threshold_pct"], high_col=self.col("high")
             )
         }
 
@@ -367,17 +424,22 @@ class Near52WeekLowScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "low_52w")
-    required_columns = ("close", "low_52w")
-    default_params: ClassVar[dict[str, Any]] = {"threshold_pct": 5.0}
+    default_params: ClassVar[dict[str, Any]] = {"threshold_pct": 5.0, "window": 252}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"low": ind("window", source="low", length=self.params["window"], stat="min")}
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        return {"near_52w_low": _cond_near_52w_low(df, threshold_pct=p["threshold_pct"])}
+        return {
+            "near_52w_low": _cond_near_52w_low(
+                df, threshold_pct=p["threshold_pct"], low_col=self.col("low")
+            )
+        }
 
 
 @register_screener()
 class RsiOversoldScreener(Screener):
-    """Stocks with RSI(14) below oversold threshold."""
+    """Stocks with RSI below oversold threshold."""
 
     key = "rsi_oversold"
     name = "RSI Oversold"
@@ -385,21 +447,20 @@ class RsiOversoldScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("rsi_14",)
-    required_columns = ("rsi_14",)
-    default_params: ClassVar[dict[str, Any]] = {"threshold": 30.0}
+    default_params: ClassVar[dict[str, Any]] = {"threshold": 30.0, "rsi_period": 14}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"rsi": ind("rsi", length=self.params["rsi_period"])}
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         if df.empty:
             return {"rsi_oversold": pd.Series(False, index=df.index, dtype=bool)}
-        if "rsi_14" not in df.columns:
-            raise MissingIndicatorError(["rsi_14"])
-        return {"rsi_oversold": (df["rsi_14"] < p["threshold"]).fillna(False)}
+        return {"rsi_oversold": (df[self.col("rsi")] < p["threshold"]).fillna(False)}
 
 
 @register_screener()
 class RsiOverboughtScreener(Screener):
-    """Stocks with RSI(14) above overbought threshold."""
+    """Stocks with RSI above overbought threshold."""
 
     key = "rsi_overbought"
     name = "RSI Overbought"
@@ -407,16 +468,15 @@ class RsiOverboughtScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("rsi_14",)
-    required_columns = ("rsi_14",)
-    default_params: ClassVar[dict[str, Any]] = {"threshold": 70.0}
+    default_params: ClassVar[dict[str, Any]] = {"threshold": 70.0, "rsi_period": 14}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"rsi": ind("rsi", length=self.params["rsi_period"])}
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         if df.empty:
             return {"rsi_overbought": pd.Series(False, index=df.index, dtype=bool)}
-        if "rsi_14" not in df.columns:
-            raise MissingIndicatorError(["rsi_14"])
-        return {"rsi_overbought": (df["rsi_14"] > p["threshold"]).fillna(False)}
+        return {"rsi_overbought": (df[self.col("rsi")] > p["threshold"]).fillna(False)}
 
 
 @register_screener()
@@ -429,12 +489,17 @@ class HighVolatilityScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("volatility_20",)
-    required_columns = ("volatility_20",)
-    default_params: ClassVar[dict[str, Any]] = {"threshold": 0.03}
+    default_params: ClassVar[dict[str, Any]] = {"threshold": 0.03, "length": 20}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"volatility": ind("volatility", length=self.params["length"])}
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        return {"high_volatility": _cond_high_volatility(df, threshold=p["threshold"])}
+        return {
+            "high_volatility": _cond_high_volatility(
+                df, threshold=p["threshold"], vol_col=self.col("volatility")
+            )
+        }
 
 
 @register_screener()
@@ -447,12 +512,24 @@ class BollingerSqueezeScreener(Screener):
     category = "classic"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "bb_upper", "bb_lower")
-    required_columns = ("close", "bb_upper", "bb_lower")
-    default_params: ClassVar[dict[str, Any]] = {"threshold": 0.1}
+    default_params: ClassVar[dict[str, Any]] = {"threshold": 0.1, "length": 20, "std": 2.0}
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        p = self.params
+        return {
+            "upper": ind("bollinger_bands", length=p["length"], std=p["std"], output="upper"),
+            "lower": ind("bollinger_bands", length=p["length"], std=p["std"], output="lower"),
+        }
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        return {"bollinger_squeeze": _cond_bollinger_squeeze(df, threshold=p["threshold"])}
+        return {
+            "bollinger_squeeze": _cond_bollinger_squeeze(
+                df,
+                threshold=p["threshold"],
+                upper_col=self.col("upper"),
+                lower_col=self.col("lower"),
+            )
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -473,46 +550,19 @@ class SwingVolumeScreener(Screener):
     category = "swing"
     version = "2.0"
     status: Literal["core", "experimental"] = "core"
-    evidence_columns = (
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-    )
-    required_columns = (
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-    )
     default_params: ClassVar[dict[str, Any]] = {
         "vol_multiplier": 1.5,
         "min_volume": 250_000.0,
         "max_pct_from_high": 15.0,
+        **TREND_PARAMS,
     }
 
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return _trend_specs(self.params)
+
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        conds: dict[str, pd.Series] = {
-            "ma_alignment": ((df["ema_20"] > df["sma_50"]) & (df["sma_50"] > df["sma_200"])).fillna(
-                False
-            ),
-            "price_above_sma50": (df["close"] > df["sma_50"]).fillna(False),
-            "price_above_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52w_high": _cond_within_pct_of_52w_high(
-                df, max_pct_below=p["max_pct_from_high"]
-            ),
-            "volume_surge": (df["volume"] > p["vol_multiplier"] * df["volume_sma_20"]).fillna(
-                False
-            ),
-            "min_liquidity": (df["volume_sma_20"] > p["min_volume"]).fillna(False),
-        }
-        return conds
+        col = {name: spec.column for name, spec in self.specs().items()}
+        return _swing_conditions(df, col, p)
 
 
 @register_screener()
@@ -528,32 +578,6 @@ class SwingMomentumScreener(Screener):
     category = "swing"
     version = "2.0"
     status: Literal["core", "experimental"] = "core"
-    evidence_columns = (
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-        "return_60d",
-        "return_120d",
-        "close_180d",
-        "close_252d",
-    )
-    required_columns = (
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-        "return_60d",
-        "return_120d",
-        "close_180d",
-        "close_252d",
-    )
     default_params: ClassVar[dict[str, Any]] = {
         "vol_multiplier": 1.5,
         "min_volume": 250_000.0,
@@ -563,33 +587,35 @@ class SwingMomentumScreener(Screener):
         "ratio_180_252_min": 50.0,
         "ratio_180_252_max": 300.0,
         "ratio_252_180_max": 300.0,
+        **TREND_PARAMS,
     }
 
-    def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        conds: dict[str, pd.Series] = {
-            "ma_alignment": ((df["ema_20"] > df["sma_50"]) & (df["sma_50"] > df["sma_200"])).fillna(
-                False
-            ),
-            "price_above_sma50": (df["close"] > df["sma_50"]).fillna(False),
-            "price_above_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52w_high": _cond_within_pct_of_52w_high(
-                df, max_pct_below=p["max_pct_from_high"]
-            ),
-            "volume_surge": (df["volume"] > p["vol_multiplier"] * df["volume_sma_20"]).fillna(
-                False
-            ),
-            "min_liquidity": (df["volume_sma_20"] > p["min_volume"]).fillna(False),
-            "return_60d_capped": (df["return_60d"] <= p["max_return_60d"]).fillna(False),
-            "return_120d_floor": (df["return_120d"] >= p["min_return_120d"]).fillna(False),
+    def specs(self) -> dict[str, IndicatorSpec]:
+        # the close N trading days ago: the "value" indicator with days_ago
+        return {
+            **_trend_specs(self.params),
+            "close_60d": ind("value", days_ago=60),
+            "close_120d": ind("value", days_ago=120),
+            "close_180d": ind("value", days_ago=180),
+            "close_252d": ind("value", days_ago=252),
         }
 
-        c_180 = df["close_180d"]
-        c_252 = df["close_252d"]
+    def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
+        col = {name: spec.column for name, spec in self.specs().items()}
+        close = df["close"]
+        conds = _swing_conditions(df, col, p)
+        return_60d = pct_diff(close, df[col["close_60d"]])
+        return_120d = pct_diff(close, df[col["close_120d"]])
+        conds["return_60d_capped"] = (return_60d <= p["max_return_60d"]).fillna(False)
+        conds["return_120d_floor"] = (return_120d >= p["min_return_120d"]).fillna(False)
+
+        c_180 = df[col["close_180d"]]
+        c_252 = df[col["close_252d"]]
         denom_180 = c_180.replace(0, float("nan"))
         denom_252 = c_252.replace(0, float("nan"))
 
-        ratio_252_180 = ((df["close"] - c_252) / denom_180) * 100.0
-        ratio_180_252 = ((df["close"] - c_180) / denom_252) * 100.0
+        ratio_252_180 = ((close - c_252) / denom_180) * 100.0
+        ratio_180_252 = ((close - c_180) / denom_252) * 100.0
 
         conds["ratio_252_180_capped"] = (ratio_252_180 <= p["ratio_252_180_max"]).fillna(False)
         conds["ratio_180_252_capped"] = (ratio_180_252 <= p["ratio_180_252_max"]).fillna(False)
@@ -612,28 +638,6 @@ class RsiMomentumScreener(Screener):
     version = "1.0"
     status: Literal["core", "experimental"] = "core"
 
-    evidence_columns = (
-        "rsi_9",
-        "rsi_9_wma_21",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-    )
-    required_columns = (
-        "rsi_9",
-        "rsi_9_wma_21",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "close",
-        "high_252d_prev",
-        "volume",
-        "volume_sma_20",
-    )
     default_params: ClassVar[dict[str, Any]] = {
         "rsi_period": 9,
         "wma_period": 21,
@@ -643,32 +647,41 @@ class RsiMomentumScreener(Screener):
         "high_52w_pct": 0.85,
         "volume_mult": 1.5,
         "volume_avg_min": 250_000.0,
+        **TREND_PARAMS,
     }
 
+    def specs(self) -> dict[str, IndicatorSpec]:
+        rsi = ind("rsi", length=self.params["rsi_period"])
+        return {
+            **_trend_specs(self.params),
+            "rsi": rsi,
+            "rsi_wma": ind("wma", source=rsi, length=self.params["wma_period"]),
+        }
+
     def rules(self, df: pd.DataFrame, p: dict[str, Any]) -> dict[str, pd.Series]:
-        rsi_col = f"rsi_{p['rsi_period']}"
-        wma_col = f"rsi_{p['rsi_period']}_wma_{p['wma_period']}"
+        col = {name: spec.column for name, spec in self.specs().items()}
+        rsi, rsi_wma = df[col["rsi"]], df[col["rsi_wma"]]
         max_pct_below = (1.0 - p["high_52w_pct"]) * 100.0
+        ema, mid, long_ = df[col["ema"]], df[col["sma_mid"]], df[col["sma_long"]]
+        volume_avg = df[col["volume_avg"]]
 
         return {
             # Trend alignment
-            "ema20_gt_sma50": (df["ema_20"] > df["sma_50"]).fillna(False),
-            "sma50_gt_sma200": (df["sma_50"] > df["sma_200"]).fillna(False),
-            "close_gt_sma50": (df["close"] > df["sma_50"]).fillna(False),
-            "close_gt_sma200": (df["close"] > df["sma_200"]).fillna(False),
-            "within_15pct_52wH": _cond_within_pct_of_52w_high(df, max_pct_below=max_pct_below),
+            "ema_gt_mid_sma": (ema > mid).fillna(False),
+            "mid_sma_gt_long_sma": (mid > long_).fillna(False),
+            "close_gt_mid_sma": (df["close"] > mid).fillna(False),
+            "close_gt_long_sma": (df["close"] > long_).fillna(False),
+            "within_pct_of_52w_high": _cond_within_pct_of_52w_high(
+                df, max_pct_below=max_pct_below, high_col=col["high_52w"]
+            ),
             # Volume
-            "volume_gt_1_5x_avg": (df["volume"] > p["volume_mult"] * df["volume_sma_20"]).fillna(
+            "volume_surge": (df["volume"] > p["volume_mult"] * df[col["volume_avg_prev"]]).fillna(
                 False
             ),
-            "avg_volume_gt_250k": (df["volume_sma_20"] > p["volume_avg_min"]).fillna(False),
+            "min_liquidity": (volume_avg > p["volume_avg_min"]).fillna(False),
             # RSI momentum
-            "rsi9_above_wma21_plus_1_1": (df[rsi_col] >= df[wma_col] + p["wma_offset"]).fillna(
-                False
-            ),
-            "rsi9_between_45_and_65": (
-                (df[rsi_col] >= p["rsi_min"]) & (df[rsi_col] <= p["rsi_max"])
-            ).fillna(False),
+            "rsi_above_wma_plus_offset": (rsi >= rsi_wma + p["wma_offset"]).fillna(False),
+            "rsi_in_range": ((rsi >= p["rsi_min"]) & (rsi <= p["rsi_max"])).fillna(False),
         }
 
 
@@ -690,22 +703,35 @@ class Breakout52wVolumeScreener(Screener):
     category = "breakout"
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "high_52w", "sma_50", "volume", "volume_sma_20")
-    required_columns = ("close", "high_52w", "sma_50", "volume", "volume_sma_20")
     default_params: ClassVar[dict[str, Any]] = {
         "max_pct_from_high": 2.0,
         "vol_multiplier": 2.0,
         "min_liquidity": 100_000.0,
+        "high_window": 252,
+        "sma_mid_length": 50,
+        "volume_avg_length": 20,
     }
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        p = self.params
+        return {
+            "high_52w": ind("window", source="high", length=p["high_window"], stat="max"),
+            "sma_mid": ind("sma", length=p["sma_mid_length"]),
+            "volume_avg": ind("sma", source="volume", length=p["volume_avg_length"]),
+        }
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         return {
             "breakout_52w_high": _cond_within_pct_of_52w_high(
-                df, max_pct_below=p["max_pct_from_high"], high_col="high_52w"
+                df, max_pct_below=p["max_pct_from_high"], high_col=self.col("high_52w")
             ),
-            "price_above_50_sma": _cond_above_sma(df, "sma_50"),
-            "volume_surge_2x": _cond_volume_surge(df, multiplier=p["vol_multiplier"]),
-            "min_volume_liquidity": _cond_min_volume(df, min_volume=p["min_liquidity"]),
+            "price_above_mid_sma": _cond_above_sma(df, self.col("sma_mid")),
+            "volume_surge": _cond_volume_surge(
+                df, multiplier=p["vol_multiplier"], vol_sma_col=self.col("volume_avg")
+            ),
+            "min_volume_liquidity": _cond_min_volume(
+                df, min_volume=p["min_liquidity"], vol_sma_col=self.col("volume_avg")
+            ),
         }
 
 
@@ -722,49 +748,53 @@ class CompositeTrendScreener(Screener):
     category = "trend"
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = (
-        "close",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "golden_cross_10d",
-        "macd_line",
-        "macd_signal",
-        "rsi_14",
-        "volume",
-        "volume_sma_20",
-    )
-    required_columns = (
-        "close",
-        "ema_20",
-        "sma_50",
-        "sma_200",
-        "golden_cross_10d",
-        "macd_line",
-        "macd_signal",
-        "rsi_14",
-        "volume",
-        "volume_sma_20",
-    )
-    default_params: ClassVar[dict[str, Any]] = {"rsi_min": 50.0, "golden_cross_window": 10}
+    # The golden-cross window flags are cached (a crossover function joins the resolver later).
+    required_columns = ("golden_cross_10d",)
+    default_params: ClassVar[dict[str, Any]] = {
+        "rsi_min": 50.0,
+        "golden_cross_window": 10,
+        "ema_length": 20,
+        "sma_mid_length": 50,
+        "sma_long_length": 200,
+        "rsi_period": 14,
+        "volume_avg_length": 20,
+    }
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        p = self.params
+        return {
+            "ema": ind("ema", length=p["ema_length"]),
+            "sma_mid": ind("sma", length=p["sma_mid_length"]),
+            "sma_long": ind("sma", length=p["sma_long_length"]),
+            "macd_line": ind("macd", output="line"),
+            "macd_signal": ind("macd", output="signal"),
+            "rsi": ind("rsi", length=p["rsi_period"]),
+            "volume_avg": ind("sma", source="volume", length=p["volume_avg_length"]),
+        }
+
+    def history_columns(self) -> list[str]:
+        window_flag = f"golden_cross_{self.params['golden_cross_window']}d"
+        return list(dict.fromkeys([*super().history_columns(), window_flag]))
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         gc_col = f"golden_cross_{p['golden_cross_window']}d"
-        sma50_gt_200 = _cond_sma_above_sma(df, fast_sma="sma_50", slow_sma="sma_200")
+        sma_mid_gt_long = _cond_sma_above_sma(
+            df, fast_sma=self.col("sma_mid"), slow_sma=self.col("sma_long")
+        )
         gc_recent = (
             df[gc_col].fillna(False).astype(bool)
             if gc_col in df.columns
             else pd.Series(False, index=df.index)
         )
         return {
-            "close_above_20_ema": (df["close"] > df["ema_20"]).fillna(False),
-            "close_above_50_sma": _cond_above_sma(df, "sma_50"),
-            "trend_crossover_support": (gc_recent | sma50_gt_200).fillna(False),
-            "macd_bullish": (df["macd_line"] > df["macd_signal"]).fillna(False),
-            "rsi_above_50": _cond_rsi_bounds(
-                df, min_rsi=p["rsi_min"], max_rsi=100.0, rsi_col="rsi_14"
+            "close_above_ema": (df["close"] > df[self.col("ema")]).fillna(False),
+            "close_above_mid_sma": _cond_above_sma(df, self.col("sma_mid")),
+            "trend_crossover_support": (gc_recent | sma_mid_gt_long).fillna(False),
+            "macd_bullish": (df[self.col("macd_line")] > df[self.col("macd_signal")]).fillna(False),
+            "rsi_above_min": _cond_rsi_bounds(
+                df, min_rsi=p["rsi_min"], max_rsi=100.0, rsi_col=self.col("rsi")
             ),
-            "volume_healthy": (df["volume"] >= df["volume_sma_20"]).fillna(False),
+            "volume_healthy": (df["volume"] >= df[self.col("volume_avg")]).fillna(False),
         }
 
 
@@ -800,7 +830,10 @@ class MinerviniTrendTemplateScreener(Screener):
         "sma_200_slope_21d",
         "low_52w",
         "high_52w",
+        "ret_rank_252d",
+        "rs_63d",
     )
+
     default_params: ClassVar[dict[str, Any]] = {
         "min_pct_above_52w_low": 30.0,
         "max_pct_below_52w_high": 25.0,
@@ -851,24 +884,30 @@ class RsLeadersScreener(Screener):
     category = "quantitative"
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = (
-        "close",
-        "sma_50",
-        "sma_200",
-        "rs_63d",
-        "ret_rank_252d",
-        "volume_sma_20",
-    )
-    required_columns = ("close", "sma_50", "sma_200", "volume_sma_20")
+    # Benchmark and rank columns are cached (their functions join the resolver later).
+    required_columns = ("ret_rank_252d", "rs_63d")
     default_params: ClassVar[dict[str, Any]] = {
         "min_rs_pct": 0.10,
         "min_rank": 80.0,
         "min_liquidity": 100_000.0,
+        "sma_mid_length": 50,
+        "sma_long_length": 200,
+        "volume_avg_length": 20,
     }
 
+    def specs(self) -> dict[str, IndicatorSpec]:
+        p = self.params
+        return {
+            "sma_mid": ind("sma", length=p["sma_mid_length"]),
+            "sma_long": ind("sma", length=p["sma_long_length"]),
+            "volume_avg": ind("sma", source="volume", length=p["volume_avg_length"]),
+        }
+
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        c_gt_50 = _cond_above_sma(df, "sma_50")
-        sma50_gt_200 = _cond_sma_above_sma(df, fast_sma="sma_50", slow_sma="sma_200")
+        c_gt_mid = _cond_above_sma(df, self.col("sma_mid"))
+        mid_gt_long = _cond_sma_above_sma(
+            df, fast_sma=self.col("sma_mid"), slow_sma=self.col("sma_long")
+        )
         rs_lead = (
             _cond_relative_strength_leader(df, rs_col="rs_63d", min_rs=p["min_rs_pct"])
             if "rs_63d" in df.columns
@@ -880,9 +919,11 @@ class RsLeadersScreener(Screener):
             else pd.Series(False, index=df.index)
         )
         return {
-            "price_trend_alignment": (c_gt_50 & sma50_gt_200).fillna(False),
+            "price_trend_alignment": (c_gt_mid & mid_gt_long).fillna(False),
             "rs_leader": (rs_lead | rank_lead).fillna(False),
-            "min_liquidity": _cond_min_volume(df, min_volume=p["min_liquidity"]),
+            "min_liquidity": _cond_min_volume(
+                df, min_volume=p["min_liquidity"], vol_sma_col=self.col("volume_avg")
+            ),
         }
 
 
@@ -899,21 +940,33 @@ class RsiPullbackUptrendScreener(Screener):
     category = "pullback"
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "sma_50", "sma_200", "rsi_14", "volume", "volume_sma_20")
-    required_columns = ("close", "sma_50", "sma_200", "rsi_14", "volume", "volume_sma_20")
+    required_columns = ("vol_dryup",)  # a cached ratio (its partial-window quirk is CL-26)
     default_params: ClassVar[dict[str, Any]] = {
         "rsi_lower": 40.0,
         "rsi_upper": 55.0,
         "max_vol_multiple": 1.2,
+        "sma_mid_length": 50,
+        "sma_long_length": 200,
+        "rsi_period": 14,
     }
 
-    def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
-        c_gt_50 = _cond_above_sma(df, "sma_50")
-        sma50_gt_200 = _cond_sma_above_sma(df, fast_sma="sma_50", slow_sma="sma_200")
+    def specs(self) -> dict[str, IndicatorSpec]:
+        p = self.params
         return {
-            "uptrend_alignment": (c_gt_50 & sma50_gt_200).fillna(False),
+            "sma_mid": ind("sma", length=p["sma_mid_length"]),
+            "sma_long": ind("sma", length=p["sma_long_length"]),
+            "rsi": ind("rsi", length=p["rsi_period"]),
+        }
+
+    def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
+        c_gt_mid = _cond_above_sma(df, self.col("sma_mid"))
+        mid_gt_long = _cond_sma_above_sma(
+            df, fast_sma=self.col("sma_mid"), slow_sma=self.col("sma_long")
+        )
+        return {
+            "uptrend_alignment": (c_gt_mid & mid_gt_long).fillna(False),
             "rsi_support_zone": _cond_rsi_bounds(
-                df, min_rsi=p["rsi_lower"], max_rsi=p["rsi_upper"], rsi_col="rsi_14"
+                df, min_rsi=p["rsi_lower"], max_rsi=p["rsi_upper"], rsi_col=self.col("rsi")
             ),
             "volume_orderly": _cond_volume_dryup(df, max_ratio=p["max_vol_multiple"]),
         }
@@ -932,16 +985,20 @@ class VcpLiteScreener(Screener):
     category = "breakout"
     version = "2.0"
     status: Literal["core", "experimental"] = "experimental"
-    evidence_columns = ("close", "sma_50", "atr_pct", "atr_pct_max_60d", "volume", "volume_sma_20")
-    required_columns = ("close", "sma_50", "volume", "volume_sma_20")
+    # Cached ratios whose partial-window quirks are fixed in CL-26.
+    required_columns = ("atr_pct", "atr_pct_max_60d", "vol_dryup")
     default_params: ClassVar[dict[str, Any]] = {
         "vol_dryup_threshold": 0.7,
         "atr_factor": 0.75,
+        "sma_mid_length": 50,
     }
+
+    def specs(self) -> dict[str, IndicatorSpec]:
+        return {"sma_mid": ind("sma", length=self.params["sma_mid_length"])}
 
     def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         return {
-            "uptrend_close_above_50": _cond_above_sma(df, "sma_50"),
+            "uptrend_close_above_mid_sma": _cond_above_sma(df, self.col("sma_mid")),
             "volatility_contraction": _cond_atr_contracting(df, threshold_factor=p["atr_factor"]),
             "volume_dryup": _cond_volume_dryup(df, max_ratio=p["vol_dryup_threshold"]),
         }

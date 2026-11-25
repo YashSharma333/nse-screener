@@ -39,7 +39,7 @@ def evaluate_screener_history(
     if df.empty:
         return pd.DataFrame(columns=["symbol", "date", "signal", *screener.evidence_columns])
 
-    # Validate required columns
+    df = screener.prepare(df)  # add the indicators the screener declares
     screener._validate_required_columns(df)
 
     cond_dict = screener.all_conditions(df)

@@ -53,7 +53,7 @@ def test_vectorized_explain_equivalence_on_sample():
     df = pd.DataFrame(data)
 
     screener = SyntheticTenConditionScreener()
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
 
     expected_failed, expected_near_miss_on = _legacy_explain_reference(screener, df)
 
@@ -72,7 +72,7 @@ def test_vectorized_explain_one_million_rows_under_ten_seconds():
     screener = SyntheticTenConditionScreener()
 
     start_time = time.perf_counter()
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     elapsed = time.perf_counter() - start_time
 
     assert len(explained) == n

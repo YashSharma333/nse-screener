@@ -15,10 +15,18 @@ import pandas as pd
 import pytest
 
 from src.computation.indicators.calculator import add_all_indicators
-from src.screeners.base import Screener
-from src.screeners.registry import list_screeners
+from src.computation.indicators.resolver import ensure_columns
+from src.screeners.base import Screener, list_screeners
+from tests.screener_utils import passed_rows
 
 ALL_SCREENERS = list_screeners()
+
+
+def _with_specs(screener: Screener, df: pd.DataFrame) -> pd.DataFrame:
+    """A copy of the table with the indicators the screener declares (computed on the history)."""
+    prepared = df.copy()
+    ensure_columns(prepared, screener.required_specs())
+    return prepared
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +134,7 @@ def test_screener_condition_evaluation_and_explain(
     5. explain(df) contract: original cols + summary metrics + individual condition cols.
     """
     screener = screener_cls()
-    df = synthetic_full_and_truncated_data["full_indicators"].copy()
+    df = _with_specs(screener, synthetic_full_and_truncated_data["full_indicators"])
 
     # 3. Test conditions return aligned bool Series
     cond_dict = screener.all_conditions(df)
@@ -143,12 +151,12 @@ def test_screener_condition_evaluation_and_explain(
 
     # 4. run(df) matches logical AND of all conditions
     expected_mask = functools.reduce(operator.and_, cond_results)
-    run_df = screener.run(df)
+    run_df = passed_rows(screener, df)
     assert isinstance(run_df, pd.DataFrame)
     assert run_df.index.equals(df[expected_mask].index)
 
     # 5. explain(df) contract
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert len(explained) == len(df)
     assert explained.index.equals(df.index)
 
@@ -182,15 +190,15 @@ def test_screener_point_in_time_look_ahead(
     screener = screener_cls()
     t_mid = synthetic_full_and_truncated_data["t_mid"]
 
-    full_df = synthetic_full_and_truncated_data["full_indicators"]
-    trunc_df = synthetic_full_and_truncated_data["trunc_indicators"]
+    full_df = _with_specs(screener, synthetic_full_and_truncated_data["full_indicators"])
+    trunc_df = _with_specs(screener, synthetic_full_and_truncated_data["trunc_indicators"])
 
     full_t = full_df[full_df["date"] == t_mid].sort_values("symbol").reset_index(drop=True)
     trunc_t = trunc_df[trunc_df["date"] == t_mid].sort_values("symbol").reset_index(drop=True)
 
     # Evaluate screener explain on both
-    full_explained = screener.explain(full_t)
-    trunc_explained = screener.explain(trunc_t)
+    full_explained = screener.explain(screener.prepare(full_t))
+    trunc_explained = screener.explain(screener.prepare(trunc_t))
 
     # Compare boolean pass decisions at t_mid
     pd.testing.assert_series_equal(

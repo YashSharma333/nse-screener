@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def test_custom_screeners_load_when_strategies_are_imported_first():
     code = (
         "import src.strategies.cli\n"
-        "from src.screeners.registry import get_screener\n"
+        "from src.screeners.base import get_screener\n"
         "print(get_screener('custom_tight_consolidation').key)\n"
     )
     result = subprocess.run(
