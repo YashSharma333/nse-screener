@@ -19,9 +19,11 @@ description: Finish a task. Verifies the branch, runs the CI-like checks, review
 6. Commit specific paths with a Conventional Commit message, re-check the branch
    (Step D), then `git push -u origin <branch>`.
 7. Open the PR with `gh pr create`, title `<type>(<task>): <summary>`, body with
-   these sections in order: Summary, Changes, Commands, Verification,
-   Not verified, Risks and rollback, Issues filed. Do NOT put merge advice in the
-   PR description: it goes only in the final report in step 10.
+   these sections in order: Summary, Changes, Commands (one purpose line above
+   each command, e.g. "Run the full test suite offline:"), Verification, Not
+   verified; `Fixes #N` only for issues the PR closes. Only what was created or
+   fixed: no mention of the owner, merge advice, rollback, tracker or changelog,
+   or `.claude/` changes. Merge advice goes only in the final report in step 10.
 8. Print the PR URL. If `gh pr create` fails, say so and print the title and body.
 9. NEVER run `gh pr merge`, never push to main, never enable auto-merge. Do not
    delete the branch: its PR is still open.

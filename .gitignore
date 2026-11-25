@@ -26,6 +26,9 @@ reports/*
 # Scratch notes for GitHub issues
 issue.md
 
+# Owner-only notes, trackers, guides and drafts (never committed)
+notes/
+
 # Packaging output
 dist/
 build/

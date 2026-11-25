@@ -83,7 +83,7 @@ Stop and report instead of pushing on when: the same test or command fails after
 
 - Branches from an up-to-date `main`: `fix/<task>-name`, `feat/<task>-name`, `docs/<name>`, `chore/<name>`. One task = one branch = one PR; a Fixes PR and an Updates PR are always separate. If a task grows beyond about 800 changed lines, stop and file an issue proposing a split. Follow-up fixes go on the same branch. Never reuse a branch whose PR was merged.
 - Task IDs (T01 to T65a, Prompts A to L, FIRST-n, I<issue>) appear in branch names, commit messages and the PR title. Conventional Commits: `fix(T64): ...`, `feat(T65a): ...`, `docs: ...`. No "WIP".
-- **PR title:** `<type>(<task id>): <what it does>`. **PR description, in this order:** Summary, Changes, Commands (for the owner), Verification (real results), Not verified, Risks and rollback, Issues filed (`Fixes #N` only for issues the PR really closes). Do NOT put merge advice in the PR description.
+- **PR title:** `<type>(<task id>): <what it does>`. **PR description, in this order:** Summary, Changes, Commands, Verification (real results), Not verified; add `Fixes #N` only for issues the PR really closes. Under Commands, put one short purpose line above each command block saying what it is for (for example "Run the full test suite offline (same as CI):"). Write it like an ordinary team PR: only what was created or fixed. Never mention the owner, merge advice, rollback advice, tracker or changelog updates, or changes to `.claude/` skills, commands, agents or settings (unless the PR is about them).
 - **Merge advice (the owner merges; the AI always says WHEN and HOW).** Every final report (the chat message to the owner, never the GitHub PR description) ends with a "Merge advice" block:
   1. **When:** "Merge now" only if CI is green, no review comment is unresolved, the branch has no conflict with `main`, and every PR this one depends on is already merged. Otherwise "Wait for: <the exact thing>". If the PR's "Not verified" list holds something the owner can check, say what and how.
   2. **Method:** pick one by the table below and give a one-line reason. Do not default to a method by PR type (Fixes or Updates).
@@ -130,6 +130,10 @@ File an issue (`gh issue create`, skill `github-issue`) when you find a bug outs
 ## Skills and slash commands
 
 `.claude/skills/`: `branch-guard` (mandatory at the start of every task and before every commit and push), `simplify-for-beginner` (every task that edits code or tests: code rules, the test-as-you-go loop, test-suite rules), `deep-cleanup` (every deletion, the end-of-task repo checks and the weekly audit), `nse-data-integrity` (anything touching ingestion, caches, trading days, adjustments, the universe or symbol names), `db-migration`, `github-issue`. `.claude/commands/`: `/start-task` (run at the start of every task), `/pr-ready` (run at the end; opens the PR, never merges). Skills and commands may not weaken any rule in this file; if one is wrong, file an issue and propose the fix in your PR.
+
+## Keeping the repository clean
+
+Notes, trackers, guides, prompts and drafts that are only for the owner go in `notes/` (git-ignored), never in the repository. Docs that describe the project itself (README, `docs/`, the blueprint) stay in the repo and are updated together with the code. Edits to `.claude/` skills, commands and agents are committed only in a task that is about them.
 
 ## Final report
 
