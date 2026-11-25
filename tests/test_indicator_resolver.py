@@ -119,6 +119,7 @@ def test_every_registered_indicator_takes_custom_numbers() -> None:
         "bollinger_bands": {"length": 10, "std": 1.5, "output": "lower"},
         "macd": {"fast": 5, "slow": 10, "signal": 3, "output": "histogram"},
         "window": {"source": "low", "length": 5, "stat": "min"},
+        "value": {"source": "open"},
     }
     assert set(cases) == set(REGISTRY)
     for name, custom in cases.items():
@@ -202,3 +203,12 @@ def test_chartink_example_volume_at_least_1_5_times_yesterdays_20_day_average() 
     assert passes.equals(df["volume"] >= 1.5 * by_hand)
     assert passes.iloc[40]
     assert not passes.iloc[:20].any()  # no 20-day history yet, so NaN compares false
+
+
+def test_value_with_days_ago_is_the_column_n_days_ago_inside_each_stock() -> None:
+    df = _table()
+    spec = ind("value", source="close", days_ago=5)
+    assert spec.column == "value_close_ago5"
+    got = compute_indicator(df, spec)
+    expected = df.groupby("symbol")["close"].shift(5)
+    pd.testing.assert_series_equal(got, expected, check_names=False)

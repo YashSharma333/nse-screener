@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from src.computation.indicators.resolver import IndicatorSpec, ensure_columns
+from src.screeners.legacy_columns import CACHED_NAME
 
 # Columns every screener may read besides its own: the stock's identity and plain prices.
 BASE_COLUMNS = ("series", "open", "high", "low", "close", "volume", "market_cap")
@@ -103,28 +104,60 @@ class Screener:
         del df, params
         return {}
 
-    def required_specs(self) -> list[IndicatorSpec]:
-        """The indicators (with the numbers from ``self.params``) this screener reads.
+    def specs(self) -> dict[str, IndicatorSpec]:
+        """The indicators this screener reads by short name, with the numbers from ``self.params``.
 
-        The resolver adds any of them that the table does not have yet, so a changed
-        ``rsi_period`` works for any length. Override in a subclass; the default needs none.
+        Override in a subclass; ``rules`` then reads a column with ``self.col("short name")``.
         """
-        return []
+        return {}
+
+    def col(self, name: str) -> str:
+        """The column name of the indicator declared under ``name`` in ``specs``."""
+        return self.specs()[name].column
+
+    def required_specs(self) -> list[IndicatorSpec]:
+        """Every indicator in ``specs``. The resolver adds those the table does not have yet,
+        so a changed ``rsi_period`` works for any length.
+        """
+        return list(self.specs().values())
 
     def history_columns(self) -> list[str]:
         """The cached columns to read for ``screen``: the base ones plus ``required_columns``."""
-        return list(dict.fromkeys([*BASE_COLUMNS, *self.required_columns]))
+        cached = [CACHED_NAME[s.column] for s in self.required_specs() if s.column in CACHED_NAME]
+        return list(dict.fromkeys([*BASE_COLUMNS, *self.required_columns, *cached]))
+
+    def prepare(self, df: pd.DataFrame) -> pd.DataFrame:
+        """A copy of ``df`` with every indicator in ``specs`` present as a column.
+
+        A column the cache already holds under its old name is copied (exact and fast); any
+        other is computed by the resolver on the whole table, so the table must hold each
+        stock's history. The caller's table is not changed.
+        """
+        if df.empty:
+            return df.copy()
+        working = df.copy(deep=False)  # new columns go on the copy, not on the caller's table
+        for spec in self.required_specs():
+            cached = CACHED_NAME.get(spec.column)
+            if cached in working.columns and spec.column not in working.columns:
+                working[spec.column] = working[cached]
+        return ensure_columns(working, self.required_specs())
+
+    def missing_specs(self, df: pd.DataFrame) -> list[IndicatorSpec]:
+        """The specs ``df`` cannot give (no such column, and no cached one under the old name)."""
+        return [
+            spec
+            for spec in self.required_specs()
+            if spec.column not in df.columns and CACHED_NAME.get(spec.column) not in df.columns
+        ]
 
     def screen(self, history: pd.DataFrame) -> pd.DataFrame:
-        """Evaluate the newest day of ``history`` (every stock's rows up to that day).
+        """Explain the newest day of ``history`` (every stock's rows up to that day).
 
-        Adds the indicators in ``required_specs`` on the whole history first, because rolling
-        indicators need the earlier rows, then explains the one row per stock of the last day.
-        The caller's table is not changed.
+        Rolling indicators need the earlier rows, so they are added on the whole history first;
+        then the one row per stock of the last day is explained.
         """
-        working = history.copy(deep=False)  # new columns go on the copy, not on the caller's table
-        ensure_columns(working, self.required_specs())
-        newest = working[working["date"] == working["date"].max()]
+        prepared = self.prepare(history)
+        newest = prepared[prepared["date"] == prepared["date"].max()]
         return self.explain(newest)
 
     # ------------------------------------------------------------------
@@ -154,23 +187,8 @@ class Screener:
         return result
 
     # ------------------------------------------------------------------
-    # Public API: run() and explain()
+    # Public API: screen() and explain()
     # ------------------------------------------------------------------
-    def run(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Return rows from df that pass every screening condition."""
-        if df.empty:
-            return df.copy()
-
-        conditions = self.all_conditions(df)
-        if not conditions:
-            return df.copy()
-
-        mask = pd.Series(True, index=df.index)
-        for cond_series in conditions.values():
-            mask &= cond_series
-
-        return df[mask].copy()
-
     def explain(self, df: pd.DataFrame) -> pd.DataFrame:
         """Evaluate all conditions and add diagnostic columns.
 

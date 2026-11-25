@@ -18,6 +18,7 @@ from src.computation.indicators.calculator import add_all_indicators
 from src.computation.indicators.resolver import ensure_columns
 from src.screeners.base import Screener
 from src.screeners.registry import list_screeners
+from tests.screener_utils import passed_rows
 
 ALL_SCREENERS = list_screeners()
 
@@ -151,12 +152,12 @@ def test_screener_condition_evaluation_and_explain(
 
     # 4. run(df) matches logical AND of all conditions
     expected_mask = functools.reduce(operator.and_, cond_results)
-    run_df = screener.run(df)
+    run_df = passed_rows(screener, df)
     assert isinstance(run_df, pd.DataFrame)
     assert run_df.index.equals(df[expected_mask].index)
 
     # 5. explain(df) contract
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert len(explained) == len(df)
     assert explained.index.equals(df.index)
 
@@ -197,8 +198,8 @@ def test_screener_point_in_time_look_ahead(
     trunc_t = trunc_df[trunc_df["date"] == t_mid].sort_values("symbol").reset_index(drop=True)
 
     # Evaluate screener explain on both
-    full_explained = screener.explain(full_t)
-    trunc_explained = screener.explain(trunc_t)
+    full_explained = screener.explain(screener.prepare(full_t))
+    trunc_explained = screener.explain(screener.prepare(trunc_t))
 
     # Compare boolean pass decisions at t_mid
     pd.testing.assert_series_equal(

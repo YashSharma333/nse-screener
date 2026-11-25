@@ -2,6 +2,7 @@ import unittest
 
 from src.db.models import DailyPrice
 from src.screeners.catalog import SwingMomentumScreener, SwingVolumeScreener
+from tests.screener_utils import passed_rows
 
 
 class TestModelsAndScreeners(unittest.TestCase):
@@ -16,8 +17,8 @@ class TestModelsAndScreeners(unittest.TestCase):
         import pandas as pd
 
         empty_df = pd.DataFrame()
-        self.assertTrue(SwingVolumeScreener().run(empty_df).empty)
-        self.assertTrue(SwingMomentumScreener().run(empty_df).empty)
+        self.assertTrue(passed_rows(SwingVolumeScreener(), empty_df).empty)
+        self.assertTrue(passed_rows(SwingMomentumScreener(), empty_df).empty)
 
 
 if __name__ == "__main__":

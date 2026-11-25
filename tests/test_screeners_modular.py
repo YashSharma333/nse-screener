@@ -21,6 +21,7 @@ from src.screeners.catalog import (
     RsLeadersScreener,
     VcpLiteScreener,
 )
+from tests.screener_utils import passed_rows
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +48,12 @@ def test_minervini_trend_template_pass_and_near_miss() -> None:
     screener = MinerviniTrendTemplateScreener()
 
     # run()
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 1
     assert passed.iloc[0]["symbol"] == "PASS"
 
     # explain()
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     row_pass = explained.iloc[0]
     row_near = explained.iloc[1]
     row_fail = explained.iloc[2]
@@ -79,13 +80,13 @@ def test_breakout_52w_volume() -> None:
     df = pd.DataFrame(data)
     screener = Breakout52wVolumeScreener()
 
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 1
     assert passed.iloc[0]["symbol"] == "BREAKOUT"
 
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert bool(explained.iloc[1]["near_miss"]) is True
-    assert explained.iloc[1]["near_miss_on"] == "volume_surge_2x"
+    assert explained.iloc[1]["near_miss_on"] == "volume_surge"
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +106,11 @@ def test_rsi_pullback_uptrend() -> None:
     df = pd.DataFrame(data)
     screener = RsiPullbackUptrendScreener()
 
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 1
     assert passed.iloc[0]["symbol"] == "PULLBACK_PASS"
 
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert bool(explained.iloc[1]["near_miss"]) is True
     assert explained.iloc[1]["near_miss_on"] == "rsi_support_zone"
 
@@ -131,11 +132,11 @@ def test_vcp_lite() -> None:
     df = pd.DataFrame(data)
     screener = VcpLiteScreener()
 
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 1
     assert passed.iloc[0]["symbol"] == "VCP_PASS"
 
-    explained = screener.explain(df)
+    explained = screener.explain(screener.prepare(df))
     assert bool(explained.iloc[1]["near_miss"]) is True
     assert explained.iloc[1]["near_miss_on"] == "volume_dryup"
 
@@ -156,7 +157,7 @@ def test_rs_leaders() -> None:
     df = pd.DataFrame(data)
     screener = RsLeadersScreener()
 
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 2
     symbols = list(passed["symbol"])
     assert "LEADER_RS" in symbols
@@ -184,6 +185,6 @@ def test_composite_trend() -> None:
     df = pd.DataFrame(data)
     screener = CompositeTrendScreener()
 
-    passed = screener.run(df)
+    passed = passed_rows(screener, df)
     assert len(passed) == 1
     assert passed.iloc[0]["symbol"] == "TRENDING"

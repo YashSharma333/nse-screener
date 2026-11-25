@@ -36,6 +36,12 @@ from src.computation.indicators.grouped import (
 STATS = ("max", "min", "mean", "sum", "count")
 
 
+def value(df: pd.DataFrame, source: str = "close") -> pd.Series:
+    """The column ``source`` itself (with the resolver's ``days_ago``: its value N days ago)."""
+    require(df, source)
+    return df[source]
+
+
 def window_stat(
     df: pd.DataFrame,
     source: str = "high",
