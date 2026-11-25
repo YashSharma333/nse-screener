@@ -23,61 +23,56 @@ Create the screener module and its companion test by hand (copy a small existing
 
 ### 2. Implement the Screening Conditions
 
-In `src/screeners/my_breakout.py`, build your conditions from the helpers in `src/screeners/catalog.py` (the single home of all conditions):
+A screener lists the indicators it needs as **specs** built from its parameters, and its rules compare plain columns. The resolver (`src/computation/indicators/resolver.py`) adds any missing column, so any number the user types (SMA 75, RSI period 7) works. Build conditions from the helpers in `src/screeners/catalog.py`:
 
 ```python
-from dataclasses import dataclass
-from typing import Literal
+from typing import Any, ClassVar, Literal
+
 import pandas as pd
-from src.screeners.base import Screener
-from src.screeners.catalog import _cond_above_sma as cond_above_sma
-from src.screeners.catalog import _cond_volume_surge as cond_volume_surge
-from src.screeners.base import register_screener
+
+from src.computation.indicators.resolver import IndicatorSpec, ind
+from src.screeners.base import Screener, register_screener
+from src.screeners.catalog import _cond_above_sma, _cond_volume_surge
 
 
-@dataclass(frozen=True)
-class MyBreakoutParams:
-    sma_window: int = 50
-    volume_surge_mult: float = 2.0
-
-
-@register_screener(
-    key="my_breakout",
-    name="My Volume Breakout",
-    category="breakout",
-    description="High volume breakout above 50-day moving average",
-    version="1.0",
-    status="experimental",
-)
+@register_screener()
 class MyBreakoutScreener(Screener):
     key = "my_breakout"
     name = "My Volume Breakout"
+    description = "High volume breakout above the moving average"
     category = "breakout"
     version = "1.0"
     status: Literal["core", "experimental"] = "experimental"
+    # Parameters are plain numbers; the sidebar lets the user change every one of them.
+    default_params: ClassVar[dict[str, Any]] = {"sma_length": 50, "volume_mult": 2.0}
 
-    evidence_columns: tuple[str, ...] = ("close", "sma_50", "volume", "volume_sma_20")
-    required_columns: tuple[str, ...] = ("close", "sma_50", "volume", "volume_sma_20")
-    params_cls = MyBreakoutParams
-
-    def price_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+    def specs(self) -> dict[str, IndicatorSpec]:
+        """The indicators this screener reads, by short name, with the numbers from the params."""
         return {
-            "above_50_sma": cond_above_sma(df, sma_col="sma_50"),
+            "sma": ind("sma", length=self.params["sma_length"]),
+            # yesterday's 20-day average volume (days_ago=1), the Chartink-style surge rule
+            "volume_avg_prev": ind("sma", source="volume", length=20, days_ago=1),
         }
 
-    def volume_conditions(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        params: MyBreakoutParams = self.params
+    def rules(self, df: pd.DataFrame, p: dict) -> dict[str, pd.Series]:
         return {
-            "volume_surge": cond_volume_surge(df, multiplier=params.volume_surge_mult),
+            "above_sma": _cond_above_sma(df, self.col("sma")),
+            "volume_surge": _cond_volume_surge(
+                df, multiplier=p["volume_mult"], vol_sma_col=self.col("volume_avg_prev")
+            ),
         }
 ```
 
+`self.col("sma")` is the column name of the spec (for example `sma_close_50`). Columns that the resolver cannot make yet (benchmark and rank columns such as `rs_63d`, crossover flags) go in `required_columns = ("rs_63d",)` and are read from the cache. Use `src/computation/indicators/resolver.py` (`describe_indicators()`) to see every indicator and its parameters.
+
 > [!IMPORTANT]
-> **No Look-Ahead or Runtime Shifts:** All technical indicators must be precomputed by the indicator functions (`add_all_indicators` in `src/computation/indicators/calculator.py`). Never call `.shift()`, `.rolling()`, or `.pct_change()` inside screener condition helpers. Missing columns must raise `MissingIndicatorError`.
+> **No Look-Ahead or Runtime Shifts:** Never call `.shift()`, `.rolling()`, or `.pct_change()` inside screener code. Ask for the indicator through a spec (`ind(..., days_ago=n)` looks back inside each stock). Missing columns must raise `MissingIndicatorError`.
 
-### 3. Register in `src/screeners/__init__.py`
+Run a screener on a table of each stock's history with `screener.screen(history)` (it explains the newest day), or on prepared rows with `screener.explain(screener.prepare(df))`.
 
-Add an import in `src/screeners/__init__.py`:
+### 3. Register It
+
+`@register_screener()` (in `src/screeners/base.py`) registers the class when its module is imported. Add the import to `src/screeners/__init__.py`:
 
 ```python
 import src.screeners.my_breakout  # noqa: F401
@@ -94,7 +89,6 @@ pytest tests/test_screener_contract.py -k my_breakout
 The contract suite automatically validates:
 - Unique screener key and valid metadata
 - Aligned boolean Series for all conditions (no NaNs)
-- Logical `AND` equivalence of `.run(df)`
 - Correct `.explain(df)` columns (including `near_miss` and `failed_conditions`)
 - AST static check verifying 0 forbidden look-ahead operations
 - Point-in-time truncation invariance

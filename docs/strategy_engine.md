@@ -17,7 +17,7 @@ The system decouples **Screeners** (stock selection) from **Strategies** (trade 
                                 v
 +----------------------------------------------------------------+
 |                     2. Screener Execution                      |
-|       Screener.run(df) / evaluate_screener_history(df)         |
+|     Screener.explain(df) / evaluate_screener_history(df)       |
 |             Generates Candidate Trade Signals (t)              |
 +-------------------------------+--------------------------------+
                                 |

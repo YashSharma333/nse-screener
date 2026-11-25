@@ -113,7 +113,7 @@ The tables used today are `daily_prices`, `securities`, `symbol_changes`, `corpo
 
 ## 📐 Quantitative Screener Platform
 
-The project features an extensible, pluggable screener platform (`src/screeners/`) where screening rules are organized strictly by their nature (**Price**, **Volume**, **Crossover**, **Momentum**). Every screener supports execution (`run()`) and deep diagnostic introspection (`explain()`), including **near-miss detection** (identifying equities that passed all criteria except a single bottleneck condition).
+The project features an extensible, pluggable screener platform (`src/screeners/`) where screening rules are organized strictly by their nature (**Price**, **Volume**, **Crossover**, **Momentum**). Every screener lists the indicators it needs (`specs()`, so any length works) and supports deep diagnostic introspection (`explain()`), including **near-miss detection** (identifying equities that passed all criteria except a single bottleneck condition).
 
 ### 1. Registered Systematic Screeners
 
@@ -148,11 +148,11 @@ from src.screeners.base import get_screener
 # Instantiate any registered screener
 screener = get_screener("minervini_trend_template")
 
-# Run screener to get passing stocks
-passing_stocks = screener.run(snapshot_df)
-
-# Deep diagnostic explainability with near-miss analysis
-explained_df = screener.explain(snapshot_df)
+# Evaluate the newest day of every stock's history (indicators are added from the history)
+from src.computation import cache_reader
+history = cache_reader.read_history_up_to(screener.history_columns())
+explained_df = screener.screen(history)
+passing_stocks = explained_df[explained_df["passed"]]
 
 # Find near-miss stocks that failed by only 1 condition
 near_misses = explained_df[explained_df["near_miss"]]
@@ -623,8 +623,7 @@ nse-screener/
 │   │   ├── corporate_actions_parser.py # Reads NSE action text into exact price factors
 │   │   └── corporate_actions_store.py  # Stores the reports and reads adjustment-ready events
 │   └── screeners/                # Extensible Screener Platform
-│       ├── base.py               # Screener abstract base class & explainability
-│       ├── registry.py           # Pluggable screener registry & discovery
+│       ├── base.py               # Screener base class, explainability and the screener registry
 │       ├── catalog.py            # All conditions and the built-in screeners
 │       └── declarative.py        # JSON screeners from screeners/custom/
 ├── tests/                        # Unit & integration tests (offline: SQLite and tmp folders)
