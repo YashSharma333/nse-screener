@@ -152,6 +152,7 @@ class TestSwingVolumePageSidebar(unittest.TestCase):
                 "sma_50": 90.0,
                 "sma_200": 80.0,
                 "high_252d_prev": 105.0,
+                "pct_from_52w_high": (100.0 - 105.0) / 105.0 * 100.0,
                 "volume": volume,
                 "volume_sma_20": 400_000.0,
                 "rsi_14": 60.0,

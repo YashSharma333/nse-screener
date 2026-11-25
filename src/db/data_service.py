@@ -24,7 +24,7 @@ from sqlalchemy import text
 from config import settings
 from config.settings import INDICATOR_HISTORY_YEARS, INDICATOR_WARMUP_BARS, setup_logging
 from src.computation.cache_reader import date_literal, fill_missing_market_cap
-from src.computation.indicators import INDICATORS_SCHEMA_VERSION, TechnicalCalculator
+from src.computation.indicators import INDICATORS_SCHEMA_VERSION, add_all_indicators
 from src.db.session import check_connection, engine
 from src.ingestion.benchmark import canonical_index_code
 
@@ -311,7 +311,7 @@ def compute_market_indicators(
     if benchmark_df is None:
         benchmark_df = get_benchmark_returns("NIFTY 500")
 
-    return TechnicalCalculator.apply_all_indicators(raw_df, benchmark_df=benchmark_df)
+    return add_all_indicators(raw_df, benchmark_df=benchmark_df)
 
 
 def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame:

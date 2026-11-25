@@ -20,7 +20,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from src.common.trading_calendar import BENCHMARK, load_non_trading_days
-from src.computation.indicators.calculator import calculate_sma
+from src.computation.indicators.calculator import sma
 from src.db.models import Base, BenchmarkPrice, DailyPrice
 from src.etl.adjust import cumulative_factors, rebuild_adjusted
 from src.ingestion.benchmark import (
@@ -105,7 +105,7 @@ def test_fri_sun_mon_price_sequence_no_false_split_and_normal_bar_indicators():
 
     # 3. Indicator code: Sunday must be treated as a normal bar
     # 2-bar SMA on Sunday should average [Fri Close (4000), Sun Close (4020)] -> 4010.0
-    sma2 = calculate_sma(df, window=2, column="adj_close")
+    sma2 = sma(df, length=2, source="adj_close")
     assert np.isnan(sma2.iloc[0])  # Friday has no prior bar
     assert sma2.iloc[1] == 4010.0  # Sunday bar included
     assert sma2.iloc[2] == 4035.0  # Monday bar: (4020 + 4050) / 2
