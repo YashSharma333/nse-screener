@@ -15,12 +15,12 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from src.common.trading_calendar import PRICES, load_non_trading_days
 from src.db.models import Base, DailyPrice
 from src.etl.daily_update import run_daily_update
 from src.ingestion.nse_files import BadFile, NoFile
 from src.ingestion.price_loader import (
     find_price_gaps,
-    load_non_trading_days,
     load_raw_prices,
 )
 from tests.test_bhavcopy_parser import make_old_zip, make_udiff_zip
@@ -231,7 +231,7 @@ def test_404_records_non_trading_and_inserts_nothing(sqlite_session: Session, tm
     assert summary.rows_inserted == 0
 
     # Date must be recorded in non_trading_days.json
-    stored_nt = load_non_trading_days(nt_path)
+    stored_nt = load_non_trading_days(PRICES, nt_path)
     assert holiday in stored_nt
 
 
@@ -261,7 +261,7 @@ def test_404_in_last_3_days_not_recorded_as_holiday(sqlite_session: Session, tmp
     assert summary.rows_inserted == 0
 
     # Date must NOT be recorded as non-trading
-    stored_nt = load_non_trading_days(nt_path)
+    stored_nt = load_non_trading_days(PRICES, nt_path)
     assert recent_date not in stored_nt
 
 

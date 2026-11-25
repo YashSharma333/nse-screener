@@ -19,15 +19,13 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from src.common.trading_calendar import BENCHMARK, load_non_trading_days
 from src.computation.indicators.calculator import calculate_sma
 from src.db.models import Base, BenchmarkPrice, DailyPrice
 from src.etl.adjust import cumulative_factors, rebuild_adjusted
 from src.ingestion.benchmark import (
     NSEIndexSource,
     load_benchmark_range,
-)
-from src.ingestion.benchmark import (
-    load_non_trading_days as load_benchmark_non_trading_days,
 )
 from src.ingestion.nse_files import NoFile
 from tests.official_actions import add_official_action
@@ -148,7 +146,7 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(
         # Saturday fetch: returns None and marks non-trading
         sat_prices = source.fetch_prices(sat_date)
         assert sat_prices is None
-        assert sat_date.isoformat() in load_benchmark_non_trading_days()
+        assert sat_date in load_non_trading_days(BENCHMARK)
 
         # Sunday fetch: returns prices and creates parquet cache
         sun_prices = source.fetch_prices(sun_date)
@@ -157,7 +155,7 @@ def test_benchmark_weekend_index_stored_when_exists_skipped_when_not(
         assert sun_prices["NIFTY 50"] == 24050.0
         assert "NIFTY 500" in sun_prices
         assert sun_prices["NIFTY 500"] == 22100.0
-        assert sun_date.isoformat() not in load_benchmark_non_trading_days()
+        assert sun_date not in load_non_trading_days(BENCHMARK)
 
         # End-to-end load_benchmark_range test with db session
         @contextmanager

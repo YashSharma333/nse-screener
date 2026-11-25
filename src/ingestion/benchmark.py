@@ -14,7 +14,6 @@ Downloads index closes from the official NSE archive (NSEIndexSource).
 from __future__ import annotations
 
 import io
-import json
 import logging
 import time
 from collections.abc import Sequence
@@ -28,11 +27,16 @@ from sqlalchemy.orm import Session
 from config import settings
 from src.common.dates import parse_nse_date
 from src.common.db import use_session
-from src.db.models import BenchmarkPrice, DailyPrice
+from src.common.trading_calendar import (
+    BENCHMARK,
+    get_trading_dates,
+    load_non_trading_days,
+    record_missing_file,
+)
+from src.db.models import BenchmarkPrice
 from src.db.upsert import upsert_rows
 from src.ingestion import nse_files
 from src.ingestion.nse_files import BadFile, FetchFailed, NoFile
-from src.ingestion.price_loader import is_recent_date
 
 logger = logging.getLogger("src.ingestion.benchmark")
 
@@ -89,44 +93,6 @@ def _ensure_cache_dir() -> Path:
     return settings.BENCHMARK_CACHE_DIR
 
 
-def load_non_trading_days() -> set[str]:
-    """Load cached non-trading days from JSON file."""
-    if settings.BENCHMARK_NON_TRADING_DAYS_FILE.exists():
-        try:
-            with settings.BENCHMARK_NON_TRADING_DAYS_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return set(data)
-        except Exception as exc:
-            logger.warning("Failed loading benchmark non-trading days: %s", exc)
-    return set()
-
-
-def record_non_trading_days(dates: Sequence[date]) -> None:
-    """Record multiple verified non-trading days in one batch."""
-    if not dates:
-        return
-    _ensure_cache_dir()
-    existing = load_non_trading_days()
-    updated = False
-    for d in dates:
-        d_str = d.isoformat()
-        if d_str not in existing:
-            existing.add(d_str)
-            updated = True
-    if updated:
-        try:
-            with settings.BENCHMARK_NON_TRADING_DAYS_FILE.open("w", encoding="utf-8") as f:
-                json.dump(sorted(existing), f, indent=2)
-        except Exception as exc:
-            logger.warning("Failed saving benchmark non-trading days: %s", exc)
-
-
-def record_non_trading_day(d: date) -> None:
-    """Record a verified non-trading day (404/empty) to prevent repeated fetches."""
-    record_non_trading_days([d])
-
-
 class NSEIndexSource:
     """Primary source: official NSE daily index archive (ind_close_all_DDMMYYYY.csv).
 
@@ -139,15 +105,14 @@ class NSEIndexSource:
 
     def _remember_no_file(self, d: date, reason: str) -> None:
         """Record d as non-trading, unless it is recent (NSE may not have published yet)."""
-        if is_recent_date(d):
+        if record_missing_file(BENCHMARK, d):
+            logger.debug("Benchmark %s for %s: marked non-trading day", reason, d)
+        else:
             logger.info("Benchmark %s for recent date %s: not cached, will retry", reason, d)
-            return
-        logger.debug("Benchmark %s for %s: marking non-trading day", reason, d)
-        record_non_trading_day(d)
 
     def fetch_prices(self, d: date) -> dict[str, float] | None:
         # Check non-trading days cache
-        if d.isoformat() in load_non_trading_days():
+        if d in load_non_trading_days(BENCHMARK):
             return None
 
         cache_dir = _ensure_cache_dir()
@@ -296,14 +261,14 @@ def missing_benchmark_dates(session: Session, index_code: str = NIFTY_500) -> li
     Why: asking for "dates after the last stored one" never retries a day that was
     missed in the middle. Asking for every gap heals them.
     """
-    price_dates = set(session.scalars(select(DailyPrice.date).distinct()).all())
+    price_dates = set(get_trading_dates(session))
     have = set(
         session.scalars(
             select(BenchmarkPrice.date).where(BenchmarkPrice.index_code == index_code)
         ).all()
     )
-    known_non_trading = load_non_trading_days()
-    return sorted(d for d in price_dates - have if d.isoformat() not in known_non_trading)
+    known_non_trading = load_non_trading_days(BENCHMARK)
+    return sorted(d for d in price_dates - have if d not in known_non_trading)
 
 
 def load_benchmark_range(
@@ -318,7 +283,7 @@ def load_benchmark_range(
     remembered in the non-trading-days cache and skipped next time.
     """
     all_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-    known_non_trading = load_non_trading_days()
-    dates = [d for d in all_days if d.isoformat() not in known_non_trading]
+    known_non_trading = load_non_trading_days(BENCHMARK)
+    dates = [d for d in all_days if d not in known_non_trading]
     logger.info("Loading benchmark history for %d dates (%s -> %s)", len(dates), start, end)
     return load_benchmarks(dates, session=session)

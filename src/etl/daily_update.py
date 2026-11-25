@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from config.settings import FIRST_MCAP_DATE, NSE_HISTORY_START
 from src.common.db import use_session
+from src.common.trading_calendar import get_trading_dates, latest_date
 from src.db.models import DailyPrice, Security, SymbolChange
 from src.ingestion.nse_files import fetch
 
@@ -208,7 +209,7 @@ def run_daily_update(
             return result
 
         def _load_new_days() -> dict[str, Any]:
-            max_date = s.scalar(select(func.max(DailyPrice.date)))
+            max_date = latest_date(s)
             start_date = max_date + timedelta(days=1) if max_date else NSE_HISTORY_START
             if start_date > yesterday:
                 logger.info(
@@ -234,13 +235,7 @@ def run_daily_update(
             )
 
             # Query which dates were newly inserted
-            stmt = (
-                select(DailyPrice.date)
-                .distinct()
-                .where(DailyPrice.date >= start_date, DailyPrice.date <= yesterday)
-                .order_by(DailyPrice.date)
-            )
-            loaded_dates = list(s.scalars(stmt).all())
+            loaded_dates = get_trading_dates(s, start_date, yesterday)
             summary.new_dates = loaded_dates
             summary.rows_added = load_summary.rows_inserted
             if load_summary.bad_file > 0:
@@ -410,7 +405,7 @@ def run_daily_update(
             from src.db.models import BenchmarkPrice
             from src.ingestion.benchmark import load_benchmarks, missing_benchmark_dates
 
-            last_bench = s.scalar(select(func.max(BenchmarkPrice.date)))
+            last_bench = latest_date(s, BenchmarkPrice)
             if last_bench is None:
                 msg = (
                     "No benchmark history stored; run "

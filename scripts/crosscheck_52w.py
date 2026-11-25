@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from config.settings import REGULAR_SERIES
 from src.common.db import use_session
+from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
 from src.ingestion.nse_files import cm_52_wk_url, fetch
 from src.ingestion.renames import RenameChains, load_chains_from_db
@@ -214,9 +215,7 @@ def crosscheck_52w(
         nonlocal dates
         if dates is None:
             # Query trading dates from daily_prices
-            stmt = select(DailyPrice.date).distinct().order_by(DailyPrice.date)
-            all_dates = s.execute(stmt).scalars().all()
-            dates = select_crosscheck_dates(all_dates, n_dates=10)
+            dates = select_crosscheck_dates(get_trading_dates(s), n_dates=10)
 
         chains = load_chains_from_db(s)
         all_records: list[dict[str, Any]] = []

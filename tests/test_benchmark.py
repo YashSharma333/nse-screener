@@ -8,6 +8,11 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from src.common.trading_calendar import (
+    BENCHMARK,
+    load_non_trading_days,
+    record_non_trading_day,
+)
 from src.db.data_service import get_benchmark_returns
 from src.db.models import Base, BenchmarkPrice, DailyPrice
 from src.ingestion.benchmark import (
@@ -19,9 +24,7 @@ from src.ingestion.benchmark import (
     NSEIndexSource,
     canonical_index_code,
     load_benchmarks,
-    load_non_trading_days,
     missing_benchmark_dates,
-    record_non_trading_day,
 )
 from src.ingestion.nse_files import BadFile, FetchFailed, NoFile
 
@@ -79,7 +82,7 @@ def test_nse_index_source_handles_404_gracefully(tmp_path: Path, monkeypatch):
         d = date(2024, 10, 26)
         prices = source.fetch_prices(d)
         assert prices is None
-        assert d.isoformat() in load_non_trading_days()
+        assert d in load_non_trading_days(BENCHMARK)
 
 
 def test_seed_b_benchmark_code_mismatch():
@@ -153,9 +156,9 @@ def test_record_and_load_non_trading_day(tmp_path: Path):
     test_file = tmp_path / "non_trading_days.json"
     with patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", test_file):
         d = date(2024, 1, 26)
-        record_non_trading_day(d)
-        res = load_non_trading_days()
-        assert "2024-01-26" in res
+        record_non_trading_day(BENCHMARK, d)
+        res = load_non_trading_days(BENCHMARK)
+        assert date(2024, 1, 26) in res
 
 
 def test_nse_index_source_cache_hit(tmp_path: Path):
@@ -200,8 +203,8 @@ def test_benchmark_loader_rejects_mismatched_index_date(tmp_path: Path, monkeypa
         # Must not write cache file
         assert not (tmp_path / f"{sunday.isoformat()}.parquet").exists()
         # Must record Sunday as non-trading day
-        cached_days = load_non_trading_days()
-        assert sunday.isoformat() in cached_days
+        cached_days = load_non_trading_days(BENCHMARK)
+        assert sunday in cached_days
 
 
 def test_recent_404_is_not_recorded_as_non_trading(tmp_path: Path, monkeypatch):
@@ -214,7 +217,7 @@ def test_recent_404_is_not_recorded_as_non_trading(tmp_path: Path, monkeypatch):
     ):
         today = date.today()
         assert NSEIndexSource().fetch_prices(today) is None
-        assert today.isoformat() not in load_non_trading_days()
+        assert today not in load_non_trading_days(BENCHMARK)
 
 
 def test_unparseable_file_raises_instead_of_no_data(tmp_path: Path, monkeypatch):
@@ -226,7 +229,7 @@ def test_unparseable_file_raises_instead_of_no_data(tmp_path: Path, monkeypatch)
     ):
         with pytest.raises(BadFile):
             NSEIndexSource().fetch_prices(date(2024, 10, 25))
-        assert load_non_trading_days() == set()
+        assert load_non_trading_days(BENCHMARK) == set()
 
 
 def test_missing_benchmark_dates_and_refresh_fetch_only_gaps(tmp_path: Path):
@@ -246,7 +249,7 @@ def test_missing_benchmark_dates_and_refresh_fetch_only_gaps(tmp_path: Path):
         s.commit()
 
         assert missing_benchmark_dates(s, NIFTY_500) == [days[2], days[3]]
-        record_non_trading_day(days[3])
+        record_non_trading_day(BENCHMARK, days[3])
         assert missing_benchmark_dates(s, NIFTY_500) == [days[2]]
         non_trading_file.unlink()
 
@@ -302,4 +305,4 @@ def test_network_failure_is_not_recorded_as_non_trading(tmp_path: Path, monkeypa
         patch("config.settings.BENCHMARK_NON_TRADING_DAYS_FILE", test_file),
     ):
         assert NSEIndexSource().fetch_prices(date(2024, 10, 25)) is None
-        assert load_non_trading_days() == set()
+        assert load_non_trading_days(BENCHMARK) == set()

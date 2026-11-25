@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from src.common.db import use_session
+from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
 from src.ingestion.bhavcopy_parser import parse_bhavcopy
 from src.ingestion.nse_files import bhavcopy_url, fetch
@@ -149,9 +150,7 @@ def verify_prices(
         if check_dates is not None:
             dates_to_check = list(check_dates)
         else:
-            all_dates = list(
-                s.scalars(select(DailyPrice.date).distinct().order_by(DailyPrice.date)).all()
-            )
+            all_dates = get_trading_dates(s)
             dates_to_check = select_check_dates(all_dates, sample_size=40, seed=7)
 
         logger.info("Starting price accuracy check across %d dates...", len(dates_to_check))
