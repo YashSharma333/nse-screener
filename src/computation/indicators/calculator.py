@@ -47,6 +47,14 @@ from src.computation.indicators.price_helpers import pct_diff, ratio, window_sta
 
 logger = logging.getLogger("src.computation.indicators")
 
+# The ``output=`` choices of the multi-output indicators, written once: the functions check
+# against it and the resolver lists it for the UI.
+OUTPUT_CHOICES = {
+    "bollinger_bands": ("upper", "middle", "lower"),
+    "atr": ("value", "percent"),
+    "macd": ("line", "signal", "histogram"),
+}
+
 # Bumped schema version whenever columns or formulas change
 INDICATORS_SCHEMA_VERSION = 5
 
@@ -105,7 +113,7 @@ def bollinger_bands(
 ) -> pd.Series:
     """One Bollinger band: ``output`` is "upper", "middle" or "lower"."""
     check_length(length)
-    check_output(output, ("upper", "middle", "lower"))
+    check_output(output, OUTPUT_CHOICES["bollinger_bands"])
     require(df, source)
     middle = roll(df, df[source], length, "mean")
     if output == "middle":
@@ -136,7 +144,7 @@ def true_range(df: pd.DataFrame) -> pd.Series:
 def atr(df: pd.DataFrame, length: int = 14, output: str = "value") -> pd.Series:
     """Average true range; ``output`` is "value" or "percent" (of the close)."""
     check_length(length)
-    check_output(output, ("value", "percent"))
+    check_output(output, OUTPUT_CHOICES["atr"])
     average = ewm(df, true_range(df), span=length, adjust=False, min_periods=length)
     if output == "value":
         return average
@@ -192,7 +200,7 @@ def macd(
     """MACD; ``output`` is "line", "signal" or "histogram"."""
     for name, value in (("fast", fast), ("slow", slow), ("signal", signal)):
         check_length(value, name)
-    check_output(output, ("line", "signal", "histogram"))
+    check_output(output, OUTPUT_CHOICES["macd"])
     require(df, source)
     fast_average = ewm(df, df[source], span=fast, adjust=False, min_periods=fast)
     slow_average = ewm(df, df[source], span=slow, adjust=False, min_periods=slow)
