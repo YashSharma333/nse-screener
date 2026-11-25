@@ -22,7 +22,6 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
-import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -31,7 +30,8 @@ from src.common.dates import parse_nse_date
 from src.common.db import use_session
 from src.db.models import BenchmarkPrice, DailyPrice
 from src.db.upsert import upsert_rows
-from src.ingestion.nse_files import BadFile
+from src.ingestion import nse_files
+from src.ingestion.nse_files import BadFile, FetchFailed, NoFile
 from src.ingestion.price_loader import is_recent_date
 
 logger = logging.getLogger("src.ingestion.benchmark")
@@ -128,29 +128,11 @@ def record_non_trading_day(d: date) -> None:
 
 
 class NSEIndexSource:
-    """Primary source: official NSE daily index archive (ind_close_all_DDMMYYYY.csv)."""
+    """Primary source: official NSE daily index archive (ind_close_all_DDMMYYYY.csv).
 
-    def __init__(self, session: requests.Session | None = None) -> None:
-        self.session = session or requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Accept": "*/*",
-            }
-        )
-        self._warmed = False
-
-    def _warm_session(self) -> None:
-        """Warm session by visiting NSE homepage for session cookies."""
-        if not self._warmed:
-            try:
-                self.session.get("https://www.nseindia.com", timeout=10)
-                self._warmed = True
-            except requests.RequestException as exc:
-                logger.debug("NSE session warm-up failed: %s", exc)
+    Downloads go through ``nse_files.fetch`` (the one NSE client: shared session, headers and
+    retry rules).
+    """
 
     def _url(self, d: date) -> str:
         return f"https://nsearchives.nseindia.com/content/indices/ind_close_all_{d.strftime('%d%m%Y')}.csv"
@@ -194,73 +176,69 @@ class NSEIndexSource:
             except Exception as e:
                 logger.warning("Corrupt benchmark cache %s: %s", cache_file, e)
 
-        self._warm_session()
         url = self._url(d)
         try:
-            resp = self.session.get(url, timeout=10)
-            if resp.status_code == 404:
-                self._remember_no_file(d, "404")
-                return None
-            resp.raise_for_status()
-
-            try:
-                df = pd.read_csv(io.StringIO(resp.text))
-            except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
-                # A broken file is an error to report, not proof of a holiday.
-                raise BadFile(f"Benchmark file for {d} cannot be parsed: {exc}") from exc
-            df.columns = df.columns.str.strip()
-
-            # Date validation: compare file's own trade date with requested date d
-            date_col = next(
-                (c for c in df.columns if c.lower() in ("index date", "index_date", "date")),
-                None,
-            )
-            file_date: date | None = None
-            raw_date: object = None
-            if date_col is not None:
-                non_null_dates = df[date_col].dropna()
-                if not non_null_dates.empty:
-                    raw_date = non_null_dates.iloc[0]
-                    file_date = parse_nse_date(raw_date, dayfirst=True)
-
-            if date_col is None or not _file_date_matches(raw_date, file_date, d):
-                raw_val = df[date_col].iloc[0] if (date_col and not df[date_col].empty) else None
-                logger.warning(
-                    "Benchmark trade date mismatch for %s: file reports %r (parsed: %s)",
-                    d,
-                    raw_val,
-                    file_date,
-                )
-                self._remember_no_file(d, "date mismatch")
-                return None
-
-            results: dict[str, float] = {}
-            for row in df.to_dict("records"):
-                idx_name = str(row.get("Index Name", "")).strip().lower()
-                matched_code = INDEX_NAME_NORMALIZATION.get(idx_name)
-                if matched_code:
-                    try:
-                        val = float(
-                            str(row.get("Closing Index Value", "")).replace(",", "").strip()
-                        )
-                        results[matched_code] = val
-                    except (ValueError, TypeError):
-                        pass
-
-            if results:
-                cache_df = pd.DataFrame(
-                    [{"index_code": k, "close": v, "date": d} for k, v in results.items()]
-                )
-                cache_df.to_parquet(cache_file, index=False)
-                return results
-
-            # File returned but no matching indices
-            self._remember_no_file(d, "no matching indices")
+            raw = nse_files.fetch(url, timeout=10)
+        except NoFile:
+            self._remember_no_file(d, "404")
             return None
-        except requests.RequestException as exc:
+        except FetchFailed as exc:
             # Network problem: not a holiday. Nothing is recorded, so the next run retries.
             logger.warning("NSE index source fetch failed for %s: %s", d, exc)
             return None
+
+        try:
+            df = pd.read_csv(io.StringIO(nse_files.decode_csv_bytes(raw)))
+        except (pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+            # A broken file is an error to report, not proof of a holiday.
+            raise BadFile(f"Benchmark file for {d} cannot be parsed: {exc}") from exc
+        df.columns = df.columns.str.strip()
+
+        # Date validation: compare file's own trade date with requested date d
+        date_col = next(
+            (c for c in df.columns if c.lower() in ("index date", "index_date", "date")),
+            None,
+        )
+        file_date: date | None = None
+        raw_date: object = None
+        if date_col is not None:
+            non_null_dates = df[date_col].dropna()
+            if not non_null_dates.empty:
+                raw_date = non_null_dates.iloc[0]
+                file_date = parse_nse_date(raw_date, dayfirst=True)
+
+        if date_col is None or not _file_date_matches(raw_date, file_date, d):
+            raw_val = df[date_col].iloc[0] if (date_col and not df[date_col].empty) else None
+            logger.warning(
+                "Benchmark trade date mismatch for %s: file reports %r (parsed: %s)",
+                d,
+                raw_val,
+                file_date,
+            )
+            self._remember_no_file(d, "date mismatch")
+            return None
+
+        results: dict[str, float] = {}
+        for row in df.to_dict("records"):
+            idx_name = str(row.get("Index Name", "")).strip().lower()
+            matched_code = INDEX_NAME_NORMALIZATION.get(idx_name)
+            if matched_code:
+                try:
+                    val = float(str(row.get("Closing Index Value", "")).replace(",", "").strip())
+                    results[matched_code] = val
+                except (ValueError, TypeError):
+                    pass
+
+        if results:
+            cache_df = pd.DataFrame(
+                [{"index_code": k, "close": v, "date": d} for k, v in results.items()]
+            )
+            cache_df.to_parquet(cache_file, index=False)
+            return results
+
+        # File returned but no matching indices
+        self._remember_no_file(d, "no matching indices")
+        return None
 
 
 def load_benchmarks(
@@ -276,7 +254,7 @@ def load_benchmarks(
     for d in dates:
         try:
             prices = src.fetch_prices(d)
-        except (requests.RequestException, BadFile) as exc:
+        except (FetchFailed, BadFile) as exc:
             # One bad day must not stop the others; it stays missing and is retried next run.
             logger.warning("Benchmark fetch failed for %s: %s", d, exc)
             continue

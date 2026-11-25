@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -303,7 +303,6 @@ def run_corporate_actions_download(
     session: Session | None = None,
     output_dir: Path | None = None,
     today: date | None = None,
-    fetch_fn: Callable[..., bytes] | None = None,
 ) -> dict[str, Any]:
     """Download the three NSE reports, check them, keep the raw files, and store them.
 
@@ -318,7 +317,7 @@ def run_corporate_actions_download(
     start = start or default_start
     end = end or default_end
     out_dir = output_dir or settings.CORP_ACTIONS_DIR
-    fetcher = downloader or NSEReportsDownloader(fetch_fn=fetch_fn)
+    fetcher = downloader or NSEReportsDownloader()
     fetched_at = datetime.now().replace(microsecond=0)
 
     # 1. Download everything (no database yet).

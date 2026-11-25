@@ -7,16 +7,15 @@ The single, authoritative module for downloading official data files from NSE In
 • Equity listing master (EQUITY_L.csv)
 • Symbol change history (symbolchange.csv)
 
-Nothing else in the project may call NSE directly after the later tasks.
+This is the ONLY module that talks HTTP to NSE (a test enforces it): one header set, one
+shared session with its cookies, one homepage warm-up, one set of retry rules.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from datetime import date
-from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -58,14 +57,7 @@ HEADERS: dict[str, str] = {
     "Referer": "https://www.nseindia.com/",
 }
 
-# Headers for the NSE website JSON API (corporate actions): same browser identity,
-# but the API answers HTML/JSON, so Accept differs from the file downloads above.
-NSE_HEADERS: dict[str, str] = {
-    **HEADERS,
-    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-}
-
-# Retry / throttle defaults shared by the corporate-actions downloader.
+# Retry / throttle defaults (the corporate-actions downloader reads them too).
 MAX_RETRIES = 3
 RETRY_WAIT = 6  # seconds between retries
 REQUEST_TIMEOUT = 25  # seconds per HTTP request
@@ -121,6 +113,17 @@ def check_not_html(data: bytes | str) -> None:
         raise BadFile("Content appears to be HTML error/block page instead of data")
 
 
+def decode_csv_bytes(content: bytes) -> str:
+    """Decode a CSV: UTF-8 (BOM allowed) first, Latin-1 as the fallback.
+
+    Why: NSE's archive files carry no encoding label, and ``requests`` would guess Latin-1.
+    """
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return content.decode("latin-1")
+
+
 def check_date(found: str | date, expected: str | date) -> None:
     """Validate that the date found inside the file matches the requested date.
 
@@ -136,50 +139,75 @@ def check_date(found: str | date, expected: str | date) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Download helpers
+# The one shared client
+# ---------------------------------------------------------------------------
+
+# One session for the whole process: NSE's cookies live in the session, so the warm-up of a
+# host is only valid for the session that did it. Both are kept together here.
+_session: requests.Session | None = None
+_warmed_hosts: set[str] = set()
+
+
+def _shared_session() -> requests.Session:
+    """Return the process-wide NSE session (created on first use, with the browser headers)."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update(HEADERS)
+    return _session
+
+
+def reset_client() -> None:
+    """Forget the shared session and its warm-ups (used by tests, or to start clean)."""
+    global _session
+    _session = None
+    _warmed_hosts.clear()
+
+
+def _warm_up(session: requests.Session, url: str, timeout: int | float) -> None:
+    """Visit the NSE homepage once per host so the session carries NSE's cookies.
+
+    Why: www.nseindia.com answers its routes only after a homepage visit; the archives host
+    (nsearchives.nseindia.com) does not need it. A failed visit is harmless: the real request
+    is still attempted.
+    """
+    site = host(url)
+    if site != NSE_WWW_HOST or site in _warmed_hosts:
+        return
+    try:
+        session.get("https://www.nseindia.com", timeout=timeout)
+    except requests.RequestException as exc:
+        logger.debug("Homepage warm-up request failed: %s", exc)
+    _warmed_hosts.add(site)
+
+
+# ---------------------------------------------------------------------------
+# Download helper
 # ---------------------------------------------------------------------------
 
 
 def fetch(
     url: str,
     *,
-    session: requests.Session | None = None,
     timeout: int | float = 30,
     retries: int = 3,
-    sleep: Callable[[float], Any] = time.sleep,
     retry_wait: float | None = None,
 ) -> bytes:
-    """Download raw bytes from URL with retry, exponential backoff, and NSE warm-up.
+    """Download raw bytes from URL with retry, backoff and NSE warm-up.
 
     Parameters
     ----------
     url : str
         The URL to fetch.
-    session : requests.Session, optional
-        Requests session; if None, a new session is created.
     timeout : int or float, default 30
         Request timeout in seconds.
     retries : int, default 3
         Number of fetch attempts before raising FetchFailed.
-    sleep : callable, default time.sleep
-        Sleep function for backoff (can be replaced in unit tests).
     retry_wait : float, optional
         Fixed backoff duration in seconds. If None, uses exponential backoff (2**attempt).
     """
-    if session is None:
-        session = requests.Session()
-    session.headers.update(HEADERS)
-
-    # Warm up session with homepage if hitting www.nseindia.com.
-    # NSE requires cookies set on the homepage before answering www routes;
-    # the archives host (nsearchives.nseindia.com) does not require warm-up.
-    if host(url) == NSE_WWW_HOST and not getattr(session, "_nse_warmed", False):
-        try:
-            session.get("https://www.nseindia.com", timeout=timeout)
-        except requests.RequestException as exc:
-            # If warmup times out or fails, log debug info and still attempt the main URL
-            logger.debug("Homepage warm-up request failed: %s", exc)
-        session._nse_warmed = True
+    session = _shared_session()
+    _warm_up(session, url, timeout)
 
     for attempt in range(retries):
         wait_duration = retry_wait if retry_wait is not None else 2**attempt
@@ -187,7 +215,7 @@ def fetch(
             r = session.get(url, timeout=timeout)
         except (requests.ConnectionError, requests.Timeout):
             if attempt < retries - 1:
-                sleep(wait_duration)
+                time.sleep(wait_duration)
                 continue
             break
 
@@ -199,7 +227,7 @@ def fetch(
         # Temporary rate limiting (429), access block (403), or server errors (5xx)
         if r.status_code in (403, 429) or r.status_code >= 500:
             if attempt < retries - 1:
-                sleep(wait_duration)
+                time.sleep(wait_duration)
                 continue
             break
 
@@ -210,7 +238,7 @@ def fetch(
 
         # Any other unexpected HTTP status code
         if attempt < retries - 1:
-            sleep(wait_duration)
+            time.sleep(wait_duration)
             continue
         break
 

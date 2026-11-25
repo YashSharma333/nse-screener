@@ -356,7 +356,7 @@ def run_daily_update(
         def _step_4() -> dict[str, Any]:
             from src.ingestion.corporate_actions_store import run_corporate_actions_download
 
-            ca_res = run_corporate_actions_download(session=s, fetch_fn=fetch_fn, today=ref_today)
+            ca_res = run_corporate_actions_download(session=s, today=ref_today)
             stored_rows = ca_res.get("rows_stored", 0)
             exact_factors = ca_res.get("exact_factor_events", 0)
             needs_review = ca_res.get("needs_review", 0)

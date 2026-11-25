@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 import requests
 
+from src.ingestion import nse_files
 from src.ingestion.corporate_actions import (
     NSEDownloadError,
     NSEFormatChangedError,
@@ -70,7 +71,6 @@ class FakeSession:
         self.replies = list(replies)
         self.calls: list[tuple[str, dict | None]] = []
         self.headers = {}
-        self._nse_warmed = True
 
     def get(self, url, params=None, timeout=None):
         self.calls.append((url, params))
@@ -80,15 +80,11 @@ class FakeSession:
         return reply
 
 
-def make_downloader(session: FakeSession):
-    """Downloader whose session is a fake. Sleeps are recorded, not waited for."""
-    sleeps: list[float] = []
-    downloader = NSEReportsDownloader(
-        max_retries=3, retry_wait=7, request_delay=0.5, sleep=sleeps.append
-    )
-    downloader._session = session
-    downloader.sleeps = sleeps
-    return downloader
+def make_downloader(fake_nse_session, session: FakeSession) -> NSEReportsDownloader:
+    """Downloader whose shared NSE session is a fake (homepage warm-up already done)."""
+    fake_nse_session(session)
+    nse_files._warmed_hosts.add(nse_files.NSE_WWW_HOST)
+    return NSEReportsDownloader(max_retries=3, retry_wait=7, request_delay=0.5)
 
 
 def ok_rows(n: int = 1):
@@ -190,7 +186,8 @@ def test_build_rows_cleans_types_and_blanks() -> None:
 # ---------------------------------------------------------------------------
 # HTTP behaviour & shared fetch helper (task D10)
 # ---------------------------------------------------------------------------
-def test_corporate_actions_download_uses_shared_fetch() -> None:
+def test_corporate_actions_download_uses_shared_fetch(monkeypatch) -> None:
+    """All three reports are fetched through nse_files.fetch (the one NSE client)."""
     calls = []
 
     def fake_fetch(url, *args, **kwargs):
@@ -209,7 +206,8 @@ def test_corporate_actions_download_uses_shared_fetch() -> None:
             )
         return b""
 
-    downloader = NSEReportsDownloader(fetch_fn=fake_fetch)
+    monkeypatch.setattr("src.ingestion.nse_files.fetch", fake_fetch)
+    downloader = NSEReportsDownloader()
     rows = downloader.fetch_corporate_actions_window(date(2026, 11, 1), date(2026, 11, 3), TODAY)
     assert len(rows) == 2
     assert any("corporates-corporateActions" in c for c in calls)
@@ -223,34 +221,36 @@ def test_corporate_actions_download_uses_shared_fetch() -> None:
     assert any("EQUITY_L" in c for c in calls)
 
 
-def test_404_stops_immediately_without_retrying() -> None:
+def test_404_stops_immediately_without_retrying(fake_nse_session) -> None:
     session = FakeSession(FakeResponse(404))
-    downloader = make_downloader(session)
+    downloader = make_downloader(fake_nse_session, session)
     with pytest.raises(NSEDownloadError, match="404"):
         downloader.fetch_symbol_changes()
     assert len(session.calls) == 1
 
 
-def test_repeated_timeouts_raise_after_the_last_attempt() -> None:
+def test_repeated_timeouts_raise_after_the_last_attempt(fake_nse_session, nse_sleeps) -> None:
     session = FakeSession(*[requests.exceptions.Timeout("slow")] * 3)
-    downloader = make_downloader(session)
+    downloader = make_downloader(fake_nse_session, session)
     with pytest.raises(NSEDownloadError, match="after 3 attempts"):
         downloader.fetch_listing_master()
     assert len(session.calls) == 3
-    assert downloader.sleeps == [7, 7]  # no pointless wait after the final failure
+    assert nse_sleeps == [7, 7]  # no pointless wait after the final failure
 
 
-def test_fetch_corporate_actions_asks_one_year_at_a_time_with_nse_date_format() -> None:
+def test_fetch_corporate_actions_asks_one_year_at_a_time_with_nse_date_format(
+    fake_nse_session, nse_sleeps
+) -> None:
     session = FakeSession(
         FakeResponse(200, payload=ok_rows(1)), FakeResponse(200, payload=ok_rows(2))
     )
-    downloader = make_downloader(session)
+    downloader = make_downloader(fake_nse_session, session)
     rows = downloader.fetch_corporate_actions(date(2025, 11, 18), date(2026, 11, 18), TODAY)
     assert len(rows) == 3
     urls = [call[0] for call in session.calls]
     assert "from_date=18-11-2025&to_date=31-12-2025" in urls[0]
     assert "from_date=01-01-2026&to_date=18-11-2026" in urls[1]
-    assert downloader.sleeps == [0.5]  # polite pause between the two calls
+    assert nse_sleeps == [0.5]  # polite pause between the two calls
 
 
 # ---------------------------------------------------------------------------

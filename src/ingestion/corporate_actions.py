@@ -1,7 +1,7 @@
 """
 NSE official reports downloader (corporate actions, symbol changes, listing master)
 ===================================================================================
-Downloads three official NSE reports with ONE HTTP session and ONE retry method:
+Downloads three official NSE reports through the one NSE client (``nse_files.fetch``):
 
 1. **Corporate actions** (splits, bonuses, rights, mergers, dividends ...): the JSON API
    behind NSE's "Corporate Filings > Corporate Actions" page. There is no static CSV for
@@ -12,8 +12,8 @@ Downloads three official NSE reports with ONE HTTP session and ONE retry method:
    ICICIPRULI to ICICILIFE). The API cannot give renames.
 3. **Listing master**: ``EQUITY_L.csv`` (symbol, ISIN, face value, listing date).
 
-The session, headers, retry and polite-delay method is the same one used by
-``src/ingestion/nse_files.py`` for Bhavcopy files.
+Session, headers, warm-up and retry rules live only in ``src/ingestion/nse_files.py``; this
+module adds the polite pause between yearly calls and the format checks.
 
 NSE changes formats from time to time, so this module checks what it receives and fails
 loudly (:class:`NSEFormatChangedError`) instead of storing something wrong. Reading the text of
@@ -26,12 +26,10 @@ import io
 import json
 import logging
 import time
-from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-import requests
 
 from config.settings import (
     NSE_API_BASE,
@@ -40,17 +38,23 @@ from config.settings import (
 )
 from src.common.dates import parse_nse_date
 from src.common.symbols import normalise_symbol
+from src.ingestion import nse_files
 from src.ingestion.corporate_actions_parser import (
     ActionPart,
     parse_subject,
     subject_hash,
 )
 from src.ingestion.nse_files import (
+    EQUITY_L_URL,
     MAX_RETRIES,
-    NSE_HEADERS,
     REQUEST_DELAY,
     REQUEST_TIMEOUT,
     RETRY_WAIT,
+    SYMBOLCHANGE_URL,
+    BadFile,
+    FetchFailed,
+    NoFile,
+    decode_csv_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -253,17 +257,6 @@ def build_action_rows(
     return list(rows_by_key.values()), all_parts
 
 
-def decode_csv_bytes(content: bytes) -> str:
-    """Decode a CSV: UTF-8 (BOM allowed) first, Latin-1 as the fallback.
-
-    Why: NSE's archive files carry no encoding label, and ``requests`` would guess Latin-1.
-    """
-    try:
-        return content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return content.decode("latin-1")
-
-
 def _read_report_csv(content: bytes, required: tuple[str, ...], name: str) -> pd.DataFrame:
     """Read a CSV report as text, normalise header names and check the needed columns exist."""
     frame = pd.read_csv(io.StringIO(decode_csv_bytes(content)), dtype=str, keep_default_na=False)
@@ -323,7 +316,7 @@ def parse_listing_master(content: bytes) -> pd.DataFrame:
 # Downloader
 # ---------------------------------------------------------------------------
 class NSEReportsDownloader:
-    """One warm NSE session that downloads the three reports.
+    """Downloads the three reports through ``nse_files.fetch`` (one shared warm session).
 
     Usage::
 
@@ -339,8 +332,6 @@ class NSEReportsDownloader:
         request_delay: float = REQUEST_DELAY,
         api_base: str = NSE_API_BASE,
         archives_base: str = NSE_ARCHIVES_BASE,
-        sleep: Callable[[float], None] = time.sleep,
-        fetch_fn: Callable[..., bytes] | None = None,
     ) -> None:
         self.max_retries = max_retries
         self.retry_wait = retry_wait
@@ -348,55 +339,18 @@ class NSEReportsDownloader:
         self.request_delay = request_delay
         self.api_base = api_base.rstrip("/")
         self.archives_base = archives_base.rstrip("/")
-        # Injected so tests can run without real waiting.
-        self._sleep = sleep
-        self._session: requests.Session | None = None
-        if fetch_fn is not None:
-            self.fetch_fn = fetch_fn
-        else:
-            from src.ingestion.nse_files import fetch as d2_fetch
 
-            self.fetch_fn = d2_fetch
+    def _download(self, url: str) -> bytes:
+        """Fetch one URL; every failure becomes :class:`NSEDownloadError` with a clear reason.
 
-    # -- session ----------------------------------------------------------
-    def get_session(self) -> requests.Session:
-        """Return a warm NSE session (created on first call).
-
-        NSE wants a homepage visit first so the session cookie is set. The homepage may
-        itself answer 403 to scripts; that is harmless, so only network errors are logged.
+        404 is not retried (NSE moved or removed the report); a blocked or broken answer is
+        reported after the last attempt.
         """
-        if self._session is not None:
-            return self._session
-        session = requests.Session()
-        session.headers.update(NSE_HEADERS)
         try:
-            session.get(self.api_base, timeout=10)
-            self._sleep(1)
-        except requests.RequestException as exc:
-            logger.warning("NSE homepage warm-up failed: %s (continuing anyway)", exc)
-        self._session = session
-        return session
-
-    # -- the three reports -----------------------------------------------
-    def fetch_corporate_actions_window(
-        self, start: date, end: date, today: date | None = None
-    ) -> list[dict[str, Any]]:
-        """Download corporate actions whose ex-date is in ``start..end`` (inclusive)."""
-        from src.ingestion.nse_files import BadFile, FetchFailed, NoFile
-
-        from_str = start.strftime("%d-%m-%Y")
-        to_str = end.strftime("%d-%m-%Y")
-        url = (
-            f"{self.api_base}{NSE_CORP_ACTIONS_API_PATH}"
-            f"?index=equities&from_date={from_str}&to_date={to_str}"
-        )
-        try:
-            content = self.fetch_fn(
+            content = nse_files.fetch(
                 url,
-                session=self.get_session(),
                 timeout=self.request_timeout,
                 retries=self.max_retries,
-                sleep=self._sleep,
                 retry_wait=self.retry_wait,
             )
         except NoFile as exc:
@@ -405,10 +359,19 @@ class NSEReportsDownloader:
             raise NSEDownloadError(
                 f"{url} failed after {self.max_retries} attempts: {exc}"
             ) from exc
+        return content.encode("utf-8") if isinstance(content, str) else content
 
-        if isinstance(content, str):
-            content = content.encode("utf-8")
-
+    def fetch_corporate_actions_window(
+        self, start: date, end: date, today: date | None = None
+    ) -> list[dict[str, Any]]:
+        """Download corporate actions whose ex-date is in ``start..end`` (inclusive)."""
+        from_str = start.strftime("%d-%m-%Y")
+        to_str = end.strftime("%d-%m-%Y")
+        url = (
+            f"{self.api_base}{NSE_CORP_ACTIONS_API_PATH}"
+            f"?index=equities&from_date={from_str}&to_date={to_str}"
+        )
+        content = self._download(url)
         try:
             payload = json.loads(content.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -424,7 +387,7 @@ class NSEReportsDownloader:
         chunks = year_chunks(start, end)
         for number, (chunk_start, chunk_end) in enumerate(chunks):
             if number:
-                self._sleep(self.request_delay)  # polite pause between calls
+                time.sleep(self.request_delay)  # polite pause between calls
             rows = self.fetch_corporate_actions_window(chunk_start, chunk_end, today)
             logger.info("Corporate actions %s..%s: %d rows", chunk_start, chunk_end, len(rows))
             all_rows.extend(rows)
@@ -432,52 +395,12 @@ class NSEReportsDownloader:
 
     def fetch_symbol_changes(self) -> tuple[bytes, pd.DataFrame]:
         """Download ``symbolchange.csv``. Returns ``(raw_bytes, parsed_table)``."""
-        from src.ingestion.nse_files import SYMBOLCHANGE_URL, FetchFailed, NoFile
-
-        try:
-            content = self.fetch_fn(
-                SYMBOLCHANGE_URL,
-                session=self.get_session(),
-                timeout=self.request_timeout,
-                retries=self.max_retries,
-                sleep=self._sleep,
-                retry_wait=self.retry_wait,
-            )
-        except NoFile as exc:
-            raise NSEDownloadError(
-                f"404 for {SYMBOLCHANGE_URL}: NSE moved or removed this report."
-            ) from exc
-        except FetchFailed as exc:
-            raise NSEDownloadError(
-                f"{SYMBOLCHANGE_URL} failed after {self.max_retries} attempts: {exc}"
-            ) from exc
-        if isinstance(content, str):
-            content = content.encode("utf-8")
+        content = self._download(SYMBOLCHANGE_URL)
         return content, parse_symbol_changes(content)
 
     def fetch_listing_master(self) -> tuple[bytes, pd.DataFrame]:
         """Download ``EQUITY_L.csv``. Returns ``(raw_bytes, parsed_table)``."""
-        from src.ingestion.nse_files import EQUITY_L_URL, FetchFailed, NoFile
-
-        try:
-            content = self.fetch_fn(
-                EQUITY_L_URL,
-                session=self.get_session(),
-                timeout=self.request_timeout,
-                retries=self.max_retries,
-                sleep=self._sleep,
-                retry_wait=self.retry_wait,
-            )
-        except NoFile as exc:
-            raise NSEDownloadError(
-                f"404 for {EQUITY_L_URL}: NSE moved or removed this report."
-            ) from exc
-        except FetchFailed as exc:
-            raise NSEDownloadError(
-                f"{EQUITY_L_URL} failed after {self.max_retries} attempts: {exc}"
-            ) from exc
-        if isinstance(content, str):
-            content = content.encode("utf-8")
+        content = self._download(EQUITY_L_URL)
         return content, parse_listing_master(content)
 
 
