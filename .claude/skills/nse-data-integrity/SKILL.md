@@ -34,7 +34,7 @@ do not bring it back.
    inserting historical rows, rebuild adjusted prices for the affected symbols.
 6. **Never delete price history.** No code path may delete `daily_prices` rows. The
    bogus-session check (`src/etl/bogus_sessions.py`) only reports. If real corruption is
-   ever found, the owner decides; the protocol is to reload from official files, not to
+   ever found, ask the maintainer; the protocol is to reload from official files, not to
    patch rows.
 7. **Market cap** comes from the official PR bundles and exists from 2024-02-01. Earlier
    dates stay NULL. Never estimate it.
@@ -55,7 +55,7 @@ do not bring it back.
 - [ ] Nothing in the change can delete price rows.
 - [ ] README and `python run_pipeline.py --help` agree for any new flag, table or setting.
 
-## SQL sanity checks to give the owner (put them in the PR "Commands")
+## SQL sanity checks (put them in the PR "Commands" with a purpose line)
 
 ```sql
 -- Only genuine special sessions should be on weekends

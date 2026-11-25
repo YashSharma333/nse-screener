@@ -1,6 +1,6 @@
 ---
 name: deep-cleanup
-description: Use when deleting code, tests, files or branches, at the end of every task (quick repo checks) and for the weekly repository audit. Gives the deletion rules (D1-D5), how to find dead code, the DEAD / TEST-ONLY / KEEP table for the PR, and the repository tidiness checklist. Report first; delete only what is verified safe. Also says how to end a task (rule B9).
+description: Use when deleting code, tests, files or branches, at the end of every task (quick repo checks) and for the weekly repository audit. Gives the deletion rules (D1-D5), how to find dead code, the DEAD / TEST-ONLY / KEEP table for the PR, and the repository tidiness checklist. Report first; delete only what is verified safe.
 ---
 
 # Deep cleanup
@@ -13,12 +13,12 @@ and clean a little in every task so there is never a big mess.
 | # | Rule |
 |---|---|
 | D1 | **Dead** means: no reference in `src`, `ui`, `scripts`, `run_pipeline.py` or the docs. **Test-only** (used only by tests) also counts as dead. |
-| D2 | Before deleting, write a table in the PR: each item as `DEAD`, `TEST-ONLY` or `KEEP`, with the reason. Items marked "ask" need the owner's yes. |
+| D2 | Before deleting, write a table in the PR: each item as `DEAD`, `TEST-ONLY` or `KEEP`, with the reason. Items marked "ask" need the maintainer's confirmation. |
 | D3 | Never delete price history or any data file that is not on the approved list. No `rm -rf`. Regenerable caches only with approval. |
 | D4 | Fix docs, skills, README and comments that mention deleted things in the SAME PR. |
 | D5 | Keep code the backtest engine will clearly need (risk and cost functions) and mark it `# KEEP: used by the backtest engine`. |
 
-Tests follow the code (see skill `simplify-for-beginner`, rules S1, S4, S7): delete the
+Tests follow the code (see skill `code-standards`, rules S1, S4, S7): delete the
 tests that only exercised deleted code in the same PR, and never delete a test of a rule
 we keep.
 
@@ -74,7 +74,7 @@ we keep.
 - [ ] README and docs match the CLI (`python run_pipeline.py --help`).
 - [ ] Every issue you opened is linked in the PR; issues the PR fixes use `Fixes #N`.
 
-## Full audit (weekly, and when the owner says a PR was merged)
+## Full audit (weekly, and after a PR is merged)
 
 1. Run `branch-guard` Step A (read-only). If the tree is dirty, delete nothing; report and stop.
 2. Build a table of every local and remote branch: name, last commit date, PR number and
@@ -108,18 +108,6 @@ we keep.
 1. **Report first, then delete.** Print what you found and why it is safe.
 2. **Safe to delete:** branches that pass the `branch-guard` gates; untracked temp files you
    created; caches (`__pycache__`, `.pytest_cache`).
-3. **Never delete without the owner:** anything in `data/`, `reports/`, backups, `.env`, the
-   owner's database, uncommitted work, or any file you cannot explain. Exception: paths the
-   owner approved by name in the changelog or the task prompt, exactly those paths.
-
-## Ending a task (rule B9: chat hygiene)
-
-End the final message with **`Next: CL-xx`** (the next task id from the task prompt). Then:
-
-- Mention `/clear` or a new chat ONLY if the next task does not need this chat (for example
-  the task changed rules or skills, wrote to the real database, or ended a milestone, and
-  the task prompt says so).
-- Mention `/compact` or the Resume prompt ONLY if the task is unfinished AND the context is
-  long (above about 60%).
-- Never suggest clearing while there is uncommitted work. Say nothing about clearing in any
-  other case.
+3. **Never delete without explicit approval:** anything in `data/`, `reports/`, backups, `.env`, the
+   real database, uncommitted work, or any file you cannot explain. Exception: paths approved
+   by name in the task description, exactly those paths.

@@ -1,11 +1,11 @@
 ---
 name: branch-guard
-description: MANDATORY at the start of every task and again before every commit and push. Checks which git branch you are on, which branch the task belongs to, switches to it or creates it safely, protects the owner's uncommitted work, and deletes branches that are no longer needed once their pull request is merged.
+description: MANDATORY at the start of every task and again before every commit and push. Checks which git branch you are on, which branch the task belongs to, switches to it or creates it safely, protects uncommitted work, and deletes branches that are no longer needed once their pull request is merged.
 ---
 
 # Branch guard
 
-The owner also works in this same folder and may switch branches by mistake or
+Other people and tools also work in this same folder and may switch branches or
 leave uncommitted changes. You must never assume you are on the right branch.
 
 ## Step A: look before you touch anything (read-only)
@@ -40,15 +40,15 @@ Write down: current branch, clean or dirty, and whether it is behind its remote.
 | Branch does not exist yet | `git switch main`, `git pull --ff-only`, `git switch -c <branch>` |
 | On `main` and the task needs changes | create the task branch; never commit on `main` |
 | Detached HEAD | stop and report |
-| **Dirty working tree on the wrong branch** | **STOP.** List the changed files and ask the owner. Do not discard, stash, commit or carry them over on your own |
+| **Dirty working tree on the wrong branch** | **STOP.** List the changed files and ask the user. Do not discard, stash, commit or carry them over on your own |
 | Dirty tree on the right branch | continue, but stage only the files that belong to this task |
 
 Exception: when the task prompt says certain uncommitted files are the deliverable
-(for example files the owner copied in), keep them and commit only those.
+(for example files the user copied in), keep them and commit only those.
 
 ## Step D: re-check before every commit and every push
 
-The owner may have switched branches while you were working.
+The branch may have been switched while you were working.
 
 ```bash
 git branch --show-current   # must equal the task branch
@@ -67,7 +67,7 @@ If the branch is wrong, stop and report. Never "fix" it by force.
 
 ## After a PR is merged: delete branches that are no longer needed
 
-Run this at the start of every task and whenever the owner says a PR was merged.
+Run this at the start of every task and whenever a PR is reported merged.
 A branch may be deleted only if ALL gates pass:
 
 1. A pull request for the branch exists and its state is MERGED:

@@ -437,7 +437,7 @@ If an ingestion tool simply checks for a successful HTTP 200 response, it will r
 
 The loaders reject such files, but the daily `--update` also double-checks the stored data (step 5). A date is flagged when at least 90% of the symbols it shares with the previous stored date have identical close **and** volume (at least 100 common symbols). Genuine special sessions have different prices and are not flagged.
 
-The check **only reports**: it writes `reports/bogus_sessions.csv` (`date`, `weekday`, `%identical`) and adds a warning to the update summary. No code path in the project deletes price rows; if a date is truly bogus, decide with the owner what to do.
+The check **only reports**: it writes `reports/bogus_sessions.csv` (`date`, `weekday`, `%identical`) and adds a warning to the update summary. No code path in the project deletes price rows; if a date is truly bogus, ask the maintainer what to do.
 
 ### 4. The 3-Day Recent Date Rule
 
@@ -473,26 +473,25 @@ The Parquet cache at `data/processed/indicators.parquet` is paired with a metada
 
 ## 🤖 Working with AI Agents
 
-This repository is designed to be developed collaboratively by human contributors and autonomous AI coding agents (such as Claude Code). To keep the codebase stable, maintainable, and beginner-friendly, all agents and contributors follow structured rules, specialized skills, and standardized slash commands.
+This repository is designed to be developed collaboratively by human contributors and AI coding agents (such as Claude Code). To keep the codebase stable and maintainable, all agents and contributors follow structured rules, specialized skills, and standardized slash commands.
 
 ### 1. The Agent Rulebook (`CLAUDE.md`)
 The [CLAUDE.md](CLAUDE.md) file is the central source of truth for development standards:
-* **The Golden Rules:** Never merge pull requests directly (all work is submitted as a PR for review and manual merge), always open PRs via `gh pr create`, never modify production data or run commands against the owner's database, keep changes strictly in scope, and never commit secrets or proprietary data files.
-* **Beginner-Friendly Code:** Code is written with plain, descriptive variable and function names, short functions, explicit type annotations, and helpful comments explaining *why* (not just what) whenever logic is subtle.
+* **The Golden Rules:** Never merge pull requests directly (all work is submitted as a PR for review and manual merge), always open PRs via `gh pr create`, never modify production data without a backup and explicit approval, keep changes strictly in scope, and never commit secrets or proprietary data files.
+* **Readable Code:** Code is written with plain, descriptive variable and function names, short functions, explicit type annotations, and helpful comments explaining *why* (not just what) whenever logic is subtle.
 * **Testing & Offline Verification:** Every change must pass offline unit tests (`pytest`), code formatting (`ruff format`), and linting (`ruff check`) without requiring a live MySQL database or internet access.
 
 ### 2. Specialized Agent Skills (`.claude/skills/`)
 Skills are modular, on-demand instruction packs loaded by agents whenever a relevant task is executed:
 * **`branch-guard`:** Keeps git branches safe. Ensures work happens on dedicated task branches, prevents accidental commits to `main`, verifies working tree status before switching branches, and safely deletes branches only after their pull request is verified merged.
-* **`simplify-for-beginner`:** How code and tests must look so a Python beginner can read them: plain names, one job per function, no code that only tests use, the test-as-you-go loop (test after every edit, regression test first for bug fixes, golden check for refactors) and the test-suite rules.
+* **`code-standards`:** How code and tests must look so a newcomer can read them: plain names, one job per function, no code that only tests use, the test-as-you-go loop (test after every edit, regression test first for bug fixes) and the test-suite rules.
 * **`deep-cleanup`:** Keeps the repository clean and small. Deletion rules (dead and test-only code is listed in a table before it is removed), how to find dead code, a quick checklist run at the end of every task (stray files, tracked files, diff sizes) and a weekly audit covering branches, CI health, open issues and dependencies.
 * **`nse-data-integrity`:** Contains hard-won rules for handling National Stock Exchange market data, including weekend/special session detection, rejection of duplicate non-trading Bhavcopy files, corporate action split/bonus rebuild safeguards, and the rules for reading renamed symbols.
 * **`db-migration`:** Standardizes database schema migrations using Alembic. Ensures every migration has both an `upgrade()` and a working `downgrade()` compatible with both MySQL (production) and SQLite (offline tests).
-* **`github-issue`:** Standardizes how bugs, data anomalies, out-of-scope issues, and questions requiring owner decisions are filed as structured GitHub issues using the `gh` CLI.
+* **`github-issue`:** Standardizes how bugs, data anomalies, out-of-scope issues, and questions requiring a maintainer decision are filed as structured GitHub issues using the `gh` CLI.
 
 ### 3. Slash Commands (`.claude/commands/`)
 Commands are repeatable, step-by-step procedures triggered by typing a slash command:
-* **`/start-task`:** Initializes every task safely. Checks the current git branch, ensures uncommitted deliverable files are preserved, safely cleans merged local branches, reviews open issues, and clarifies task scope before writing code.
 * **`/pr-ready`:** Prepares a completed task for review. Re-verifies branch safety, runs all lint and test suites offline, reviews the git diff for unintended edits, commits staged files, and opens a GitHub pull request with a complete summary.
 
 ---
@@ -554,34 +553,6 @@ under `data/` (git-ignored), logs in `logs/`, database backups in `~/nse-backups
 defined once in `config/settings.py`; the test suite fails if any test changes a real file under
 `data/` or `reports/`.
 
-### Using the MySQL server in Antigravity
-
-Antigravity reads one global file (`~/.gemini/config/mcp_config.json`), not
-`.mcp.json`. Do the one-time MySQL user and `.env` setup above, then run:
-
-```bash
-bash scripts/install_antigravity_mcp.sh
-```
-
-It adds a read-only `nse-mysql` server (the same `scripts/mcp_mysql.sh`) and keeps
-any servers you already have (a `.bak` copy is saved). Restart Antigravity and check
-its MCP panel. Prefer to edit by hand? Copy
-[antigravity/mcp_config.template.json](antigravity/mcp_config.template.json) and
-replace `__REPO_PATH__` with this folder's full path.
-
-### Using the project skills in Antigravity
-
-The skills and slash commands live in `.claude/` (Claude Code). Antigravity reads
-workspace skills from `.agents/skills/`, so a script copies them across
-(commands become skills too):
-
-```bash
-bash scripts/sync_antigravity_skills.sh
-```
-
-Edit only in `.claude/`, then re-run the script and commit the result; never edit
-`.agents/skills/` by hand.
-
 ### Adding another MCP server later
 
 Add an entry under `mcpServers` in `.mcp.json` (a `command` + `args` for a local
@@ -597,8 +568,8 @@ put the secret in `.env` and load it through a small script like
 nse-screener/
 ├── .claude/                      # Claude Code settings, skills and slash commands
 │   ├── settings.json             # Permission rules (blocks merging, force-push and pushes to main)
-│   ├── skills/                   # Modular domain skills (branch-guard, simplify-for-beginner, deep-cleanup, etc.)
-│   └── commands/                 # Slash commands (/start-task, /pr-ready)
+│   ├── skills/                   # Modular domain skills (branch-guard, code-standards, deep-cleanup, etc.)
+│   └── commands/                 # Slash commands (/pr-ready)
 ├── config/
 │   └── settings.py               # Central configuration (paths, INDICATOR_HISTORY_YEARS)
 ├── data/

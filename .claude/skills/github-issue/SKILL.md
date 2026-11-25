@@ -35,7 +35,7 @@ Short, sanitized log excerpt. No secrets, no personal data, no data exports.
 Which part is affected and how badly (screeners, ingestion, UI, backtests).
 
 ## Suggested fix
-Your proposal, or "needs owner decision" with the options.
+Your proposal, or "needs a maintainer decision" with the options.
 ```
 
 ## Fallback
@@ -50,4 +50,4 @@ say plainly that the issue was NOT filed.
 - Do not fix out-of-scope bugs in the current PR; file the issue instead. The only
   exception is a tiny, obviously safe fix (typo, lint warning, stale comment) in a
   file the PR already touches: make it a separate commit and mention it in the PR
-  (CLAUDE.md rule 4).
+  (see "Git and pull requests" in CLAUDE.md).
