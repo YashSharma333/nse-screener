@@ -32,8 +32,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config.settings import FIRST_MCAP_DATE, NSE_HISTORY_START
+from src.common.db import use_session
 from src.db.models import DailyPrice, Security, SymbolChange
-from src.db.session import get_db
 from src.ingestion.nse_files import fetch
 
 logger = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ def run_daily_update(
     Parameters
     ----------
     session : Session, optional
-        Database session. If None, acquires managed session via get_db().
+        Database session. If None, opens its own via use_session().
     fetch_fn : Callable[[str], bytes], default fetch
         Network download helper (injected for offline unit testing).
     today : date, optional
@@ -505,7 +505,5 @@ def run_daily_update(
 
         return summary
 
-    if session is not None:
-        return _execute(session)
-    with get_db() as managed_session:
-        return _execute(managed_session)
+    with use_session(session) as s:
+        return _execute(s)

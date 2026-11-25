@@ -109,3 +109,11 @@ def test_missing_required_columns_raises_error() -> None:
     bad_csv = "SYMBOL,SERIES\nINFY,EQ\n"
     with pytest.raises(ValueError, match="missing required columns"):
         parse_equity_l(bad_csv)
+
+
+def test_import_does_not_commit_a_given_session(sqlite_session: Session) -> None:
+    """The caller owns the transaction: a rollback by the caller undoes the import."""
+    import_equity_l(session=sqlite_session, csv_content=SAMPLE_EQUITY_L_CSV)
+    sqlite_session.rollback()
+
+    assert sqlite_session.scalars(select(Security)).all() == []

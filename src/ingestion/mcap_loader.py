@@ -36,8 +36,8 @@ from sqlalchemy.orm import Session
 from config import settings
 from config.settings import FIRST_MCAP_DATE
 from src.common.dates import parse_nse_date
+from src.common.db import use_session
 from src.db.models import DailyPrice
-from src.db.session import get_db
 from src.ingestion.nse_files import BadFile, NoFile, check_date, check_zip, fetch, pr_bundle_url
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ def load_market_caps(
     target_cache_dir = cache_dir or settings.MCAP_DIR
     target_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _execute(s: Session) -> None:
+    def _execute() -> None:
         # Query distinct trading dates present in daily_prices in the target range
         stmt = (
             select(DailyPrice.date)
@@ -252,7 +252,8 @@ def load_market_caps(
             .where(DailyPrice.date >= start_date, DailyPrice.date <= end_date)
             .order_by(DailyPrice.date)
         )
-        trading_dates = list(s.scalars(stmt).all())
+        with use_session(session) as s:
+            trading_dates = list(s.scalars(stmt).all())
         logger.info(
             "Found %d trading dates in daily_prices between %s and %s for market cap load.",
             len(trading_dates),
@@ -314,7 +315,8 @@ def load_market_caps(
                 existing_pairs_stmt = select(DailyPrice.symbol, DailyPrice.series).where(
                     DailyPrice.date == d
                 )
-                existing_pairs = set(s.execute(existing_pairs_stmt).all())
+                with use_session(session) as s:
+                    existing_pairs = set(s.execute(existing_pairs_stmt).all())
 
                 update_params: list[dict[str, Any]] = []
                 unmatched_count = 0
@@ -337,8 +339,9 @@ def load_market_caps(
                         unmatched_count += 1
 
                 if update_params:
-                    s.execute(update_stmt, update_params)
-                    s.commit()
+                    # One own session per date: each date is saved as soon as it is done
+                    with use_session(session) as s:
+                        s.execute(update_stmt, update_params)
                     summary.updated_rows += len(update_params)
 
                 summary.unmatched_symbols += unmatched_count
@@ -350,11 +353,7 @@ def load_market_caps(
                     unmatched_count,
                 )
 
-    if session is not None:
-        _execute(session)
-    else:
-        with get_db() as managed_session:
-            _execute(managed_session)
+    _execute()
 
     logger.info(
         "Market cap load complete: %d downloaded, %d cached, %d missing bundles, "
