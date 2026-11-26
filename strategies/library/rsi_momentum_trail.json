@@ -5,18 +5,22 @@
   "author": "trader",
   "status": "candidate",
   "entry": {
-    "inline_rules": [
-      "ema_20 > sma_50",
-      "sma_50 > sma_200",
-      "close > sma_50",
-      "close > sma_200",
-      "close >= 0.85 * high_252d_prev",
-      "vol_multiple > 1.5",
-      "volume_sma_20 > 250000",
-      "rsi_9 >= rsi_9_wma_21 + 1.1",
-      "rsi_9 >= 45",
-      "rsi_9 <= 65"
-    ]
+    "condition": {
+      "type": "group",
+      "mode": "all",
+      "children": [
+        {"type": "compare", "op": ">", "left": {"type": "indicator", "name": "ema", "params": {"length": 20}, "days_ago": 0}, "right": {"type": "indicator", "name": "sma", "params": {"length": 50}, "days_ago": 0}},
+        {"type": "compare", "op": ">", "left": {"type": "indicator", "name": "sma", "params": {"length": 50}, "days_ago": 0}, "right": {"type": "indicator", "name": "sma", "params": {"length": 200}, "days_ago": 0}},
+        {"type": "compare", "op": ">", "left": {"type": "field", "name": "close", "days_ago": 0}, "right": {"type": "indicator", "name": "sma", "params": {"length": 50}, "days_ago": 0}},
+        {"type": "compare", "op": ">", "left": {"type": "field", "name": "close", "days_ago": 0}, "right": {"type": "indicator", "name": "sma", "params": {"length": 200}, "days_ago": 0}},
+        {"type": "compare", "op": ">=", "left": {"type": "field", "name": "close", "days_ago": 0}, "right": {"type": "math", "op": "*", "left": {"type": "number", "value": 0.85}, "right": {"type": "window", "stat": "max", "length": 252, "source": {"type": "field", "name": "high", "days_ago": 0}, "days_ago": 1}}},
+        {"type": "compare", "op": ">", "left": {"type": "field", "name": "volume", "days_ago": 0}, "right": {"type": "math", "op": "*", "left": {"type": "number", "value": 1.5}, "right": {"type": "indicator", "name": "sma", "params": {"length": 20}, "days_ago": 1, "source": {"type": "field", "name": "volume", "days_ago": 0}}}},
+        {"type": "compare", "op": ">", "left": {"type": "indicator", "name": "sma", "params": {"length": 20}, "days_ago": 0, "source": {"type": "field", "name": "volume", "days_ago": 0}}, "right": {"type": "number", "value": 250000}},
+        {"type": "compare", "op": ">=", "left": {"type": "indicator", "name": "rsi", "params": {"length": 9}, "days_ago": 0}, "right": {"type": "math", "op": "+", "left": {"type": "indicator", "name": "wma", "params": {"length": 21}, "days_ago": 0, "source": {"type": "indicator", "name": "rsi", "params": {"length": 9}, "days_ago": 0}}, "right": {"type": "number", "value": 1.1}}},
+        {"type": "compare", "op": ">=", "left": {"type": "indicator", "name": "rsi", "params": {"length": 9}, "days_ago": 0}, "right": {"type": "number", "value": 45}},
+        {"type": "compare", "op": "<=", "left": {"type": "indicator", "name": "rsi", "params": {"length": 9}, "days_ago": 0}, "right": {"type": "number", "value": 65}}
+      ]
+    }
   },
   "exit": {
     "stop_loss_type": "percentage",

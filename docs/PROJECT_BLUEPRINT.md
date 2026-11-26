@@ -158,7 +158,7 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
   src/computation/indicators/calculator.py  ->  Parquet indicator cache
         |                                        (data/processed/indicators.parquet + meta.json)
         v
-  src/conditions/  (rules.py = the safe rule parser; the condition engine lands in CL-24C)
+  src/conditions/  (condition trees: nodes, evaluate, groups, save/load JSON)
         |
         v
   src/strategies/ (StrategySpec JSON, signals, risk, costs)  ->  [backtest engine: NOT BUILT YET]
@@ -183,8 +183,8 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
 | `src/computation/cache_reader.py` | Read-only access to the indicator cache. The UI uses only this; it never builds the cache. |
-| `src/conditions/` | `rules.py` (the safe rule parser and `MissingIndicatorError`); the condition engine is built here in CL-24C. |
-| `src/strategies/` | `spec.py` (pydantic StrategySpec, entry = `inline_rules`), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
+| `src/conditions/` | `nodes.py` (typed parts, checked on load), `evaluate.py`, `groups.py`, `storage.py` (save/load JSON). See `docs/condition_engine.md`. |
+| `src/strategies/` | `spec.py` (pydantic StrategySpec, entry = `condition` tree), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
 | `config/` | `settings.py`, `costs.json`, `adjustment_overrides.csv`. |
 | `migrations/versions/` | Alembic 001 to 010. |
 | `ui/` | Streamlit pages and components. |
@@ -279,12 +279,11 @@ flexibility. The product is a Chartink-style builder: the user composes any cond
   count over N days), math, function, compare (including crossed above and below) and group
   (all, any, any 1, any 2). It is true or false per stock per day. Design: CL-24C and
   [condition_engine.md](condition_engine.md).
-- **Today** a strategy entry is a list of rule texts (`entry.inline_rules`, all must be true)
-  evaluated by the safe parser in `src/conditions/rules.py`. CL-24C replaces them with
-  condition trees.
+- A strategy entry is a condition tree (`entry.condition`, CL-24C), evaluated over the price
+  history by `src/conditions/evaluate.py`. Unknown (not enough history) means false, never a
+  default. Index parts read close only until the index OHLC download exists.
 - **No hard-coded numbers inside logic.** Every period, threshold and ratio is a parameter.
-- **Safe rule parser, no `eval` or `exec`.** Whitelist only: names, numbers, comparison,
-  arithmetic and `and` / `or` / `not`.
+- **No `eval` or `exec`:** a condition is data (JSON), checked when it is loaded.
 - The shipped strategies were checked against the old screeners they replaced: identical entry
   signals on the five golden dates (the strategy files hold the rules the screeners used).
 
@@ -455,7 +454,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
 | P2 | **B1 Fixes PR**: H1 to H11, (`conditions/` and `scaffold.py` already deleted in D12), merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
-| CL | **Cleanup order (26 Nov):** CL-24B drop the prebuilt screeners (strategies on inline rules), CL-24C condition engine, CL-25 16-column cache (needs CL-24C) | CL-24 | the P-rows below keep their old wording; this row has the current order |
+| CL | **Cleanup order (26 Nov):** CL-24B drop the prebuilt screeners (done), CL-24C condition engine (this PR: strategies are condition trees), CL-25 16-column cache (needs CL-24C) | CL-24 | the P-rows below keep their old wording; this row has the current order |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import; `stock_master` no longer exists, so it needs a new table via a migration), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
 | P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
@@ -475,7 +474,7 @@ needs an H item you cannot see, ask the owner to attach the tracker. Do not gues
 ## 15. Decisions already made (do not reopen without a reason)
 
 - No prebuilt screeners (26 Nov, CL-24B). Conditions are user-built trees in `src/conditions/`;
-  the safe rule parser moved there (`src/conditions/rules.py`). Order: CL-24B, CL-24C, CL-25.
+  the condition engine is built there (CL-24C; the old text rule parser is gone). Order: CL-24B, CL-24C, CL-25.
 - No stored universe: load every regular series, filter in the dashboard (series, minimum market cap). Price history is never deleted.
 - Monthly Chartink market-cap refresh is dropped; twice-yearly list is enough.
 - Pre-compute only 1 to 2 years of indicators. Full history on demand.

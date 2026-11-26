@@ -89,6 +89,11 @@ def _parameters(name: str) -> dict[str, inspect.Parameter]:
     return {n: p for n, p in signature.parameters.items() if n not in _HIDDEN}
 
 
+def indicator_parameters(name: str) -> list[str]:
+    """The names a user may set on indicator ``name`` (the public view of its signature)."""
+    return list(_parameters(name))
+
+
 def ind(name: str, days_ago: int = 0, **custom: Any) -> IndicatorSpec:
     """Describe an indicator with the user's numbers; anything not given keeps its default."""
     parameters = _parameters(name)

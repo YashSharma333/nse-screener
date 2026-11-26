@@ -106,6 +106,13 @@ def test_history_reads_only_the_asked_symbols_and_columns(cache_file: Path) -> N
     assert history["date"].min() == DAYS[0]
 
 
+def test_history_of_none_means_every_stock(cache_file: Path) -> None:
+    history = cache_reader.read_history(None, columns=["close"])
+
+    assert set(history["symbol"]) == {"AAA", "BBB", "CCC"}
+    assert len(history) == 3 * len(DAYS)
+
+
 def test_history_without_columns_returns_every_column(cache_file: Path) -> None:
     history = cache_reader.read_history(["BBB"])
 

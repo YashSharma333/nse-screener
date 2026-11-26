@@ -13,9 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def test_conditions_and_strategies_import_in_either_order():
     code = (
-        "import src.strategies.cli\n"
-        "from src.conditions.rules import evaluate_rule\n"
-        "print(evaluate_rule.__name__)\n"
+        "import src.strategies.cli\nfrom src.conditions import evaluate\nprint(evaluate.__name__)\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -26,4 +24,4 @@ def test_conditions_and_strategies_import_in_either_order():
     )
     assert "circular import" not in result.stderr + result.stdout
     assert result.returncode == 0, result.stderr[-500:]
-    assert "evaluate_rule" in result.stdout
+    assert "evaluate" in result.stdout

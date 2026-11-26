@@ -121,8 +121,10 @@ def read_snapshot() -> tuple[pd.DataFrame, str]:
     return snapshot, f"Parquet cache: {len(snapshot)} symbols (as of {day})"
 
 
-def read_history(symbols: Sequence[str], columns: Sequence[str] | None = None) -> pd.DataFrame:
-    """Rows of the given symbols (all cached dates), reading only the columns asked for.
+def read_history(
+    symbols: Sequence[str] | None, columns: Sequence[str] | None = None
+) -> pd.DataFrame:
+    """Rows of the given symbols (None = every stock), all cached dates, only the columns asked for.
 
     PyArrow applies the symbol filter and the column projection while reading, so the whole
     cache never has to fit in memory (16 GB machine). Empty if the cache is missing.
@@ -141,7 +143,8 @@ def read_history(symbols: Sequence[str], columns: Sequence[str] | None = None) -
 
     try:
         dataset = ds.dataset(cache_path, format="parquet")
-        table = dataset.to_table(columns=projection, filter=ds.field("symbol").isin(list(symbols)))
+        wanted = None if symbols is None else ds.field("symbol").isin(list(symbols))
+        table = dataset.to_table(columns=projection, filter=wanted)
     except (OSError, pa.ArrowException) as exc:
         logger.warning("Could not read the indicator cache %s: %s", cache_path, exc)
         return pd.DataFrame()

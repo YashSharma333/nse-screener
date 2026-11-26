@@ -6,7 +6,7 @@ The **Strategy Engine** provides the infrastructure for designing, evaluating, a
 
 ## 1. Core Architecture
 
-A **Strategy** is a complete trading plan. Its entry is a **condition** (today a list of rules, later a condition tree, see [condition_engine.md](condition_engine.md)); the rest of the plan is trade execution and capital preservation. The prebuilt screeners were removed in CL-24B.
+A **Strategy** is a complete trading plan. Its entry is a **condition** (a condition tree, see [condition_engine.md](condition_engine.md)); the rest of the plan is trade execution and capital preservation. The prebuilt screeners were removed in CL-24B.
 
 ```
 +----------------------------------------------------------------+
@@ -17,7 +17,7 @@ A **Strategy** is a complete trading plan. Its entry is a **condition** (today a
                                 v
 +----------------------------------------------------------------+
 |                     2. Entry Rule Evaluation                   |
-|        evaluate_rules_history(entry.inline_rules, df)         |
+|        evaluate_entry(entry, price_history) -> true/false       |
 |             Generates Candidate Trade Signals (t)              |
 +-------------------------------+--------------------------------+
                                 |
@@ -49,11 +49,13 @@ Strategies are expressed as validated Pydantic v2 JSON models with a defined lif
 - `approved`: Validated for live execution.
 - `retired`: Deprecated historical model.
 
-### Entry rules
+### Entry condition
 
-`entry.inline_rules` is a list of rule expressions; the entry signal is true on a day when ALL of them are true. Rules read indicator columns (`close`, `sma_50`, `rsi_14`, `vol_multiple` ...) with comparisons, `+ - * /`, `and`, `or` and `not`. Function calls and anything else are refused (`src/conditions/rules.py`, no `eval`). The old `entry.screener_key` is rejected with a message. A stop measured in ATR needs `atr_14`; `signals` stops with an error if it is missing instead of guessing a number.
+`entry.condition` is a condition tree (a group of comparisons; see [condition_engine.md](condition_engine.md)). The entry signal is true on a stock-day where it is true at the close; `evaluate_entry` evaluates it over a price history, because averages and "N days ago" need the earlier rows. The old `entry.screener_key` and the rule text `entry.inline_rules` are rejected with a message. `exit.exit_rules` is a list of condition trees too (true = exit). A stop measured in ATR needs the ATR: `signals` computes it from the history and stops with an error if the high, low or close columns are missing; a stock with fewer than 14 days has no ATR and is reported, never given a guessed stop.
 
 ### Example Strategy JSON
+
+The entry is shortened here; the full tree is in `strategies/library/swing_volume_atr_trail.json`.
 
 ```json
 {
@@ -62,16 +64,17 @@ Strategies are expressed as validated Pydantic v2 JSON models with a defined lif
   "description": "Trend alignment with volume surge entry, 2.0x ATR stop, and dynamic trailing stop.",
   "status": "candidate",
   "entry": {
-    "inline_rules": [
-      "ema_20 > sma_50",
-      "sma_50 > sma_200",
-      "close > sma_50",
-      "close > sma_200",
-      "close >= 0.85 * high_252d_prev",
-      "vol_multiple > 1.5",
-      "volume_sma_20 > 250000",
-      "rsi_14 < 70"
-    ]
+    "condition": {
+      "type": "group", "mode": "all",
+      "children": [
+        {"type": "compare", "op": ">",
+         "left": {"type": "indicator", "name": "ema", "params": {"length": 20}},
+         "right": {"type": "indicator", "name": "sma", "params": {"length": 50}}},
+        {"type": "compare", "op": "<",
+         "left": {"type": "indicator", "name": "rsi", "params": {"length": 14}},
+         "right": {"type": "number", "value": 70}}
+      ]
+    }
   },
   "exit": {
     "stop_loss_type": "atr",
