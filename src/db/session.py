@@ -23,9 +23,8 @@ from dotenv import load_dotenv
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from config.settings import PROJECT_ROOT, setup_logging
+from config.settings import PROJECT_ROOT
 
-setup_logging()
 logger = logging.getLogger(__name__)
 
 # Load .env from the project root (no-op if the file doesn't exist)

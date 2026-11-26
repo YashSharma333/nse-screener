@@ -211,23 +211,12 @@ python run_pipeline.py --load-mcap --from 2024-02-01 --to 2024-06-30
 * **Why it exists:** NSE began publishing total market capitalization in Bhavcopy/PR bundles on 2024-02-01. Fills `daily_prices.market_cap` with exact published Decimal values; dates before 2024-02-01 remain strictly NULL (never guessed).
 * **What it changes:** Updates `market_cap` column in `daily_prices`.
 
-##### 4. Load Securities Master (`--load-securities`)
-```bash
-# Ingest official equity listing master (EQUITY_L.csv) into securities table
-python run_pipeline.py --load-securities
-```
-* **Why it exists:** Tracks all listed equities, ISINs, listing dates, face values, and active trading status.
-* **What it changes:** Upserts into `securities` table.
+##### 4. Securities Master and Symbol Changes (part of `--update`)
+There is no separate flag: step 3 of `python run_pipeline.py --update` imports the official equity listing master (`EQUITY_L.csv`) into `securities` and the official ticker rename history (`symbolchange.csv`) into `symbol_changes`.
+* **Why it exists:** Tracks all listed equities, ISINs, listing dates and active trading status, and resolves ticker rename chains across NSE's historical changes.
+* **What it changes:** Upserts into the `securities` and `symbol_changes` tables.
 
-##### 5. Load Official Symbol Changes (`--load-renames`)
-```bash
-# Ingest official ticker rename history from symbolchange.csv
-python run_pipeline.py --load-renames
-```
-* **Why it exists:** Dynamically resolves ticker rename chains across all NSE historical changes.
-* **What it changes:** Upserts into `symbol_changes` table.
-
-##### 6. Download Official Corporate Actions (`--download-corporate-actions`)
+##### 5. Download Official Corporate Actions (`--download-corporate-actions`)
 ```bash
 # Back up first, then create the tables (migration 008) and download everything
 bash scripts/backup_db.sh
@@ -235,7 +224,7 @@ alembic upgrade head
 python run_pipeline.py --download-corporate-actions
 
 # Or a specific ex-date window (default: 10 years back to 90 days ahead)
-python run_pipeline.py --download-corporate-actions --start 2024-01-01 --end 2026-12-31
+python run_pipeline.py --download-corporate-actions --from 2024-01-01 --to 2026-12-31
 
 # Health check of NSE's report formats (read-only, talks to the real NSE site)
 python scripts/check_nse_reports.py
@@ -245,19 +234,19 @@ python scripts/check_nse_reports.py
 * **What it changes:** Upserts into `corporate_actions` and `symbol_changes` (safe to repeat) and writes raw files to `data/corporate_actions/` (git-ignored). It does not change any price or adjusted price by itself: run `--rebuild-adjusted` afterwards.
 * **Expected output:** `Corporate actions: 22545 API rows -> 22537 stored (724 exact-factor events, 413 to review).` then `Symbol changes stored: 1080 (361 touch our securities list). Listing master rows: 2632.`
 
-##### 7. Ingest Benchmark Indices (`--benchmarks`)
+##### 6. Ingest Benchmark Indices (`--benchmarks`)
 ```bash
 # Ingest benchmark prices for NIFTY 50, NIFTY 500, etc.
 python run_pipeline.py --benchmarks   # default: 2016-11-21 to today
 
 # Ingest benchmarks for a specific date range
-python run_pipeline.py --benchmarks --start 2020-01-01 --end 2024-12-31
+python run_pipeline.py --benchmarks --from 2020-01-01 --to 2024-12-31
 ```
 * **Daily use:** you normally do not run this: the daily `--update` refreshes the benchmarks for new days. Run it by hand only to fill an old range.
 * **Why it exists:** Key quantitative strategies (such as Relative Strength / RS Ratings) compare stock performance against the broader market index (NIFTY 500).
 * **What it changes:** Inserts daily index levels into `benchmark_prices` and refreshes the indicator cache.
 
-##### 8. Recompute Corporate Action Adjustments (`--rebuild-adjusted`)
+##### 7. Recompute Corporate Action Adjustments (`--rebuild-adjusted`)
 ```bash
 # Recompute split and bonus factors across the full price history
 python run_pipeline.py --rebuild-adjusted
@@ -270,7 +259,7 @@ python run_pipeline.py --rebuild-adjusted
 * **What it changes:** Populates `adj_factors` and updates `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_volume` in `daily_prices` (about 2.7 million rows on a 10-year database, a few minutes). Take a backup first: `bash scripts/backup_db.sh`.
 * **Expected output:** `Saved N applied events to reports/adj_events_review.csv` and `Saved M unexplained price jumps (NOT applied) ...`.
 
-##### 9. Refresh Indicator Cache (`--refresh-cache`)
+##### 8. Refresh Indicator Cache (`--refresh-cache`)
 ```bash
 # Rebuild the pre-computed indicator Parquet cache directly from MySQL
 python run_pipeline.py --refresh-cache
@@ -278,7 +267,7 @@ python run_pipeline.py --refresh-cache
 * **Why it exists:** Rebuilds the Parquet cache from MySQL without downloading anything. The cache holds the price columns plus the 15 approved indicators (`PRECOMPUTED_INDICATORS` in `config/settings.py`); every other indicator is computed when it is asked for.
 * **What it changes:** Regenerates `data/processed/indicators.parquet`, its metadata sidecar `indicators.meta.json` and the small index file `data/processed/benchmarks.parquet` (index closes, so the read-only UI needs no MySQL).
 
-##### 10. Verify Price Accuracy (`--verify-prices`)
+##### 9. Verify Price Accuracy (`--verify-prices`)
 ```bash
 # Run independent price verification across ~48 random historical trading dates
 python run_pipeline.py --verify-prices
@@ -286,7 +275,7 @@ python run_pipeline.py --verify-prices
 * **Why it exists:** Independent audit comparing database prices against freshly downloaded raw NSE Bhavcopies.
 * **What it changes:** Read-only operation. Writes audit discrepancies (if any) to `reports/verify_prices.csv`.
 
-##### 11. Cross-Check 52-Week High/Low (`--crosscheck-52w`)
+##### 10. Cross-Check 52-Week High/Low (`--crosscheck-52w`)
 ```bash
 # Cross-check adjusted prices against official NSE 52-week High/Low files for ~10 dates
 python run_pipeline.py --crosscheck-52w
@@ -310,16 +299,17 @@ alembic upgrade head
 # Step 3: load every official Bhavcopy price from 2016-11-21 (resumable, takes a long time)
 python run_pipeline.py --load-prices
 
-# Step 4: market cap, listing master and official symbol changes
+# Step 4: market cap
 python run_pipeline.py --load-mcap
-python run_pipeline.py --load-securities
-python run_pipeline.py --load-renames
 
 # Step 5: official corporate actions, then benchmark indices
 python run_pipeline.py --download-corporate-actions
 python run_pipeline.py --benchmarks
 
-# Step 6: adjust prices from the official actions (also builds the indicator cache)
+# Step 6: one --update also imports the securities list and the symbol changes
+python run_pipeline.py --update
+
+# Step 7: adjust prices from the official actions (also builds the indicator cache)
 python run_pipeline.py --rebuild-adjusted
 ```
 
@@ -328,7 +318,7 @@ After that, the daily `python run_pipeline.py --update` keeps everything current
 **Why this exact order matters:**
 1. **Migrations first:** create the tables with all indexes.
 2. **Prices before everything else:** market cap, adjustments and indicators all hang off the raw `daily_prices` rows, which are never relabelled or changed.
-3. **Securities, renames and corporate actions third:** they are the official facts the adjustment needs.
+3. **Corporate actions, then `--update` (securities and renames):** they are the official facts the adjustment needs.
 4. **Benchmarks before the rebuild:** the relative-strength indicators read them when the cache is built.
 5. **Rebuild adjusted last:** it processes the full history once and refreshes the indicator cache.
 
@@ -582,8 +572,8 @@ nse-screener/
 │   │   ├── bhavcopy_parser.py    # Parsers for both Bhavcopy formats
 │   │   ├── price_loader.py       # --load-prices
 │   │   ├── mcap_loader.py        # --load-mcap (PR bundles)
-│   │   ├── securities.py         # --load-securities (EQUITY_L.csv)
-│   │   ├── renames.py            # --load-renames and prices_for (read-time rename join)
+│   │   ├── securities.py         # EQUITY_L.csv import (--update step 3)
+│   │   ├── renames.py            # symbolchange.csv import (--update step 3) and prices_for (read-time rename join)
 │   │   ├── benchmark.py          # NIFTY index closes (relative-strength indicators)
 │   │   ├── corporate_actions.py  # Official NSE reports downloader (actions, symbol changes, listing)
 │   │   ├── corporate_actions_parser.py # Reads NSE action text into exact price factors

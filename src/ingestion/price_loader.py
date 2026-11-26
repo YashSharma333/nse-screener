@@ -107,7 +107,7 @@ def load_raw_prices(
     parse_fn: Callable[[bytes, date | str], pd.DataFrame] = parse_bhavcopy,
     write_cache_fn: Callable[..., Path] = write_cache,
     sleep_fn: Callable[[float], Any] = time.sleep,
-    pause_seconds: float = 0.3,
+    pause_seconds: float | None = None,
     ref_date: date | None = None,
 ) -> LoadPricesSummary:
     """Load raw Bhavcopy files into Parquet cache and upsert into daily_prices.
@@ -134,7 +134,7 @@ def load_raw_prices(
     sleep_fn : Callable
         Sleep function for politeness between network downloads.
     pause_seconds : float
-        Polite delay in seconds between download requests (default: 0.3).
+        Polite delay in seconds between downloads (default: settings.PRICE_DOWNLOAD_PAUSE_SECONDS).
     ref_date : date | None
         Reference date for determining recent 3-day buffer (default: date.today()).
 
@@ -144,6 +144,8 @@ def load_raw_prices(
         Summary statistics of the loading process.
     """
     today = ref_date or date.today()
+    if pause_seconds is None:
+        pause_seconds = settings.PRICE_DOWNLOAD_PAUSE_SECONDS
     start_date: date = (
         (date.fromisoformat(start) if isinstance(start, str) else start)
         if start is not None

@@ -58,6 +58,11 @@ LOG_BACKUP_COUNT = 3  # keep 3 rotated copies
 # ---------------------------------------------------------------------------
 INDICATOR_HISTORY_YEARS: int = int(os.getenv("INDICATOR_HISTORY_YEARS", "2"))
 INDICATOR_WARMUP_BARS: int = int(os.getenv("INDICATOR_WARMUP_BARS", "300"))
+# The warm-up is never shorter than this, even if the environment asks for fewer bars:
+# the longest cached indicator (the 200-day average and its slope) needs about this many.
+INDICATOR_MIN_WARMUP_BARS: int = 300
+# The index every relative-strength indicator is measured against.
+BENCHMARK_INDEX_CODE: str = "NIFTY 500"
 
 # The columns every cache row starts with (the price columns, no indicators).
 CACHE_BASE_COLUMNS: list[str] = [
@@ -140,10 +145,12 @@ def setup_logging() -> None:
 # "Jump ratio" = previous close / new close. An overnight move this big (down 20 percent
 # or more, or the matching rise) that no applied corporate action explains is only LISTED
 # for the owner in reports/adj_events_uncertain.csv. It never changes a price.
-SPLIT_REVIEW_MIN_RATIO: float = 1.25
-# If more than this share of symbols jump on one date, it is a data problem, not splits.
-SPLIT_GUARD_FRACTION: float = 0.15
-SPLIT_GUARD_MIN_SYMBOLS: int = 5
+JUMP_REPORT_MIN_RATIO: float = 1.25
+# If more than this share of symbols jump on one date, it is a data problem, not a corporate
+# action, so that date is left out of the report. The check needs at least
+# JUMP_REPORT_MIN_SYMBOLS symbols on the date to mean anything.
+JUMP_REPORT_MAX_BAD_DAY_SHARE: float = 0.15
+JUMP_REPORT_MIN_SYMBOLS: int = 5
 # ---------------------------------------------------------------------------
 # Official NSE corporate-actions reports (task CA1)
 # ---------------------------------------------------------------------------
@@ -174,6 +181,13 @@ ADJUSTMENT_OVERRIDES_FILE: Path = PROJECT_ROOT / "config" / "adjustment_override
 # Official NSE hosts
 NSE_WWW_HOST: str = "www.nseindia.com"
 NSE_ARCHIVES_HOST: str = "nsearchives.nseindia.com"
+# One timeout (seconds) for every NSE download, and the polite pause (seconds) after a
+# downloaded Bhavcopy or PR-bundle file and after each benchmark day.
+NSE_REQUEST_TIMEOUT_SECONDS: int = 30
+PRICE_DOWNLOAD_PAUSE_SECONDS: float = 0.3
+BENCHMARK_DOWNLOAD_PAUSE_SECONDS: float = 0.5
+# The 52-week cross-check looks back this many calendar days (a year of history per date).
+CROSSCHECK_WINDOW_DAYS: int = 365
 
 # Official file start dates:
 # • 2016-11-21: earliest daily price history in scope

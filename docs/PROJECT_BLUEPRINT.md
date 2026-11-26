@@ -240,9 +240,9 @@ question when building a continuous series; the owner decides per case.
 
 ### CLI (all in `run_pipeline.py`)
 
-`--update`, `--load-prices`, `--load-mcap`, `--load-securities`, `--load-renames`,
-`--download-corporate-actions`, `--rebuild-adjusted`, `--benchmarks`, `--refresh-cache`,
-`--verify-prices`, `--crosscheck-52w`, with `--from/--to` and `--start/--end` for ranges.
+`--update`, `--load-prices`, `--load-mcap`, `--download-corporate-actions`,
+`--rebuild-adjusted`, `--benchmarks`, `--refresh-cache`, `--verify-prices`,
+`--crosscheck-52w`, one at a time, with `--from/--to` for ranges.
 Check `--help` for the truth.
 
 ## 7. Indicators and cache design

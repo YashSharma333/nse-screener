@@ -43,7 +43,7 @@ Optional window (default is 10 years back to 90 days ahead, so announced future 
 included):
 
 ```bash
-python run_pipeline.py --download-corporate-actions --start 2024-01-01 --end 2026-12-31
+python run_pipeline.py --download-corporate-actions --from 2024-01-01 --to 2026-12-31
 ```
 
 It is safe to run again and again: rows are updated in place, never duplicated.

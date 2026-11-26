@@ -31,6 +31,7 @@ from typing import Any
 
 import pandas as pd
 
+from config import settings
 from config.settings import (
     NSE_API_BASE,
     NSE_ARCHIVES_BASE,
@@ -48,7 +49,6 @@ from src.ingestion.nse_files import (
     EQUITY_L_URL,
     MAX_RETRIES,
     REQUEST_DELAY,
-    REQUEST_TIMEOUT,
     RETRY_WAIT,
     SYMBOLCHANGE_URL,
     BadFile,
@@ -339,14 +339,16 @@ class NSEReportsDownloader:
         self,
         max_retries: int = MAX_RETRIES,
         retry_wait: float = RETRY_WAIT,
-        request_timeout: float = REQUEST_TIMEOUT,
+        request_timeout: float | None = None,
         request_delay: float = REQUEST_DELAY,
         api_base: str = NSE_API_BASE,
         archives_base: str = NSE_ARCHIVES_BASE,
     ) -> None:
         self.max_retries = max_retries
         self.retry_wait = retry_wait
-        self.request_timeout = request_timeout
+        self.request_timeout = (
+            settings.NSE_REQUEST_TIMEOUT_SECONDS if request_timeout is None else request_timeout
+        )
         self.request_delay = request_delay
         self.api_base = api_base.rstrip("/")
         self.archives_base = archives_base.rstrip("/")

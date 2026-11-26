@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from config import settings
 from config.settings import (
     NSE_ARCHIVES_BASE,
     NSE_UDIFF_START,
@@ -60,7 +61,6 @@ HEADERS: dict[str, str] = {
 # Retry / throttle defaults (the corporate-actions downloader reads them too).
 MAX_RETRIES = 3
 RETRY_WAIT = 6  # seconds between retries
-REQUEST_TIMEOUT = 25  # seconds per HTTP request
 REQUEST_DELAY = 0.8  # polite delay between downloads
 
 
@@ -189,7 +189,7 @@ def _warm_up(session: requests.Session, url: str, timeout: int | float) -> None:
 def fetch(
     url: str,
     *,
-    timeout: int | float = 30,
+    timeout: int | float | None = None,
     retries: int = 3,
     retry_wait: float | None = None,
 ) -> bytes:
@@ -199,13 +199,15 @@ def fetch(
     ----------
     url : str
         The URL to fetch.
-    timeout : int or float, default 30
-        Request timeout in seconds.
+    timeout : int or float, optional
+        Request timeout in seconds (default: settings.NSE_REQUEST_TIMEOUT_SECONDS).
     retries : int, default 3
         Number of fetch attempts before raising FetchFailed.
     retry_wait : float, optional
         Fixed backoff duration in seconds. If None, uses exponential backoff (2**attempt).
     """
+    if timeout is None:
+        timeout = settings.NSE_REQUEST_TIMEOUT_SECONDS
     session = _shared_session()
     _warm_up(session, url, timeout)
 

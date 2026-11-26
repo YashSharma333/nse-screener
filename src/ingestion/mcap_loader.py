@@ -188,7 +188,7 @@ def load_market_caps(
     parse_fn: Callable[[bytes, date | str], pd.DataFrame] = parse_mcap_file,
     write_cache_fn: Callable[..., Path] = write_mcap_cache,
     sleep_fn: Callable[[float], Any] = time.sleep,
-    pause_seconds: float = 0.3,
+    pause_seconds: float | None = None,
 ) -> McapSummary:
     """Load market cap values from PR bundles into daily_prices for dates >= 2024-02-01.
 
@@ -211,13 +211,15 @@ def load_market_caps(
     sleep_fn : Callable
         Sleep function for politeness between downloads.
     pause_seconds : float
-        Delay in seconds between requests (default: 0.3).
+        Delay in seconds between requests (default: settings.PRICE_DOWNLOAD_PAUSE_SECONDS).
 
     Returns
     -------
     McapSummary
         Summary statistics of the loading process.
     """
+    if pause_seconds is None:
+        pause_seconds = settings.PRICE_DOWNLOAD_PAUSE_SECONDS
     # Boundary: market cap files start on 2024-02-01
     req_start = (
         (date.fromisoformat(start) if isinstance(start, str) else start)
