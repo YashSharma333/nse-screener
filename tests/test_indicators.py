@@ -183,6 +183,66 @@ def test_true_range_and_atr() -> None:
     assert pd.isna(atr(df, length=14).iloc[12])
 
 
+def _wilder_by_hand(df: pd.DataFrame, length: int) -> list[float]:
+    """ATR by the textbook Wilder recursion: a = a * (n - 1) / n + true_range / n."""
+    values: list[float] = []
+    previous_close = None
+    average = None
+    for row in df.itertuples():
+        if previous_close is None:
+            tr = row.high - row.low
+        else:
+            tr = max(
+                row.high - row.low,
+                abs(row.high - previous_close),
+                abs(row.low - previous_close),
+            )
+        average = tr if average is None else average * (length - 1) / length + tr / length
+        values.append(average)
+        previous_close = row.close
+    return values
+
+
+def _gappy_stock(n: int = 40, seed: int = 7) -> pd.DataFrame:
+    """One stock with changing daily ranges and gaps, so true range is not constant."""
+    rng = np.random.default_rng(seed)
+    close = 100 + np.cumsum(rng.normal(0, 2, n))
+    high = close + rng.uniform(0.5, 3.0, n)
+    low = close - rng.uniform(0.5, 3.0, n)
+    return pd.DataFrame(
+        {
+            "date": pd.date_range(end="2024-06-30", periods=n, freq="B"),
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1000.0,
+        }
+    )
+
+
+def test_atr_is_wilder_smoothing_like_rsi() -> None:
+    """ATR must follow Wilder (alpha = 1/length), the same smoothing RSI uses."""
+    df = _gappy_stock()
+    expected = pd.Series(_wilder_by_hand(df, 14))
+    result = atr(df, length=14)
+    assert result.iloc[:13].isna().all()  # nothing before the full window
+    np.testing.assert_allclose(result.iloc[13:], expected.iloc[13:], rtol=1e-10)
+
+
+def test_atr_never_mixes_stocks() -> None:
+    """Each stock's ATR equals the ATR of that stock alone (shifts and smoothing are per stock)."""
+    first, second = _gappy_stock(seed=1), _gappy_stock(seed=2)
+    both = pd.concat([first.assign(symbol="AAA"), second.assign(symbol="BBB")], ignore_index=True)
+    result = atr(both, length=14)
+    np.testing.assert_allclose(result.iloc[:40], atr(first, length=14), rtol=1e-10)
+    np.testing.assert_allclose(result.iloc[40:], atr(second, length=14), rtol=1e-10)
+
+
+def test_atr_is_nan_when_history_is_shorter_than_the_window() -> None:
+    assert atr(_gappy_stock(n=10), length=14).isna().all()
+
+
 # ---------------------------------------------------------------------------
 # RSI
 # ---------------------------------------------------------------------------
