@@ -592,7 +592,7 @@ def test_loading_a_missing_or_broken_or_wrong_file_is_a_readable_error(tmp_path)
 
     bad_tree = tmp_path / "bad_tree.json"
     bad_tree.write_text(json.dumps({"condition": {"type": "numbr"}}))
-    with pytest.raises(ConditionError, match="bad_tree.json"):
+    with pytest.raises(ConditionError, match=r"bad_tree\.json"):
         load_condition(bad_tree)
 
 
