@@ -42,7 +42,7 @@ Data flows one way:
 - **Stocks screened:** all regular series (EQ, BE, BZ, SM, ST) are loaded, delisted ones included; price history is never deleted. Market cap is NULL before 2024-02-01 and is never guessed.
 - **Symbol renames:** raw `daily_prices.symbol` is never relabelled. Renames live in `symbol_changes` and are joined at read time (`prices_for` in `src/ingestion/renames.py`).
 - **DB layer:** `src/db/upsert.py` is the dialect-agnostic upsert. A function that takes a session uses it as given and does not commit it; the caller commits. Use `use_session` from `src/common/db.py` for "use this session or open one".
-- **Conditions and strategies:** conditions are JSON trees evaluated by `src/conditions/` (until CL-24C lands, `src/conditions/rules.py` is the whitelisting rule parser, no `eval`/`exec`). Strategies are `StrategySpec` JSON files in `strategies/library/` whose entry is a condition. See `docs/strategy_engine.md` and `docs/condition_engine.md`.
+- **Conditions and strategies:** conditions are JSON trees (`src/conditions/`: nodes, evaluation, save and load). Strategies are `StrategySpec` JSON files in `strategies/library/` whose entry is a condition tree. See `docs/strategy_engine.md` and `docs/condition_engine.md`.
 
 ## Rules that must not change
 
