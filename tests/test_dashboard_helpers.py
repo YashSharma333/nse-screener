@@ -8,6 +8,7 @@ import pandas as pd
 from ui.components.dashboard_helpers import (
     COLUMN_NAMES,
     COLUMN_PRESETS,
+    add_derived_columns,
     color_change,
     compute_dashboard_kpis,
     default_series,
@@ -23,9 +24,9 @@ def _snapshot() -> pd.DataFrame:
             "symbol": ["AAA", "BBB", "CCC", "DDD"],
             "series": ["EQ", "EQ", "SM", "BZ"],
             "close": [110.0, 90.0, 50.0, 10.0],
-            "sma_200": [100.0, 100.0, 40.0, np.nan],
-            "pct_change_daily": [2.0, -1.0, 0.0, np.nan],
-            "rsi_14": [60.0, 40.0, 50.0, np.nan],
+            "sma_close_200": [100.0, 100.0, 40.0, np.nan],
+            "percent_change_close_1": [2.0, -1.0, 0.0, np.nan],
+            "rsi_close_14": [60.0, 40.0, 50.0, np.nan],
             "pct_from_52w_high": [-2.0, -30.0, -5.0, np.nan],
             "vol_multiple": [2.0, 1.0, 1.5, np.nan],
         }
@@ -106,10 +107,35 @@ def test_color_change():
 
 def test_kpis_with_missing_columns_show_dashes_not_crash():
     """Regression: a snapshot lacking sma_200 / 52W / volume columns must not raise."""
-    df = _snapshot()[["symbol", "close", "pct_change_daily"]]
+    df = _snapshot()[["symbol", "close", "percent_change_close_1"]]
     kpis = compute_dashboard_kpis(df, total_rows=len(df))
     assert _kpi(kpis, "Stocks shown") == "4"
     assert _kpi(kpis, "Above SMA 200") == "—"
     assert _kpi(kpis, "Near 52W high") == "—"
     assert _kpi(kpis, "Volume") == "—"
     assert _kpi(kpis, "Median RSI") == "—"
+
+
+def test_derived_columns_compare_today_with_yesterdays_values() -> None:
+    """% from the 52-week high uses the PRIOR-day high; the volume multiple the prior average."""
+    table = pd.DataFrame(
+        {
+            "close": [110.0, 90.0],
+            "volume": [3000.0, 500.0],
+            "window_high_252_max_ago1": [100.0, 100.0],
+            "sma_volume_20_ago1": [1000.0, 0.0],
+        }
+    )
+
+    result = add_derived_columns(table)
+
+    assert list(result["pct_from_52w_high"]) == [10.0, -10.0]
+    assert result["vol_multiple"].iloc[0] == 3.0
+    assert np.isnan(result["vol_multiple"].iloc[1])  # a 0 average is unknown, never infinity
+    assert "pct_from_52w_high" not in table.columns  # the input table is left alone
+
+
+def test_derived_columns_are_skipped_when_their_inputs_are_missing() -> None:
+    table = pd.DataFrame({"close": [1.0], "volume": [1.0]})
+
+    assert list(add_derived_columns(table).columns) == ["close", "volume"]

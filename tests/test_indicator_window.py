@@ -77,8 +77,8 @@ def test_indicator_window_respects_warmup(tmp_path: Path, sqlite_db):
 
         # Critical test requirement: sma_200 valid on the very first kept row!
         first_row = full.sort_values(by="date").iloc[0]
-        assert pd.notna(first_row["sma_200"])
-        assert float(first_row["sma_200"]) > 0
+        assert pd.notna(first_row["sma_close_200"])
+        assert float(first_row["sma_close_200"]) > 0
 
         # Check metadata sidecar
         meta_file = cache_path.with_suffix(".meta.json")

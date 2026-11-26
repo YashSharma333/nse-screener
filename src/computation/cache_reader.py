@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from config import settings
+from src.computation.indicators.resolver import IndicatorSpec, ensure_columns
 
 logger = logging.getLogger(__name__)
 
@@ -155,10 +156,68 @@ def read_history(
     return history
 
 
+def read_benchmarks() -> pd.DataFrame:
+    """Every stored index close (``index_code``, ``date``, ``close``); empty if there is no file.
+
+    Written by the cache build (``data/processed/benchmarks.parquet``). The UI never opens MySQL,
+    so the condition engine's index part reads its closes from here.
+    """
+    path = settings.BENCHMARKS_CACHE_PATH
+    if not path.exists():
+        return pd.DataFrame(columns=["index_code", "date", "close"])
+    try:
+        benchmarks = pd.read_parquet(path)
+    except (OSError, pa.ArrowException) as exc:
+        logger.warning("Could not read the benchmarks file %s: %s", path, exc)
+        return pd.DataFrame(columns=["index_code", "date", "close"])
+    benchmarks["date"] = pd.to_datetime(benchmarks["date"]).dt.date
+    return benchmarks
+
+
+def load_with_indicators(
+    specs: Iterable[IndicatorSpec],
+    symbols: Sequence[str] | None = None,
+    dates: Sequence[Any] | None = None,
+) -> pd.DataFrame:
+    """The price columns plus one column per spec, for only the stocks and days asked for.
+
+    A spec whose column is saved in the cache is read from the file; any other is computed here
+    through the resolver. Nothing is ever written back. ``symbols`` limits which stocks are read
+    (None = all). ``dates`` limits the rows returned, but the calculation still uses every cached
+    day of those stocks, because an average on day ``t`` needs the days before it. Empty if the
+    cache is missing.
+
+    Note: a computed EMA, RSI or ATR starts from the first cached row, so it can differ in the
+    far decimals from a value computed from the full database history.
+    """
+    specs = list(specs)
+    cache_path = settings.INDICATORS_CACHE_PATH
+    if not cache_path.exists():
+        return pd.DataFrame()
+
+    saved = set(pq.read_schema(cache_path).names)
+    wanted = [name for name in settings.CACHE_BASE_COLUMNS if name in saved]
+    wanted += [spec.column for spec in specs if spec.column in saved]
+
+    table = read_history(symbols, columns=list(dict.fromkeys(wanted)))
+    if table.empty:
+        return table
+    # The indicator functions never sort, so the table must be by stock, then day.
+    table = table.sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
+    table = ensure_columns(table, specs)
+
+    if dates is not None:
+        days = {pd.Timestamp(day).date() for day in dates}
+        table = table[table["date"].isin(days)].reset_index(drop=True)
+    return table
+
+
 __all__ = [
     "NO_CACHE_MESSAGE",
     "date_literal",
     "fill_missing_market_cap",
+    "load_with_indicators",
+    "read_benchmarks",
     "read_data_date",
     "read_history",
     "read_meta",

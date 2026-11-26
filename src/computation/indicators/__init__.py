@@ -1,16 +1,11 @@
 """
 Technical and Quantitative Indicators Package
 ==============================================
-Plain indicator functions (``sma``, ``rsi``, ...) and the temporary ``add_all_indicators`` that
-builds the cache columns from them. See ``calculator.py``.
+Plain indicator functions (``sma``, ``rsi``, ...) in ``calculator.py`` and the resolver
+(``resolver.py``) that runs them with the user's numbers. The cache saves only the list in
+``settings.PRECOMPUTED_INDICATORS``.
 """
 
-from src.computation.indicators.calculator import (
-    INDICATORS_SCHEMA_VERSION,
-    add_all_indicators,
-)
+from src.computation.indicators.calculator import INDICATORS_SCHEMA_VERSION
 
-__all__ = [
-    "INDICATORS_SCHEMA_VERSION",
-    "add_all_indicators",
-]
+__all__ = ["INDICATORS_SCHEMA_VERSION"]

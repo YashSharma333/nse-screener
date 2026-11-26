@@ -24,9 +24,9 @@ from sqlalchemy import text
 from config import settings
 from config.settings import INDICATOR_HISTORY_YEARS, INDICATOR_WARMUP_BARS, setup_logging
 from src.computation.cache_reader import date_literal, fill_missing_market_cap
-from src.computation.indicators import INDICATORS_SCHEMA_VERSION, add_all_indicators
+from src.computation.indicators import INDICATORS_SCHEMA_VERSION
+from src.computation.indicators.resolver import ensure_columns
 from src.db.session import check_connection, engine
-from src.ingestion.benchmark import canonical_index_code
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -152,59 +152,6 @@ def load_raw_market_data(
         )
 
 
-def get_benchmark_returns(
-    index_code: str = "NIFTY 500",
-    start: date | None = None,
-    end: date | None = None,
-) -> pd.DataFrame:
-    """Fetch benchmark index prices and calculate daily returns.
-
-    Args:
-        index_code: Target index name (e.g., 'NIFTY 500', 'NIFTY_500')
-        start: Optional start date filter
-        end: Optional end date filter
-
-    Returns:
-        DataFrame with columns ['date', 'close', 'returns']
-    """
-    if not check_connection():
-        return pd.DataFrame()
-
-    code = canonical_index_code(index_code)
-    clauses = ["index_code = :index_code"]
-    params: dict[str, Any] = {"index_code": code}
-
-    if start:
-        clauses.append("date >= :start")
-        params["start"] = start
-    if end:
-        clauses.append("date <= :end")
-        params["end"] = end
-
-    where_str = " AND ".join(clauses)
-    query = text(f"""
-        SELECT date, close
-        FROM benchmark_prices
-        WHERE {where_str}
-        ORDER BY date ASC
-    """)
-
-    try:
-        with engine.connect() as conn:
-            df = pd.read_sql(query, conn, params=params)
-
-        if df.empty:
-            return pd.DataFrame()
-
-        df["date"] = pd.to_datetime(df["date"]).dt.date
-        df["close"] = pd.to_numeric(df["close"], errors="coerce")
-        df["returns"] = df["close"].pct_change()
-        return df
-    except Exception as exc:
-        logger.warning("Error fetching benchmark prices for %s: %s", index_code, exc)
-        return pd.DataFrame()
-
-
 def get_db_cache_metadata(connection: Any = None) -> dict[str, Any]:
     """Query current database state for cache validation."""
     if connection is None and not check_connection():
@@ -300,18 +247,46 @@ def save_indicator_parquet_cache(
             tmp_file.unlink()
 
 
-def compute_market_indicators(
-    raw_df: pd.DataFrame,
-    benchmark_df: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Computes all technical and quantitative indicators grouped by stock symbol."""
+def compute_market_indicators(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """The cache table: the price columns plus the approved indicator list, nothing else.
+
+    Why: every other indicator is computed when it is asked for (``cache_reader``), so the cache
+    stays small. Rows are sorted by symbol, then date, because the indicator functions never sort.
+    """
     if raw_df.empty:
         return raw_df
 
-    if benchmark_df is None:
-        benchmark_df = get_benchmark_returns("NIFTY 500")
+    base = [name for name in settings.CACHE_BASE_COLUMNS if name in raw_df.columns]
+    table = raw_df[base].sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
+    return ensure_columns(table, settings.PRECOMPUTED_INDICATORS)
 
-    return add_all_indicators(raw_df, benchmark_df=benchmark_df)
+
+def save_benchmarks_parquet(path: Path | None = None) -> None:
+    """Write every stored index close (index_code, date, close) to the small benchmarks file.
+
+    Why: the dashboard and the condition engine may not open MySQL, but an index part such as
+    "NIFTY 500 close" needs those closes. The file is tiny, so all indexes are written.
+    """
+    path = path or settings.BENCHMARKS_CACHE_PATH
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT index_code, date, close FROM benchmark_prices")
+            benchmarks = pd.read_sql(query, conn)
+    except Exception as exc:  # the benchmarks are optional: the stock cache is still good
+        logger.warning("Could not read benchmark prices for %s: %s", path, exc)
+        return
+    if benchmarks.empty:
+        return
+
+    benchmarks["date"] = pd.to_datetime(benchmarks["date"]).dt.date
+    benchmarks["close"] = pd.to_numeric(benchmarks["close"], errors="coerce")
+    benchmarks = benchmarks.sort_values(["index_code", "date"]).reset_index(drop=True)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".tmp")
+    benchmarks.to_parquet(tmp_path, index=False, engine="pyarrow")
+    tmp_path.replace(path)
+    logger.info("Saved %d benchmark rows to %s", len(benchmarks), path)
 
 
 def get_latest_market_snapshot(with_indicators_df: pd.DataFrame) -> pd.DataFrame:
@@ -474,8 +449,7 @@ def load_indicator_snapshot(
     if raw_df.empty:
         return pd.DataFrame(), pd.DataFrame(), is_live, status_msg
 
-    benchmark_df = get_benchmark_returns("NIFTY 500", start=warmup_start_date, end=max_date)
-    with_indicators = compute_market_indicators(raw_df, benchmark_df=benchmark_df)
+    with_indicators = compute_market_indicators(raw_df)
 
     # Filter to keep only the last N years of rows
     if cutoff_date is not None and not with_indicators.empty and "date" in with_indicators.columns:
@@ -491,6 +465,7 @@ def load_indicator_snapshot(
         meta["warmup_bars"] = actual_warmup_bars
 
     save_indicator_parquet_cache(kept_indicators, cache_path=cache_path, meta_dict=meta)
+    save_benchmarks_parquet()
     snapshot = get_latest_market_snapshot(kept_indicators)
 
     return snapshot, kept_indicators, is_live, status_msg

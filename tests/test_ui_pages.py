@@ -27,11 +27,12 @@ class TestStreamlitPages(unittest.TestCase):
                     "low": 95.0,
                     "close": 102.0,
                     "volume": 10000,
-                    "ema_20": 100.0,
-                    "sma_50": 98.0,
-                    "sma_200": 90.0,
-                    "volume_sma_20": 8000,
-                    "rsi_14": 55.0,
+                    "ema_close_20": 100.0,
+                    "sma_close_50": 98.0,
+                    "sma_close_200": 90.0,
+                    "sma_volume_20": 8000,
+                    "rsi_close_14": 55.0,
+                    "window_high_252_max_ago1": 110.0,
                 },
                 {
                     "symbol": "TEST",
@@ -41,11 +42,12 @@ class TestStreamlitPages(unittest.TestCase):
                     "low": 101.0,
                     "close": 107.0,
                     "volume": 15000,
-                    "ema_20": 101.0,
-                    "sma_50": 98.5,
-                    "sma_200": 90.5,
-                    "volume_sma_20": 8500,
-                    "rsi_14": 58.0,
+                    "ema_close_20": 101.0,
+                    "sma_close_50": 98.5,
+                    "sma_close_200": 90.5,
+                    "sma_volume_20": 8500,
+                    "rsi_close_14": 58.0,
+                    "window_high_252_max_ago1": 110.0,
                 },
             ]
         )
@@ -93,8 +95,8 @@ class TestDashboardFilters(unittest.TestCase):
                 "date": [pd.Timestamp("2026-11-20").date()] * 3,
                 "close": [100.0, 50.0, 20.0],
                 "volume": [1000, 2000, 3000],
-                "pct_change_daily": [1.0, -2.0, 0.5],
-                "rsi_14": [55.0, 45.0, 50.0],
+                "percent_change_close_1": [1.0, -2.0, 0.5],
+                "rsi_close_14": [55.0, 45.0, 50.0],
             }
         )
 

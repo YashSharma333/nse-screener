@@ -9,6 +9,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from src.computation.indicators.resolver import ind
+
 # ---------------------------------------------------------------------------
 # Path constants
 # ---------------------------------------------------------------------------
@@ -37,6 +39,9 @@ PRICE_NON_TRADING_DAYS_FILE: Path = (
 # (``cache_path.with_suffix(".meta.json")``). The builder (src/db/data_service.py) writes it;
 # the dashboard only reads it (src/computation/cache_reader.py).
 INDICATORS_CACHE_PATH: Path = PROJECT_ROOT / "data" / "processed" / "indicators.parquet"
+# Index closes (index_code, date, close) written by the cache build, so the read-only UI and the
+# condition engine can use any stored index without opening MySQL.
+BENCHMARKS_CACHE_PATH: Path = PROJECT_ROOT / "data" / "processed" / "benchmarks.parquet"
 
 # ---------------------------------------------------------------------------
 # Logging configuration
@@ -53,6 +58,41 @@ LOG_BACKUP_COUNT = 3  # keep 3 rotated copies
 # ---------------------------------------------------------------------------
 INDICATOR_HISTORY_YEARS: int = int(os.getenv("INDICATOR_HISTORY_YEARS", "2"))
 INDICATOR_WARMUP_BARS: int = int(os.getenv("INDICATOR_WARMUP_BARS", "300"))
+
+# The columns every cache row starts with (the price columns, no indicators).
+CACHE_BASE_COLUMNS: list[str] = [
+    "symbol",
+    "date",
+    "series",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "market_cap",
+]
+
+# The ONLY indicators saved in the cache (owner list, CL-25). Each column is named by the
+# resolver (``spec.column``), for example ``sma_close_50``. Everything else is computed when it
+# is asked for (``cache_reader.load_with_indicators``). The two 252-day columns are the
+# PRIOR-day window: today's close can never break a window that includes today.
+PRECOMPUTED_INDICATORS = [
+    ind("sma", length=20),
+    ind("sma", length=50),
+    ind("sma", length=200),
+    ind("ema", length=9),
+    ind("ema", length=10),
+    ind("ema", length=20),
+    ind("ema", length=50),
+    ind("ema", length=200),
+    ind("bollinger_bands", output="upper"),
+    ind("bollinger_bands", output="lower"),
+    ind("sma", source="volume", length=20),
+    ind("sma", source="volume", length=50),
+    ind("rsi", length=14),
+    ind("window", source="high", length=252, stat="max", days_ago=1),
+    ind("window", source="low", length=252, stat="min", days_ago=1),
+]
 
 
 def setup_logging() -> None:

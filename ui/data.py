@@ -20,6 +20,8 @@ import streamlit as st
 
 from config import settings
 from src.computation import cache_reader
+from src.computation.indicators.resolver import IndicatorSpec
+from ui.components.dashboard_helpers import DASHBOARD_INDICATORS, add_derived_columns
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +60,34 @@ def _get_snapshot_cached(cache_token: tuple[float, str]) -> dict[str, Any]:
         snapshot = snapshot.drop(columns=drop_cols)
 
     return {
-        "snapshot": snapshot,
+        "snapshot": _with_dashboard_columns(snapshot),
         "as_of": cache_reader.read_data_date(),
         "message": message,
     }
+
+
+def _with_dashboard_columns(snapshot: pd.DataFrame) -> pd.DataFrame:
+    """Add the Dashboard's indicator columns that are not saved in the cache.
+
+    They are computed from the cached price history of the newest day's stocks (read only, the
+    cache file is never written) and joined to the snapshot by symbol and series.
+    """
+    if snapshot.empty or "date" not in snapshot.columns:
+        return snapshot
+    try:
+        computed = cache_reader.load_with_indicators(
+            DASHBOARD_INDICATORS, dates=[snapshot["date"].max()]
+        )
+    except (KeyError, ValueError) as exc:
+        # An old or damaged cache lacks price columns: show what is saved instead of crashing.
+        logger.warning("Could not add the computed dashboard columns: %s", exc)
+        return snapshot
+    if computed.empty:
+        return snapshot
+    new_columns = [spec.column for spec in DASHBOARD_INDICATORS if spec.column not in snapshot]
+    keys = ["symbol", "series"]
+    joined = snapshot.merge(computed[[*keys, *new_columns]], on=keys, how="left")
+    return add_derived_columns(joined)
 
 
 def get_snapshot() -> dict[str, Any]:
@@ -78,21 +104,18 @@ def get_snapshot() -> dict[str, Any]:
 
 
 @st.cache_data(ttl=300)
-def _get_symbol_history_cached(
-    symbol: str,
-    columns: tuple[str, ...] | None,
-    cache_token: tuple[float, str],
+def _get_symbol_indicators_cached(
+    symbol: str, specs: tuple[IndicatorSpec, ...], cache_token: tuple[float, str]
 ) -> pd.DataFrame:
-    """Read the history of one symbol from the Parquet cache, remembered by Streamlit."""
+    """One symbol's history with the indicator columns asked for, remembered by Streamlit."""
     # cache_token is only here so Streamlit forgets the result when the cache file changes.
-    logger.debug("Streamlit cache miss / reload for symbol history (%s, %s)", symbol, cache_token)
-    return cache_reader.read_history([symbol], columns=columns)
+    logger.debug("Streamlit cache miss / reload for %s indicators (%s)", symbol, cache_token)
+    return cache_reader.load_with_indicators(specs, symbols=[symbol])
 
 
-def get_symbol_history(symbol: str, columns: Sequence[str] | None = None) -> pd.DataFrame:
-    """History for one symbol with PyArrow projection and a per-symbol Streamlit cache."""
-    col_tuple = tuple(columns) if columns is not None else None
-    return _get_symbol_history_cached(symbol, col_tuple, get_cache_invalidation_token())
+def get_symbol_indicators(symbol: str, specs: Sequence[IndicatorSpec]) -> pd.DataFrame:
+    """History of one symbol plus the given indicators (saved ones are read, others computed)."""
+    return _get_symbol_indicators_cached(symbol, tuple(specs), get_cache_invalidation_token())
 
 
 def render_uninitialized_prompt() -> None:

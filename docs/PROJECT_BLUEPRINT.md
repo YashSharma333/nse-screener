@@ -256,15 +256,20 @@ Check `--help` for the truth.
   outputs: a small **latest-snapshot** Parquet (one row per stock) that all UI pages read
   instantly, and **full history in small per-year Parquet pieces** that backtests load
   only when needed. Never load 10 years of all stocks into one DataFrame.
-- **Pre-compute list (approved):** SMA 10, 20, 50, 100, 150, 200; EMA 9, 10, 20, 50, 100,
-  200; RSI 9 and 14; ATR 14 and 20; Bollinger Bands; 252, 65, 20, 10-day highs and lows and
-  the previous-252-day high (`high_252d_prev`); volume averages and multiples;
-  `turnover_sma_20`; returns; RS columns per benchmark (named like `rs_252d_nifty_500`);
-  RS Rating. Prompt B prints the final list for owner approval before coding it.
-- Everything else (any period, source, offset or ratio) is computed on demand by the rule
-  parser and cached per parameter set. This is the **two-tier lookup**: if a column named
-  by pattern (e.g. `sma_close_50`) exists in the cache, read it; otherwise compute per
-  symbol with `groupby("symbol")` rolling.
+- **Pre-compute list (approved, CL-25, `PRECOMPUTED_INDICATORS` in `config/settings.py`):** the
+  price columns plus 15 indicators, named by the resolver: SMA of close 20, 50, 200
+  (`sma_close_50`); EMA of close 9, 10, 20, 50, 200; Bollinger Bands (20, 2) upper and lower;
+  SMA of volume 20 and 50; RSI 14; and the PRIOR-day 252-day high and low
+  (`window_high_252_max_ago1`, `window_low_252_min_ago1`; today's close can never break a window
+  that includes today). The RS line is not cached; it returns later as a named indicator.
+- Everything else (any period, source, offset or ratio) is computed when it is asked for. This is
+  the **two-tier lookup**: `cache_reader.load_with_indicators(specs, symbols, dates)` reads a
+  column named by the resolver (e.g. `sma_close_50`) from the Parquet file if it is saved there,
+  otherwise computes it per symbol from the cached price rows. It never writes the cache. A
+  computed EMA/RSI starts at the first cached row, so it can differ in far decimals from the
+  full-history value; the saved columns are exact.
+- `data/processed/benchmarks.parquet` (index_code, date, close; every stored index) is written by
+  the cache build, so the read-only UI and the condition engine's index part need no MySQL.
 - Offsets such as "1 day ago" shift **per symbol**. The old shift-fallback bug mixed
   symbols; guard it with a test.
 

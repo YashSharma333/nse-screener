@@ -172,7 +172,6 @@ def test_data_service_db_path_with_sqlite(tmp_path: Path):
     from sqlalchemy.orm import sessionmaker
 
     from src.db.data_service import (
-        get_benchmark_returns,
         get_db_cache_metadata,
     )
     from src.db.models import Base, BenchmarkPrice, DailyPrice
@@ -224,11 +223,6 @@ def test_data_service_db_path_with_sqlite(tmp_path: Path):
         assert not raw_df.empty
         assert is_live is True
         assert len(raw_df) == 65
-
-        # Test real get_benchmark_returns query against SQLite
-        b_df = get_benchmark_returns("NIFTY 500", start=date(2024, 1, 2), end=date(2024, 1, 10))
-        assert not b_df.empty
-        assert len(b_df) == 9
 
 
 def test_load_raw_market_data_warns_when_falling_back_to_raw(tmp_path, caplog) -> None:

@@ -313,8 +313,8 @@ def test_update_is_idempotent_when_no_new_day(sqlite_session: Session) -> None:
 # 5. Schema version bumped and cache rebuilds
 # ---------------------------------------------------------------------------
 def test_indicator_schema_version_bumped_and_cache_rebuilds(tmp_path: Path) -> None:
-    """Schema version is 5; cache with version 4 triggers automatic invalidation and rebuild."""
-    assert INDICATORS_SCHEMA_VERSION == 5
+    """Schema version is 6; cache with version 4 triggers automatic invalidation and rebuild."""
+    assert INDICATORS_SCHEMA_VERSION == 6
 
     cache_file = tmp_path / "indicators.parquet"
     meta_file = tmp_path / "indicators.meta.json"
@@ -349,7 +349,7 @@ def test_indicator_schema_version_bumped_and_cache_rebuilds(tmp_path: Path) -> N
 
     # Read the updated metadata file
     updated_meta = json.loads(meta_file.read_text(encoding="utf-8"))
-    assert updated_meta["indicators_schema_version"] == 5
+    assert updated_meta["indicators_schema_version"] == 6
 
 
 # ---------------------------------------------------------------------------
