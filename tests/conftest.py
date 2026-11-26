@@ -48,6 +48,7 @@ def _keep_real_files_untouched(tmp_path_factory, monkeypatch):
     """
     sandbox = tmp_path_factory.mktemp("isolated_real_files")
     monkeypatch.setattr("config.settings.INDICATORS_CACHE_PATH", sandbox / "indicators.parquet")
+    monkeypatch.setattr("config.settings.BENCHMARKS_CACHE_PATH", sandbox / "benchmarks.parquet")
     benchmark_cache = sandbox / "benchmark_cache"
     price_cache = sandbox / "bhavcopy_cache"
     monkeypatch.setattr("config.settings.REPORTS_DIR", sandbox / "reports")

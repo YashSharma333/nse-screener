@@ -93,5 +93,6 @@ screeners written as trees, and give the same entry signals on the golden dates.
 
 ## Cost
 
-Evaluating a strategy over the whole cache (1.47 million rows) takes about 4 to 8 seconds. Parts
-are not shared between branches of a tree yet; CL-25 (the 16-column cache) is where that is tuned.
+Evaluating a strategy over the whole cache (1.47 million rows) takes about 2 to 4 seconds. Parts
+are not shared between branches of a tree yet. The condition engine reads only the price columns, so
+the 15-column cache of CL-25 does not change its speed or its answers.

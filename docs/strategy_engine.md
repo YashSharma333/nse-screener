@@ -11,7 +11,7 @@ A **Strategy** is a complete trading plan. Its entry is a **condition** (a condi
 ```
 +----------------------------------------------------------------+
 |                     1. Market Data Panel                       |
-|   MySQL daily_prices -> Adjusted Prices -> add_all_indicators  |
+|   MySQL daily_prices -> Adjusted Prices -> price cache (Parquet)  |
 +-------------------------------+--------------------------------+
                                 |
                                 v

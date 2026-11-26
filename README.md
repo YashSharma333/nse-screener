@@ -275,8 +275,8 @@ python run_pipeline.py --rebuild-adjusted
 # Rebuild the pre-computed indicator Parquet cache directly from MySQL
 python run_pipeline.py --refresh-cache
 ```
-* **Why it exists:** Computes all 35+ technical indicators across all loaded stocks without downloading any files from the internet, updating the local fast Parquet cache.
-* **What it changes:** Regenerates `data/processed/indicators.parquet` and its metadata sidecar `indicators.meta.json`.
+* **Why it exists:** Rebuilds the Parquet cache from MySQL without downloading anything. The cache holds the price columns plus the 15 approved indicators (`PRECOMPUTED_INDICATORS` in `config/settings.py`); every other indicator is computed when it is asked for.
+* **What it changes:** Regenerates `data/processed/indicators.parquet`, its metadata sidecar `indicators.meta.json` and the small index file `data/processed/benchmarks.parquet` (index closes, so the read-only UI needs no MySQL).
 
 ##### 10. Verify Price Accuracy (`--verify-prices`)
 ```bash
@@ -425,13 +425,13 @@ INDICATOR_HISTORY_YEARS = 2
 INDICATOR_WARMUP_BARS = 300
 ```
 
-* **Target Window:** Indicator calculation maintains a rolling 2-year window of indicator snapshots, keeping cache sizes compact (~30 MB Parquet) and dashboard page loads virtually instantaneous (< 0.5s).
-* **Warm-up Calculation Guarantee:** Moving averages like `sma_200` or `ema_200` require at least 200 previous trading sessions to produce valid numbers. To prevent empty (`NaN`) values on day 1 of the 2-year window, the calculator loads at least **300 warm-up bars** of historical data prior to the cutoff date, computes all indicators, and then filters to the 2-year window. Every single row in the cached window is 100% mathematically valid and complete!
+* **Target Window:** Indicator calculation maintains a rolling 2-year window of indicator snapshots, keeping the cache small: only the price columns and the 15 approved indicators are saved (see the before/after numbers in the CL-25 pull request).
+* **Warm-up Calculation Guarantee:** Moving averages like `sma_200` or `ema_200` require at least 200 previous trading sessions to produce valid numbers. To prevent empty (`NaN`) values on day 1 of the 2-year window, the calculator loads at least **300 warm-up bars** of historical data prior to the cutoff date, computes the saved indicators, and then filters to the 2-year window. Every single row in the cached window is 100% mathematically valid and complete!
 
 ### 2. Sidecar Metadata & Automatic Invalidation
 
 The Parquet cache at `data/processed/indicators.parquet` is paired with a metadata sidecar `indicators.meta.json`:
-* Stores `indicators_schema_version = 5` and `indicator_history_years = 2`.
+* Stores `indicators_schema_version = 6` and `indicator_history_years = 2`.
 * Tracks database states: `db_max_date`, `adj_factors_count`, `adj_factors_max_detected_at`, and `benchmark_max_date`.
 * Whenever new daily prices are ingested, corporate actions are added, or settings change, the system automatically detects cache staleness and recomputes the indicator snapshot seamlessly.
 
@@ -565,11 +565,11 @@ nse-screener/
 │   │   ├── cache_reader.py       # Read-only access to the indicator cache (used by the UI)
 │   │   └── indicators/           # Technical indicators grouped by nature:
 │   │       ├── calculator.py     # One plain function per indicator (sma, ema, rsi, macd, ...);
-│   │       │                     # add_all_indicators builds the cache columns (temporary)
+│   │       │                     # the cache saves only settings.PRECOMPUTED_INDICATORS
 │   │       ├── price_helpers.py  # window_stat (N-day high/low/mean/sum/count), pct_diff, ratio, absolute
 │   │       └── grouped.py        # shared "inside each stock" helpers (rolling, ewm, shift, checks)
 │   ├── db/
-│   │   ├── data_service.py       # Indicator cache loader, sidecar validation & benchmark returns
+│   │   ├── data_service.py       # Indicator cache builder, sidecar validation & benchmarks.parquet writer
 │   │   ├── models.py             # SQLAlchemy models (DailyPrice, Security, AdjFactor, etc.)
 │   │   ├── session.py            # MySQL engine, connection pooling & health checks
 │   │   └── upsert.py             # Dialect-agnostic upsert helper (MySQL & SQLite)

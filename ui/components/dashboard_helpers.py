@@ -9,6 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.computation.indicators.price_helpers import pct_diff, ratio
+from src.computation.indicators.resolver import ind
+
 # Plain-English names for the NSE Bhavcopy series codes.
 SERIES_LABELS: dict[str, str] = {
     "EQ": "EQ · Equity",
@@ -18,23 +21,44 @@ SERIES_LABELS: dict[str, str] = {
     "ST": "ST · SME trade-to-trade",
 }
 
+# The indicator columns the Dashboard shows. Most are saved in the cache; the rest (percent
+# changes, EMA 12 and 26, yesterday's volume average) are computed when the page loads.
+DASHBOARD_INDICATORS = [
+    *[ind("percent_change", length=days) for days in (1, 21, 63, 126, 252)],
+    ind("sma", length=50),
+    ind("sma", length=200),
+    ind("ema", length=12),
+    ind("ema", length=20),
+    ind("ema", length=26),
+    ind("rsi", length=14),
+    ind("window", source="high", length=252, stat="max", days_ago=1),
+    ind("sma", source="volume", length=20, days_ago=1),
+]
+
+# Column names (the resolver's names) used below, written once.
+CHANGE_DAILY = "percent_change_close_1"
+SMA_200 = "sma_close_200"
+RSI_14 = "rsi_close_14"
+PRIOR_HIGH_252 = "window_high_252_max_ago1"
+PRIOR_VOLUME_AVERAGE = "sma_volume_20_ago1"
+
 # Raw snapshot column -> name shown in the table.
 COLUMN_NAMES: dict[str, str] = {
     "symbol": "Symbol",
     "series": "Series",
     "close": "Close",
     "volume": "Volume",
-    "pct_change_daily": "% Change Daily",
-    "pct_change_1m": "% Change 1M",
-    "pct_change_3m": "% Change 3M",
-    "pct_change_6m": "% Change 6M",
-    "pct_change_12m": "% Change 12M",
-    "sma_50": "SMA 50",
-    "sma_200": "SMA 200",
-    "ema_12": "EMA 12",
-    "ema_20": "EMA 20",
-    "ema_26": "EMA 26",
-    "rsi_14": "RSI",
+    CHANGE_DAILY: "% Change Daily",
+    "percent_change_close_21": "% Change 1M",
+    "percent_change_close_63": "% Change 3M",
+    "percent_change_close_126": "% Change 6M",
+    "percent_change_close_252": "% Change 12M",
+    "sma_close_50": "SMA 50",
+    SMA_200: "SMA 200",
+    "ema_close_12": "EMA 12",
+    "ema_close_20": "EMA 20",
+    "ema_close_26": "EMA 26",
+    RSI_14: "RSI",
     "pct_from_52w_high": "% From 52W High",
 }
 
@@ -57,6 +81,21 @@ COLUMN_PRESETS: dict[str, list[str]] = {
 
 NEAR_HIGH_PCT = 5.0  # "near the 52-week high" = within 5% of it
 VOLUME_SURGE_X = 1.5  # same multiple the shipped strategies use
+
+
+def add_derived_columns(table: pd.DataFrame) -> pd.DataFrame:
+    """Add ``pct_from_52w_high`` and ``vol_multiple`` from columns the table already has.
+
+    Both compare today with YESTERDAY's value (the same rule the strategies use): the close
+    against the prior-day 252-day high, and the volume against the prior-day 20-day average.
+    A table without the needed columns is returned unchanged.
+    """
+    table = table.copy()
+    if {"close", PRIOR_HIGH_252}.issubset(table.columns):
+        table["pct_from_52w_high"] = pct_diff(table["close"], table[PRIOR_HIGH_252])
+    if {"volume", PRIOR_VOLUME_AVERAGE}.issubset(table.columns):
+        table["vol_multiple"] = ratio(table["volume"], table[PRIOR_VOLUME_AVERAGE])
+    return table
 
 
 def rename_for_display(snapshot: pd.DataFrame) -> pd.DataFrame:
@@ -103,9 +142,9 @@ def compute_dashboard_kpis(df: pd.DataFrame, total_rows: int) -> list[tuple[str,
         # A missing column becomes all-NaN with the same index, so comparisons still line up.
         return df[name] if name in df.columns else pd.Series(np.nan, index=df.index)
 
-    daily = col("pct_change_daily")
-    rsi = col("rsi_14")
-    close, sma200 = col("close"), col("sma_200")
+    daily = col(CHANGE_DAILY)
+    rsi = col(RSI_14)
+    close, sma200 = col("close"), col(SMA_200)
     from_high = col("pct_from_52w_high")
     vol_mult = col("vol_multiple")
 

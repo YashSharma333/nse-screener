@@ -12,6 +12,8 @@ import streamlit as st
 
 from config import settings
 from src.computation import cache_reader
+from src.computation.indicators.resolver import ind
+from src.db.data_service import compute_market_indicators
 from ui import data as ui_data
 
 
@@ -131,24 +133,6 @@ def test_snapshot_reports_the_data_date_and_drops_cap_bucket(
     assert result["as_of"] == "2026-11-20"
 
 
-def test_symbol_history_reads_only_that_symbol(
-    cache_files: tuple[Path, Path],
-) -> None:
-    parquet_file, _meta_file = cache_files
-    rows = [
-        {"symbol": s, "date": date(2026, 11, d), "close": 100.0 + d}
-        for s in ("AAA", "BBB")
-        for d in (19, 20)
-    ]
-    pd.DataFrame(rows).to_parquet(parquet_file, index=False)
-
-    history = ui_data.get_symbol_history("AAA", columns=["close"])
-
-    assert set(history["symbol"]) == {"AAA"}
-    assert list(history.columns) == ["symbol", "date", "close"]
-    assert len(history) == 2
-
-
 def test_empty_cache_dashboard_shows_the_command_and_has_no_button() -> None:
     """An empty dashboard only tells the user what to run; it starts nothing (CL-06/CL-07)."""
     from streamlit.testing.v1 import AppTest
@@ -164,3 +148,58 @@ def test_empty_cache_dashboard_shows_the_command_and_has_no_button() -> None:
         for info in at.info
     )
     assert len(at.button) == 0
+
+
+def _built_cache(parquet_file: Path, days: int = 300) -> pd.DataFrame:
+    """A real cache for two stocks written by the real builder function."""
+    rows = [
+        {
+            "symbol": symbol,
+            "date": day.date(),
+            "series": "EQ",
+            "open": 100.0 + i,
+            "high": 101.0 + i,
+            "low": 99.0 + i,
+            "close": 100.0 + i,
+            "volume": 1000.0 + i,
+            "market_cap": 1e9,
+        }
+        for symbol in ("AAA", "BBB")
+        for i, day in enumerate(pd.bdate_range("2025-01-01", periods=days))
+    ]
+    built = compute_market_indicators(pd.DataFrame(rows))
+    built.to_parquet(parquet_file, index=False)
+    parquet_file.with_suffix(".meta.json").write_text(
+        json.dumps({"db_max_date": built["date"].max().isoformat()})
+    )
+    return built
+
+
+def test_snapshot_gets_the_dashboard_columns_that_are_not_saved(
+    cache_files: tuple[Path, Path],
+) -> None:
+    parquet_file, _meta = cache_files
+    built = _built_cache(parquet_file)
+    names_before = list(built.columns)
+
+    snapshot = ui_data.get_snapshot()["snapshot"]
+
+    assert len(snapshot) == 2  # one row per stock, the newest day
+    row = snapshot[snapshot["symbol"] == "AAA"].iloc[0]
+    assert row["percent_change_close_1"] == pytest.approx((399.0 / 398.0 - 1) * 100)  # computed
+    assert row["sma_close_50"] > 0  # read from the cache
+    assert row["pct_from_52w_high"] == pytest.approx(0.0)  # yesterday's high was 399
+    assert row["vol_multiple"] == pytest.approx(1299.0 / (sum(range(1279, 1299)) / 20))
+    assert list(pd.read_parquet(parquet_file).columns) == names_before  # nothing was written
+
+
+def test_symbol_indicators_come_from_the_cache_and_cover_only_that_symbol(
+    cache_files: tuple[Path, Path],
+) -> None:
+    parquet_file, _meta = cache_files
+    _built_cache(parquet_file)
+
+    result = ui_data.get_symbol_indicators("BBB", [ind("rsi", length=9), ind("sma", length=50)])
+
+    assert set(result["symbol"]) == {"BBB"}
+    assert {"rsi_close_9", "sma_close_50"} <= set(result.columns)

@@ -15,6 +15,26 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from src.computation.indicators.resolver import ind
+from ui.components.dashboard_helpers import (
+    RSI_14,
+    add_derived_columns,
+)
+
+# The indicator columns the inspector draws or shows; all of them are saved in the cache.
+EMA_20 = ind("ema", length=20)
+SMA_50 = ind("sma", length=50)
+SMA_200 = ind("sma", length=200)
+VOLUME_AVERAGE_20 = ind("sma", source="volume", length=20)
+INSPECTOR_INDICATORS = [
+    EMA_20,
+    SMA_50,
+    SMA_200,
+    VOLUME_AVERAGE_20,
+    ind("rsi", length=14),
+    ind("window", source="high", length=252, stat="max", days_ago=1),
+]
+
 
 def render_stock_inspector(
     df_with_indicators: pd.DataFrame,
@@ -66,9 +86,9 @@ def render_stock_inspector(
 
     # Fetch data for chosen symbol on-demand via PyArrow projection (G9)
     try:
-        from ui.data import get_symbol_history
+        from ui.data import get_symbol_indicators
 
-        stock_df = get_symbol_history(selected_symbol)
+        stock_df = get_symbol_indicators(selected_symbol, INSPECTOR_INDICATORS)
     except Exception:
         stock_df = pd.DataFrame()
 
@@ -78,12 +98,12 @@ def render_stock_inspector(
         st.warning(f"No historical records found for {selected_symbol}.")
         return
 
-    stock_df = stock_df.sort_values(by="date")
+    stock_df = add_derived_columns(stock_df.sort_values(by="date"))
     if len(stock_df) > lookback_days:
         stock_df = stock_df.iloc[-lookback_days:]
 
     # Missing columns mean an old cache: fail loudly instead of inventing values.
-    needed = ["volume_sma_20", "rsi_14", "pct_from_52w_high"]
+    needed = [VOLUME_AVERAGE_20.column, RSI_14, "pct_from_52w_high"]
     missing = [c for c in needed if c not in stock_df.columns]
     if missing:
         st.error(
@@ -106,7 +126,9 @@ def render_stock_inspector(
     with m2:
         # today's volume against the 20-day average as of yesterday (the strategies' volume rule)
         yesterday_average = (
-            stock_df.iloc[-2]["volume_sma_20"] if len(stock_df) > 1 else latest["volume_sma_20"]
+            stock_df.iloc[-2][VOLUME_AVERAGE_20.column]
+            if len(stock_df) > 1
+            else latest[VOLUME_AVERAGE_20.column]
         )
         vol_multiple = latest["volume"] / yesterday_average
         st.metric(
@@ -116,7 +138,7 @@ def render_stock_inspector(
             delta_color="normal" if vol_multiple >= 1.5 else "off",
         )
     with m3:
-        rsi_val = latest["rsi_14"]
+        rsi_val = latest[RSI_14]
         rsi_status = "Overbought" if rsi_val >= 70 else ("Oversold" if rsi_val <= 30 else "Neutral")
         st.metric(label="RSI (14)", value=f"{rsi_val:.1f}", delta=rsi_status, delta_color="off")
     with m4:
@@ -159,33 +181,33 @@ def render_stock_inspector(
     )
 
     # Overlays: EMA 20, SMA 50, SMA 200
-    if "ema_20" in stock_df.columns:
+    if EMA_20.column in stock_df.columns:
         fig.add_trace(
             go.Scatter(
                 x=stock_df["date"],
-                y=stock_df["ema_20"],
+                y=stock_df[EMA_20.column],
                 name="EMA 20",
                 line={"color": "#00f0ff", "width": 1.5},
             ),
             row=1,
             col=1,
         )
-    if "sma_50" in stock_df.columns:
+    if SMA_50.column in stock_df.columns:
         fig.add_trace(
             go.Scatter(
                 x=stock_df["date"],
-                y=stock_df["sma_50"],
+                y=stock_df[SMA_50.column],
                 name="SMA 50",
                 line={"color": "#fbbf24", "width": 1.5},
             ),
             row=1,
             col=1,
         )
-    if "sma_200" in stock_df.columns:
+    if SMA_200.column in stock_df.columns:
         fig.add_trace(
             go.Scatter(
                 x=stock_df["date"],
-                y=stock_df["sma_200"],
+                y=stock_df[SMA_200.column],
                 name="SMA 200",
                 line={"color": "#a855f7", "width": 1.5},
             ),
@@ -208,11 +230,11 @@ def render_stock_inspector(
         row=2,
         col=1,
     )
-    if "volume_sma_20" in stock_df.columns:
+    if VOLUME_AVERAGE_20.column in stock_df.columns:
         fig.add_trace(
             go.Scatter(
                 x=stock_df["date"],
-                y=stock_df["volume_sma_20"],
+                y=stock_df[VOLUME_AVERAGE_20.column],
                 name="Vol SMA 20",
                 line={"color": "#f59e0b", "width": 1.5},
             ),
@@ -221,11 +243,11 @@ def render_stock_inspector(
         )
 
     # 3. RSI
-    if "rsi_14" in stock_df.columns:
+    if RSI_14 in stock_df.columns:
         fig.add_trace(
             go.Scatter(
                 x=stock_df["date"],
-                y=stock_df["rsi_14"],
+                y=stock_df[RSI_14],
                 name="RSI (14)",
                 line={"color": "#38bdf8", "width": 1.5},
             ),
