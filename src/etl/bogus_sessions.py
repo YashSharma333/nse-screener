@@ -78,7 +78,12 @@ def _identical_count(
     return count
 
 
-def _find(session: Session, start: date | None, end: date | None) -> list[dict]:
+def _find(
+    session: Session,
+    start: date | None,
+    end: date | None,
+    only_dates: list[date] | None = None,
+) -> list[dict]:
     stored = sorted({_to_day(d) for d in get_trading_dates(session)})
     if len(stored) < 2:
         return []
@@ -87,7 +92,10 @@ def _find(session: Session, start: date | None, end: date | None) -> list[dict]:
     pairs = [
         (d, stored[idx - 1])
         for idx, d in enumerate(stored)
-        if idx > 0 and not (start and d < start) and not (end and d > end)
+        if idx > 0
+        and not (start and d < start)
+        and not (end and d > end)
+        and (only_dates is None or d in only_dates)
     ]
     if not pairs:
         return []
@@ -119,14 +127,16 @@ def find_bogus_sessions(
     start: date | None = None,
     end: date | None = None,
     session: Session | None = None,
+    only_dates: list[date] | None = None,
 ) -> list[dict]:
     """Return stored dates that look like copies of the previous session (read-only).
 
     Genuine special sessions (Diwali Muhurat, Budget Saturdays) have different prices and
-    volumes, so they are not flagged.
+    volumes, so they are not flagged. ``only_dates`` limits the check to those dates (each
+    is still compared with the stored date before it).
     """
     with use_session(session) as s:
-        return _find(s, start, end)
+        return _find(s, start, end, only_dates)
 
 
 def report_bogus_sessions(
@@ -134,14 +144,21 @@ def report_bogus_sessions(
     end: date | None = None,
     reports_dir: Path | None = None,
     session: Session | None = None,
+    only_dates: list[date] | None = None,
 ) -> dict:
-    """Write ``reports/bogus_sessions.csv`` and return the flagged dates. Never deletes."""
+    """Write ``reports/bogus_sessions.csv`` and return the flagged dates. Never deletes.
+
+    Without ``only_dates`` the whole range is checked and the file is rewritten. With
+    ``only_dates`` (the daily update passes the dates it just loaded) only those dates are
+    checked, new findings are APPENDED so earlier findings stay, and the file is left
+    alone when nothing is flagged.
+    """
     out_dir = reports_dir or settings.REPORTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     report_file = out_dir / "bogus_sessions.csv"
 
-    flagged = find_bogus_sessions(start=start, end=end, session=session)
-    pd.DataFrame(
+    flagged = find_bogus_sessions(start=start, end=end, session=session, only_dates=only_dates)
+    rows = pd.DataFrame(
         [
             {
                 "date": b["date"].isoformat(),
@@ -151,8 +168,14 @@ def report_bogus_sessions(
             for b in flagged
         ],
         columns=["date", "weekday", "%identical"],
-    ).to_csv(report_file, index=False)
-    logger.info("Wrote %d flagged sessions to %s (nothing was deleted)", len(flagged), report_file)
+    )
+    if only_dates is None:
+        rows.to_csv(report_file, index=False)
+    elif flagged:
+        rows.to_csv(report_file, mode="a", index=False, header=not report_file.exists())
+    logger.info(
+        "Found %d flagged sessions (report file %s, nothing deleted)", len(flagged), report_file
+    )
 
     return {
         "bogus_count": len(flagged),

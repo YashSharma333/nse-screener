@@ -1,22 +1,23 @@
 """
-Daily Routine Orchestrator (Task D11)
-=====================================
-Provides `run_daily_update()`: a single, idempotent routine running the 9 daily steps
-in strict sequential order, stopping at the first failure with a clear error report.
+Daily routine: ``python run_pipeline.py --update``
+==================================================
+``run_daily_update()`` runs seven steps in strict order and stops at the first failure.
+Each step is one plain function ``step_xxx(session, ctx)`` further down this file.
 
 Steps in order:
- 1. load_prices from the day after the last loaded date to yesterday (D5 logic)
- 2. market cap for the new dates (D6)
- 3. refresh EQUITY_L and symbolchange.csv (D8)
- 4. refresh corporate actions (D10)
- 5. check for bogus duplicate sessions: report only, nothing is ever deleted
- 6. refresh benchmark index closes (needed by the relative-strength indicators)
- 7. rebuild adjusted prices for symbols with new events or new rows
- 8. rebuild the indicator cache (rebuilds itself when DB max date changed)
- 9. print one summary: new dates, rows added, new/renamed/dropped symbols, warnings
+ 1. load_prices: from the day after the last loaded date up to TODAY (old gaps first)
+ 2. market_cap: for the new dates
+ 3. refresh_reference_data: EQUITY_L, symbol changes and corporate actions
+ 4. check_bogus_sessions: only the dates loaded in this run; report only, never deletes
+ 5. refresh_benchmarks: index closes needed by the relative-strength indicators
+ 6. adjust_prices: for new rows (and any row an earlier failed run left unadjusted)
+ 7. rebuild_indicator_cache: rebuilds itself when the database changed
 
-Each step commits its own work when it succeeds. A failed step rolls back only itself:
-the committed work of the earlier steps stays in the database.
+Then one summary is printed. Each step commits its own work when it succeeds; a failed
+step rolls back only itself, so the committed work of earlier steps stays in the database.
+
+Trying today is safe: a 404 for a day within the last 3 days is never cached as a
+holiday (see nse-data-integrity), so an early run just picks the file up the next time.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from sqlalchemy.orm import Session
 from config.settings import FIRST_MCAP_DATE, NSE_HISTORY_START
 from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates, latest_date
-from src.db.models import DailyPrice, Security, SymbolChange
+from src.db.models import CorporateAction, DailyPrice, Security, SymbolChange
 from src.ingestion.nse_files import fetch
 
 logger = logging.getLogger(__name__)
@@ -108,397 +109,295 @@ class DailyUpdateSummary:
         )
 
 
-STEP_NAMES = {
-    1: "load_prices",
-    2: "market_cap",
-    3: "refresh_securities_and_renames",
-    4: "refresh_corporate_actions",
-    5: "check_bogus_sessions",
-    6: "refresh_benchmarks",
-    7: "rebuild_adjusted_prices",
-    8: "rebuild_indicator_cache",
-    9: "summary",
-}
+@dataclass
+class UpdateContext:
+    """What every step needs besides the database session."""
+
+    fetch_fn: Callable[[str], bytes]
+    today: date
+    summary: DailyUpdateSummary = field(default_factory=DailyUpdateSummary)
 
 
-def _retry_price_gaps(s: Session, fetch_fn: Callable[[str], bytes], ref_today: date) -> None:
-    """Retry every calendar day with no prices that is not a confirmed holiday.
+# ---------------------------------------------------------------------------
+# The steps. Each is (session, ctx) -> dict; the dict is stored in summary.step_results.
+# ---------------------------------------------------------------------------
+def step_load_prices(s: Session, ctx: UpdateContext) -> dict[str, Any]:
+    """Retry old gap days, then load every new day up to today, then report what is missing."""
+    from src.ingestion.price_loader import (
+        find_price_gaps,
+        load_raw_prices,
+        write_price_gaps_report,
+    )
 
-    Why: step 1 only starts at max(date)+1, so a day that failed once (for example an
-    HTML block page) would never be visited again.
-    """
-    from src.ingestion.price_loader import find_price_gaps, load_raw_prices
-
+    # Old holes first: the new-day start is max(date)+1, so a failed middle day would
+    # never be visited again otherwise.
     for gap_day in find_price_gaps(s):
         logger.info("Retrying price gap %s...", gap_day)
         load_raw_prices(
-            start=gap_day, end=gap_day, session=s, fetch_fn=fetch_fn, ref_date=ref_today
+            start=gap_day, end=gap_day, session=s, fetch_fn=ctx.fetch_fn, ref_date=ctx.today
         )
+
+    result = {"new_dates": [], "rows_added": 0}
+    max_date = latest_date(s)
+    start_date = max_date + timedelta(days=1) if max_date else NSE_HISTORY_START
+    if start_date > ctx.today:
+        logger.info("Latest date in DB (%s) is already up to date with today.", max_date)
+    else:
+        logger.info("Loading raw Bhavcopy prices from %s to %s...", start_date, ctx.today)
+        load_summary = load_raw_prices(
+            start=start_date,
+            end=ctx.today,
+            session=s,
+            fetch_fn=ctx.fetch_fn,
+            ref_date=ctx.today,
+        )
+        ctx.summary.new_dates = get_trading_dates(s, start_date, ctx.today)
+        ctx.summary.rows_added = load_summary.rows_inserted
+        if load_summary.bad_file > 0:
+            ctx.summary.warnings.append(
+                f"{load_summary.bad_file} corrupt or empty Bhavcopy files encountered."
+            )
+        result = {"new_dates": ctx.summary.new_dates, "rows_added": load_summary.rows_inserted}
+
+    ctx.summary.price_gaps = find_price_gaps(s)
+    write_price_gaps_report(ctx.summary.price_gaps)
+    if ctx.summary.price_gaps:
+        ctx.summary.warnings.append(
+            f"{len(ctx.summary.price_gaps)} calendar days have no prices and are not "
+            "confirmed holidays (reports/price_gaps.csv)."
+        )
+    return result
+
+
+def step_market_cap(s: Session, ctx: UpdateContext) -> dict[str, Any]:
+    """Fill market cap for the new dates (or for recent dates that still lack it)."""
+    from src.ingestion.mcap_loader import load_market_caps
+
+    target_dates = [d for d in ctx.summary.new_dates if d >= FIRST_MCAP_DATE]
+    if not target_dates:
+        # No new dates: still repair recent trading dates that have no market cap.
+        target_dates = list(
+            s.scalars(
+                select(DailyPrice.date)
+                .distinct()
+                .where(
+                    DailyPrice.date >= max(FIRST_MCAP_DATE, ctx.today - timedelta(days=7)),
+                    DailyPrice.date <= ctx.today,
+                    DailyPrice.market_cap.is_(None),
+                )
+                .order_by(DailyPrice.date)
+            ).all()
+        )
+    if not target_dates:
+        logger.info("No new dates requiring market cap load.")
+        return {"updated_rows": 0, "unmatched": 0}
+
+    logger.info(
+        "Loading market cap from PR bundles for dates %s to %s...",
+        min(target_dates),
+        max(target_dates),
+    )
+    mcap = load_market_caps(
+        start=min(target_dates), end=max(target_dates), session=s, fetch_fn=ctx.fetch_fn
+    )
+    ctx.summary.mcap_rows_updated = mcap.updated_rows
+    if mcap.unmatched_symbols > 0:
+        ctx.summary.warnings.append(
+            f"{mcap.unmatched_symbols} PR bundle market cap symbols were not in daily_prices."
+        )
+    return {"updated_rows": mcap.updated_rows, "unmatched": mcap.unmatched_symbols}
+
+
+def _active_symbols(s: Session) -> set[str]:
+    return set(s.scalars(select(Security.symbol).where(Security.status == "active")).all())
+
+
+def _count_review_events(s: Session) -> int:
+    """How many stored corporate actions are waiting for the owner's review."""
+    return (
+        s.scalar(
+            select(func.count())
+            .select_from(CorporateAction)
+            .where(CorporateAction.parse_status == "needs_review")
+        )
+        or 0
+    )
+
+
+def step_refresh_reference_data(s: Session, ctx: UpdateContext) -> dict[str, Any]:
+    """Refresh the securities list, symbol renames and corporate actions from NSE."""
+    from src.ingestion.corporate_actions_store import run_corporate_actions_download
+    from src.ingestion.renames import load_renames
+    from src.ingestion.securities import import_equity_l
+
+    active_before = _active_symbols(s)
+    renames_before = set(s.execute(select(SymbolChange.old_symbol, SymbolChange.new_symbol)).all())
+    review_before = _count_review_events(s)
+
+    equity_rows = import_equity_l(session=s)
+    rename_rows = load_renames(session=s)
+    actions = run_corporate_actions_download(session=s, today=ctx.today)
+    # The download may re-parse old rows, so flush before counting what is stored now.
+    s.flush()
+
+    # Renames are counted as rows that are new in the table, not by comparing parser counts.
+    renames_after = set(s.execute(select(SymbolChange.old_symbol, SymbolChange.new_symbol)).all())
+    ctx.summary.renamed_symbols = sorted(renames_after - renames_before)
+    ctx.summary.new_symbols = sorted(_active_symbols(s) - active_before)
+    ctx.summary.dropped_symbols = sorted(
+        s.scalars(select(Security.symbol).where(Security.status != "active")).all()
+    )
+
+    # Warn only when the review list grew in this run: the total covers ten years and
+    # would otherwise raise the same warning every day.
+    new_reviews = _count_review_events(s) - review_before
+    if new_reviews > 0:
+        ctx.summary.warnings.append(
+            f"{new_reviews} new corporate action event(s) need owner review in "
+            "reports/adj_events_uncertain.csv."
+        )
+    logger.info(
+        "Refreshed securities (%d rows), renames (%d rows) and corporate actions (%d stored). "
+        "New active: %d, dropped: %d, new renames: %d, new reviews: %d.",
+        equity_rows,
+        rename_rows,
+        actions.get("rows_stored", 0),
+        len(ctx.summary.new_symbols),
+        len(ctx.summary.dropped_symbols),
+        len(ctx.summary.renamed_symbols),
+        max(new_reviews, 0),
+    )
+    return {
+        "equity_l_rows": equity_rows,
+        "renames_rows": rename_rows,
+        "new_active": len(ctx.summary.new_symbols),
+        **actions,
+    }
+
+
+def step_check_bogus_sessions(s: Session, ctx: UpdateContext) -> dict[str, Any]:
+    """Report (never delete) new dates that look like a copy of the previous session."""
+    from src.etl.bogus_sessions import report_bogus_sessions
+
+    result = report_bogus_sessions(session=s, only_dates=ctx.summary.new_dates)
+    ctx.summary.bogus_sessions_flagged = result["bogus_count"]
+    if result["bogus_count"] > 0:
+        message = (
+            f"{result['bogus_count']} bogus duplicate/holiday session(s) detected: "
+            f"{[str(d) for d in result['flagged_dates']]}. Report only; no rows were deleted."
+        )
+        logger.warning(message)
+        ctx.summary.warnings.append(message)
+    return result
+
+
+def step_refresh_benchmarks(s: Session, ctx: UpdateContext) -> dict[str, Any]:
+    """Load index closes for every price date that has none (gaps in the middle too)."""
+    from src.db.models import BenchmarkPrice
+    from src.ingestion.benchmark import load_benchmarks, missing_benchmark_dates
+
+    last_bench = latest_date(s, BenchmarkPrice)
+    if last_bench is None:
+        message = (
+            "No benchmark history stored; run "
+            "`python run_pipeline.py --benchmarks --from 2016-11-21` once."
+        )
+        logger.warning(message)
+        ctx.summary.warnings.append(message)
+        return {"saved_rows": 0}
+
+    # Dates NSE has no file for are remembered as non-trading and skipped.
+    new_dates = [d for d in missing_benchmark_dates(s) if d <= ctx.today]
+    if not new_dates:
+        logger.info("Benchmarks have no missing dates (last %s).", last_bench)
+        return {"saved_rows": 0}
+
+    saved = load_benchmarks(new_dates, session=s)
+    ctx.summary.benchmark_rows_saved = saved
+    return {"saved_rows": saved}
+
+
+def step_adjust_prices(s: Session, ctx: UpdateContext) -> dict[str, Any]:
+    """Adjust the new price rows, and repair rows an earlier failed run left unadjusted."""
+    from src.etl.adjust import adjust_new_rows, adjust_rows_with_missing_adjusted
+
+    updated = 0
+    if ctx.summary.new_dates:
+        new_rows = s.scalars(
+            select(DailyPrice).where(DailyPrice.date.in_(ctx.summary.new_dates))
+        ).all()
+        if new_rows:
+            frame = pd.DataFrame(
+                [
+                    {
+                        "symbol": r.symbol,
+                        "date": r.date,
+                        "open": float(r.open) if r.open is not None else None,
+                        "high": float(r.high) if r.high is not None else None,
+                        "low": float(r.low) if r.low is not None else None,
+                        "close": float(r.close) if r.close is not None else None,
+                        "volume": int(r.volume) if r.volume is not None else None,
+                    }
+                    for r in new_rows
+                ]
+            )
+            updated = adjust_new_rows(frame, session=s)
+            logger.info("Adjusted new price rows: %d rows updated.", updated)
+    else:
+        logger.info("No new price dates loaded.")
+
+    updated += adjust_rows_with_missing_adjusted(s)
+    ctx.summary.adjusted_rows = updated
+    return {"updated_rows": updated}
+
+
+# Every step takes (session, ctx) so the loop can call them alike; this one needs neither.
+def step_rebuild_indicator_cache(s: Session, ctx: UpdateContext) -> dict[str, Any]:  # noqa: ARG001
+    """Rebuild the indicator cache if it is stale (new date, new factors, new schema)."""
+    from src.db.data_service import load_indicator_snapshot
+
+    logger.info("Checking indicator cache freshness / rebuilding if stale...")
+    snapshot, _full, is_live, message = load_indicator_snapshot(force_refresh=False)
+    logger.info("Indicator cache check complete: %d snapshot rows (%s).", len(snapshot), message)
+    return {"snapshot_len": len(snapshot), "is_live": is_live, "message": message}
 
 
 def run_daily_update(
     session: Session | None = None,
     fetch_fn: Callable[[str], bytes] = fetch,
     today: date | None = None,
-    step_handlers: dict[int, Callable[..., Any]] | None = None,
 ) -> DailyUpdateSummary:
-    """Execute the daily update routine in order, stopping at the first failure.
+    """Run the seven steps in order; stop at the first failure with a DailyUpdateError.
 
-    Parameters
-    ----------
-    session : Session, optional
-        Database session. If None, opens its own via use_session().
-    fetch_fn : Callable[[str], bytes], default fetch
-        Network download helper (injected for offline unit testing).
-    today : date, optional
-        Reference date for yesterday boundary (default: date.today()).
-    step_handlers : dict[int, Callable], optional
-        Override dictionary for individual steps (used in tests to record order or mock failures).
-
-    Returns
-    -------
-    DailyUpdateSummary
-        Aggregated summary of newly loaded data and warnings.
-
-    Raises
-    ------
-    DailyUpdateError
-        If any step fails, stopping execution and identifying the failed step.
+    ``session`` is optional (a session is opened when missing); ``fetch_fn`` lets tests
+    avoid the network; ``today`` is the last day to try (default: date.today()).
     """
-    ref_today = today or date.today()
-    yesterday = ref_today - timedelta(days=1)
-    summary = DailyUpdateSummary()
-    handlers = step_handlers or {}
-
-    def _execute(s: Session) -> DailyUpdateSummary:
-        # Helper to execute step with fail-fast error wrapping
-        def _run_step(step_num: int, default_fn: Callable[[], Any]) -> Any:
-            step_name = STEP_NAMES[step_num]
-            logger.info("Starting Daily Update Step %d: %s...", step_num, step_name)
-            handler = handlers.get(step_num, default_fn)
+    ctx = UpdateContext(fetch_fn=fetch_fn, today=today or date.today())
+    # Looked up here, not at import, so a test can replace one step function.
+    steps = [
+        ("load_prices", step_load_prices),
+        ("market_cap", step_market_cap),
+        ("refresh_reference_data", step_refresh_reference_data),
+        ("check_bogus_sessions", step_check_bogus_sessions),
+        ("refresh_benchmarks", step_refresh_benchmarks),
+        ("adjust_prices", step_adjust_prices),
+        ("rebuild_indicator_cache", step_rebuild_indicator_cache),
+    ]
+    with use_session(session) as s:
+        for number, (name, step) in enumerate(steps, start=1):
+            logger.info("Starting Daily Update Step %d: %s...", number, name)
             try:
-                res = handler()
-                # KEEP: commit per step. Step 8 reads through its own connection; under MySQL
-                # REPEATABLE READ it would not see this session's uncommitted writes and could
-                # build the indicator cache from OLD data.
+                ctx.summary.step_results[name] = step(s, ctx)
+                # KEEP: commit per step. The cache step reads through its own connection; under
+                # MySQL REPEATABLE READ it would not see uncommitted writes and could build the
+                # indicator cache from OLD data.
                 s.commit()
-                summary.step_results[step_name] = res
-                return res
             except Exception as exc:
                 # A failed step undoes only its own half-written work; earlier steps stay saved.
                 s.rollback()
-                logger.error("Failed Daily Update Step %d (%s): %s", step_num, step_name, exc)
-                raise DailyUpdateError(step_num, step_name, exc) from exc
+                logger.error("Failed Daily Update Step %d (%s): %s", number, name, exc)
+                raise DailyUpdateError(number, name, exc) from exc
 
-        # ---------------------------------------------------------------------
-        # Step 1: load_prices from day after last loaded date to yesterday (D5)
-        # ---------------------------------------------------------------------
-        def _step_1() -> dict[str, Any]:
-            from src.ingestion.price_loader import find_price_gaps, write_price_gaps_report
-
-            # Old holes first, then new days; the report shows what is still missing.
-            _retry_price_gaps(s, fetch_fn, ref_today)
-            result = _load_new_days()
-            summary.price_gaps = find_price_gaps(s)
-            write_price_gaps_report(summary.price_gaps)
-            if summary.price_gaps:
-                summary.warnings.append(
-                    f"{len(summary.price_gaps)} calendar days have no prices and are not "
-                    "confirmed holidays (reports/price_gaps.csv)."
-                )
-            return result
-
-        def _load_new_days() -> dict[str, Any]:
-            max_date = latest_date(s)
-            start_date = max_date + timedelta(days=1) if max_date else NSE_HISTORY_START
-            if start_date > yesterday:
-                logger.info(
-                    "Latest date in DB (%s) is already up to date with yesterday (%s).",
-                    max_date,
-                    yesterday,
-                )
-                return {"new_dates": [], "rows_added": 0}
-
-            from src.ingestion.price_loader import load_raw_prices
-
-            logger.info(
-                "Loading raw Bhavcopy prices from %s to %s...",
-                start_date,
-                yesterday,
-            )
-            load_summary = load_raw_prices(
-                start=start_date,
-                end=yesterday,
-                session=s,
-                fetch_fn=fetch_fn,
-                ref_date=ref_today,
-            )
-
-            # Query which dates were newly inserted
-            loaded_dates = get_trading_dates(s, start_date, yesterday)
-            summary.new_dates = loaded_dates
-            summary.rows_added = load_summary.rows_inserted
-            if load_summary.bad_file > 0:
-                summary.warnings.append(
-                    f"{load_summary.bad_file} corrupt or empty Bhavcopy files encountered."
-                )
-            return {"new_dates": loaded_dates, "rows_added": load_summary.rows_inserted}
-
-        _run_step(1, _step_1)
-
-        # ---------------------------------------------------------------------
-        # Step 2: market cap for the new dates (D6)
-        # ---------------------------------------------------------------------
-        def _step_2() -> dict[str, Any]:
-            from src.ingestion.mcap_loader import load_market_caps
-
-            # Target dates: either newly loaded dates or any dates >= FIRST_MCAP_DATE missing mcap
-            target_dates = [d for d in summary.new_dates if d >= FIRST_MCAP_DATE]
-            if not target_dates:
-                # If no new dates, check if any recent trading dates in DB lack market cap
-                recent_check = s.scalars(
-                    select(DailyPrice.date)
-                    .distinct()
-                    .where(
-                        DailyPrice.date >= max(FIRST_MCAP_DATE, yesterday - timedelta(days=7)),
-                        DailyPrice.date <= yesterday,
-                        DailyPrice.market_cap.is_(None),
-                    )
-                    .order_by(DailyPrice.date)
-                ).all()
-                target_dates = list(recent_check)
-
-            if not target_dates:
-                logger.info("No new dates requiring market cap load.")
-                return {"updated_rows": 0, "unmatched": 0}
-
-            m_start = min(target_dates)
-            m_end = max(target_dates)
-            logger.info("Loading market cap from PR bundles for dates %s to %s...", m_start, m_end)
-            mcap_sum = load_market_caps(
-                start=m_start,
-                end=m_end,
-                session=s,
-                fetch_fn=fetch_fn,
-            )
-            summary.mcap_rows_updated = mcap_sum.updated_rows
-            if mcap_sum.unmatched_symbols > 0:
-                summary.warnings.append(
-                    f"{mcap_sum.unmatched_symbols} PR bundle market cap symbols were "
-                    "not in daily_prices."
-                )
-            return {"updated_rows": mcap_sum.updated_rows, "unmatched": mcap_sum.unmatched_symbols}
-
-        _run_step(2, _step_2)
-
-        # ---------------------------------------------------------------------
-        # Step 3: refresh EQUITY_L and symbolchange.csv (D8)
-        # ---------------------------------------------------------------------
-        def _step_3() -> dict[str, Any]:
-            from src.ingestion.renames import load_renames
-            from src.ingestion.securities import import_equity_l
-
-            pre_active = set(
-                s.scalars(select(Security.symbol).where(Security.status == "active")).all()
-            )
-            pre_renames_count = s.scalar(select(func.count(SymbolChange.old_symbol))) or 0
-
-            eq_count = import_equity_l(session=s)
-            rn_count = load_renames(session=s)
-
-            post_active = set(
-                s.scalars(select(Security.symbol).where(Security.status == "active")).all()
-            )
-            new_syms = sorted(post_active - pre_active)
-            dropped_syms = sorted(
-                s.scalars(select(Security.symbol).where(Security.status != "active")).all()
-            )
-
-            # Discover newly added renames
-            new_renames: list[tuple[str, str]] = []
-            if rn_count > pre_renames_count:
-                new_renames_stmt = (
-                    select(SymbolChange.old_symbol, SymbolChange.new_symbol)
-                    .order_by(SymbolChange.effective_date.desc(), SymbolChange.old_symbol.desc())
-                    .limit(rn_count - pre_renames_count)
-                )
-                new_renames = list(s.execute(new_renames_stmt).all())
-
-            summary.new_symbols = new_syms
-            summary.dropped_symbols = dropped_syms
-            summary.renamed_symbols = [(r[0], r[1]) for r in new_renames]
-
-            logger.info(
-                "Refreshed securities (%d rows) and renames (%d rows). "
-                "New active: %d, Dropped: %d, New renames: %d",
-                eq_count,
-                rn_count,
-                len(new_syms),
-                len(dropped_syms),
-                len(new_renames),
-            )
-            return {
-                "equity_l_rows": eq_count,
-                "renames_rows": rn_count,
-                "new_active": len(new_syms),
-            }
-
-        _run_step(3, _step_3)
-
-        # ---------------------------------------------------------------------
-        # Step 4: refresh corporate actions (D10)
-        # ---------------------------------------------------------------------
-        def _step_4() -> dict[str, Any]:
-            from src.ingestion.corporate_actions_store import run_corporate_actions_download
-
-            ca_res = run_corporate_actions_download(session=s, today=ref_today)
-            stored_rows = ca_res.get("rows_stored", 0)
-            exact_factors = ca_res.get("exact_factor_events", 0)
-            needs_review = ca_res.get("needs_review", 0)
-
-            logger.info(
-                "Refreshed corporate actions: %d stored, %d exact factors, %d to review.",
-                stored_rows,
-                exact_factors,
-                needs_review,
-            )
-            if needs_review > 0:
-                summary.warnings.append(
-                    f"{needs_review} corporate action events need owner review in "
-                    "reports/adj_events_uncertain.csv."
-                )
-            return ca_res
-
-        _run_step(4, _step_4)
-
-        # ---------------------------------------------------------------------
-        # Step 5: check for bogus sessions (report only; --update never deletes)
-        # ---------------------------------------------------------------------
-        def _step_5() -> dict[str, Any]:
-            from src.etl.bogus_sessions import report_bogus_sessions
-
-            # Report only: this module has no code that deletes rows, so --update can
-            # never remove price history.
-            result = report_bogus_sessions(session=s)
-            bogus_count = result.get("bogus_count", 0)
-            summary.bogus_sessions_flagged = bogus_count
-
-            if bogus_count > 0:
-                flagged_dates = [str(d) for d in result.get("flagged_dates", [])]
-                msg = (
-                    f"{bogus_count} bogus duplicate/holiday session(s) detected: {flagged_dates}. "
-                    "Report only; no rows were deleted."
-                )
-                logger.warning(msg)
-                summary.warnings.append(msg)
-            else:
-                logger.info("Prune check: 0 bogus sessions detected.")
-
-            return result
-
-        _run_step(5, _step_5)
-
-        # ---------------------------------------------------------------------
-        # Step 6: refresh benchmark index closes (feed relative-strength indicators)
-        # ---------------------------------------------------------------------
-        def _step_6() -> dict[str, Any]:
-            from src.db.models import BenchmarkPrice
-            from src.ingestion.benchmark import load_benchmarks, missing_benchmark_dates
-
-            last_bench = latest_date(s, BenchmarkPrice)
-            if last_bench is None:
-                msg = (
-                    "No benchmark history stored; run "
-                    "`python run_pipeline.py --benchmarks --start 2016-11-21` once."
-                )
-                logger.warning(msg)
-                summary.warnings.append(msg)
-                return {"saved_rows": 0}
-
-            # Every price date without a benchmark row (not just dates after the last one),
-            # so a day missed in the middle is retried. Dates NSE has no file for are
-            # remembered as non-trading and skipped.
-            new_dates = [d for d in missing_benchmark_dates(s) if d <= yesterday]
-            if not new_dates:
-                logger.info("Benchmarks have no missing dates (last %s).", last_bench)
-                return {"saved_rows": 0}
-
-            saved = load_benchmarks(new_dates, session=s)
-            summary.benchmark_rows_saved = saved
-            return {"saved_rows": saved}
-
-        _run_step(6, _step_6)
-
-        # ---------------------------------------------------------------------
-        # Step 7: rebuild adjusted prices for symbols with new events or new rows
-        # ---------------------------------------------------------------------
-        def _step_7() -> dict[str, Any]:
-            from src.etl.adjust import adjust_new_rows, adjust_rows_with_missing_adjusted
-
-            # 1. If new trading dates were added, retrieve those rows and incrementally adjust
-            updated_count = 0
-            if summary.new_dates:
-                stmt = select(DailyPrice).where(DailyPrice.date.in_(summary.new_dates))
-                new_price_rows = s.scalars(stmt).all()
-                if new_price_rows:
-                    df_new = pd.DataFrame(
-                        [
-                            {
-                                "symbol": r.symbol,
-                                "date": r.date,
-                                "open": float(r.open) if r.open is not None else None,
-                                "high": float(r.high) if r.high is not None else None,
-                                "low": float(r.low) if r.low is not None else None,
-                                "close": float(r.close) if r.close is not None else None,
-                                "volume": int(r.volume) if r.volume is not None else None,
-                            }
-                            for r in new_price_rows
-                        ]
-                    )
-                    updated_count = adjust_new_rows(df_new, session=s)
-                    logger.info("Adjusted new price rows: %d rows updated.", updated_count)
-            else:
-                logger.info("No new price dates loaded.")
-
-            # Also repair rows an earlier failed run left with NULL adj_* (they are not "new").
-            updated_count += adjust_rows_with_missing_adjusted(s)
-
-            summary.adjusted_rows = updated_count
-            return {"updated_rows": updated_count}
-
-        _run_step(7, _step_7)
-
-        # ---------------------------------------------------------------------
-        # Step 8: rebuild indicator cache (rebuilds when DB max date changed)
-        # ---------------------------------------------------------------------
-        def _step_8() -> dict[str, Any]:
-            from src.db.data_service import load_indicator_snapshot
-
-            # load_indicator_snapshot automatically checks if cache is stale:
-            # (db_max_date changed, adj_factors count changed, schema version bumped, etc.)
-            logger.info("Checking indicator cache freshness / rebuilding if stale...")
-            snapshot, _full, is_live, msg = load_indicator_snapshot(force_refresh=False)
-            logger.info(
-                "Indicator cache check complete: %d snapshot rows (%s).",
-                len(snapshot),
-                msg,
-            )
-            return {"snapshot_len": len(snapshot), "is_live": is_live, "message": msg}
-
-        _run_step(8, _step_8)
-
-        # ---------------------------------------------------------------------
-        # Step 9: print one summary
-        # ---------------------------------------------------------------------
-        def _step_9() -> DailyUpdateSummary:
-            summary_text = summary.format_text()
-            print(summary_text)  # noqa: T201
-            logger.info("Daily update completed successfully.")
-            return summary
-
-        _run_step(9, _step_9)
-
-        return summary
-
-    with use_session(session) as s:
-        return _execute(s)
+    print(ctx.summary.format_text())  # noqa: T201
+    logger.info("Daily update completed successfully.")
+    return ctx.summary

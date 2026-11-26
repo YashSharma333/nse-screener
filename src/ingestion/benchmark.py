@@ -209,10 +209,15 @@ class NSEIndexSource:
 def load_benchmarks(
     dates: Sequence[date],
     source: NSEIndexSource | None = None,
-    delay: float = 0.5,
+    delay: float | None = None,
     session: Session | None = None,
 ) -> int:
-    """Download and store benchmark index prices for the given dates."""
+    """Download and store benchmark index prices for the given dates.
+
+    ``delay`` is the pause after each day (default: settings.BENCHMARK_DOWNLOAD_PAUSE_SECONDS).
+    """
+    if delay is None:
+        delay = settings.BENCHMARK_DOWNLOAD_PAUSE_SECONDS
     src = source or NSEIndexSource()
     total_saved = 0
 

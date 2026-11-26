@@ -31,9 +31,9 @@ from sqlalchemy.orm import Session
 from config import settings
 from config.settings import (
     ADJUSTMENT_OVERRIDES_FILE,
-    SPLIT_GUARD_FRACTION,
-    SPLIT_GUARD_MIN_SYMBOLS,
-    SPLIT_REVIEW_MIN_RATIO,
+    JUMP_REPORT_MAX_BAD_DAY_SHARE,
+    JUMP_REPORT_MIN_RATIO,
+    JUMP_REPORT_MIN_SYMBOLS,
 )
 from src.common.db import use_session
 from src.common.symbols import normalise_symbol
@@ -299,7 +299,7 @@ def find_unexplained_jumps(
 ) -> pd.DataFrame:
     """List big overnight price moves that no applied event explains. Report only.
 
-    A move is big when ``previous close / close`` is at least ``SPLIT_REVIEW_MIN_RATIO``
+    A move is big when ``previous close / close`` is at least ``JUMP_REPORT_MIN_RATIO``
     in either direction. Why report it: a split or bonus missing from NSE's list (or a
     wrong ex-date) shows up here, and the owner can approve it in
     ``config/adjustment_overrides.csv``. Nothing in this report changes a price.
@@ -321,7 +321,7 @@ def find_unexplained_jumps(
     usable = (work["close_prev"] > 0) & (work["close"] > 0)
     ratio = work["close_prev"] / work["close"].where(work["close"] > 0)
     size = np.maximum(ratio, 1.0 / ratio)
-    candidates = work[usable & (size >= SPLIT_REVIEW_MIN_RATIO)].copy()
+    candidates = work[usable & (size >= JUMP_REPORT_MIN_RATIO)].copy()
     candidates["ratio"] = ratio[candidates.index]
     if candidates.empty:
         return empty
@@ -332,9 +332,9 @@ def find_unexplained_jumps(
 
     # Cross-sectional guard: many symbols jumping on one date means bad data.
     n_total = total_db_symbols if total_db_symbols is not None else work["symbol"].nunique()
-    if n_total >= SPLIT_GUARD_MIN_SYMBOLS and not candidates.empty:
+    if n_total >= JUMP_REPORT_MIN_SYMBOLS and not candidates.empty:
         per_day = candidates.groupby("day")["symbol"].nunique()
-        bad_days = per_day[per_day / n_total > SPLIT_GUARD_FRACTION].index.tolist()
+        bad_days = per_day[per_day / n_total > JUMP_REPORT_MAX_BAD_DAY_SHARE].index.tolist()
         for bad_day in bad_days:
             logger.warning(
                 "Cross-sectional guard: %d / %d symbols jumped on %s. "
@@ -406,7 +406,7 @@ def find_big_gaps(
     usable = (work["close_prev"] > 0) & (work["close"] > 0)
     ratio = work["close_prev"] / work["close"].where(work["close"] > 0)
     size = np.maximum(ratio, 1.0 / ratio)
-    candidates = work[usable & (size >= SPLIT_REVIEW_MIN_RATIO)].copy()
+    candidates = work[usable & (size >= JUMP_REPORT_MIN_RATIO)].copy()
     if candidates.empty:
         return empty
 

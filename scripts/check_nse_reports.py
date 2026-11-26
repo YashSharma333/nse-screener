@@ -24,7 +24,7 @@ from pathlib import Path
 # Allow "python scripts/check_nse_reports.py" from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.settings import CORP_ACTIONS_MAX_UNPARSED_SHARE
+from config.settings import CORP_ACTIONS_MAX_UNPARSED_SHARE, setup_logging
 from src.ingestion.corporate_actions import (
     REQUIRED_API_FIELDS,
     NSEDownloadError,
@@ -132,6 +132,7 @@ def check_listing_master(downloader: NSEReportsDownloader) -> None:
 
 def main() -> int:
     """Run all checks and return the process exit code."""
+    setup_logging()
     downloader = NSEReportsDownloader()
     check_corporate_actions(downloader)
     check_symbol_changes(downloader)

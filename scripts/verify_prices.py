@@ -318,6 +318,7 @@ def verify_prices(
 
 def main() -> None:
     """CLI entrypoint for standalone scripts/verify_prices.py."""
+    settings.setup_logging()
     diff_count, _ = verify_prices()
     if diff_count > 0:
         logger.error("Verification failed with %d differences. Exiting with code 1.", diff_count)

@@ -167,7 +167,7 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
   ui/ (Streamlit: Dashboard; stock inspector component; condition builder page later)
 
   src/etl/daily_update.py runs the whole chain in order: `python run_pipeline.py --update`
-  (9 steps, stops at the first failure). `scripts/run_app.sh` = update, then the dashboard.
+  (7 steps, stops at the first failure). `scripts/run_app.sh` = update, then the dashboard.
 ```
 
 ### Key files
@@ -240,9 +240,9 @@ question when building a continuous series; the owner decides per case.
 
 ### CLI (all in `run_pipeline.py`)
 
-`--update`, `--load-prices`, `--load-mcap`, `--load-securities`, `--load-renames`,
-`--download-corporate-actions`, `--rebuild-adjusted`, `--benchmarks`, `--refresh-cache`,
-`--verify-prices`, `--crosscheck-52w`, with `--from/--to` and `--start/--end` for ranges.
+`--update`, `--load-prices`, `--load-mcap`, `--download-corporate-actions`,
+`--rebuild-adjusted`, `--benchmarks`, `--refresh-cache`, `--verify-prices`,
+`--crosscheck-52w`, one at a time, with `--from/--to` for ranges.
 Check `--help` for the truth.
 
 ## 7. Indicators and cache design

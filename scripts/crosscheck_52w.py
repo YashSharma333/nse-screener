@@ -79,7 +79,7 @@ def parse_52_wk_csv(content: bytes | str) -> pd.DataFrame:
 def select_crosscheck_dates(
     all_trading_dates: Sequence[date],
     n_dates: int = 10,
-    min_history_days: int = 365,
+    min_history_days: int | None = None,
     seed: int = 42,
 ) -> list[date]:
     """Select ~10 diverse trading dates that have at least 52 weeks of prior price history."""
@@ -87,6 +87,8 @@ def select_crosscheck_dates(
     if not sorted_dates:
         return []
 
+    if min_history_days is None:
+        min_history_days = settings.CROSSCHECK_WINDOW_DAYS
     min_date = sorted_dates[0] + timedelta(days=min_history_days)
     eligible = [d for d in sorted_dates if d >= min_date]
     if not eligible:
@@ -119,9 +121,9 @@ def run_crosscheck_for_date(
     if official_df.empty:
         return []
 
-    window_start = check_date - timedelta(days=365)
+    window_start = check_date - timedelta(days=settings.CROSSCHECK_WINDOW_DAYS)
 
-    # 1. Query DB prices over [check_date - 365d, check_date]
+    # 1. Query DB prices over [check_date - CROSSCHECK_WINDOW_DAYS, check_date]
     # Aggregate max(adj_high or high) and min(adj_low or low) per symbol
     stmt = (
         select(

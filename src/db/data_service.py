@@ -22,13 +22,12 @@ import pandas as pd
 from sqlalchemy import text
 
 from config import settings
-from config.settings import INDICATOR_HISTORY_YEARS, INDICATOR_WARMUP_BARS, setup_logging
+from config.settings import INDICATOR_HISTORY_YEARS, INDICATOR_WARMUP_BARS
 from src.computation.cache_reader import date_literal, fill_missing_market_cap
 from src.computation.indicators import INDICATORS_SCHEMA_VERSION
 from src.computation.indicators.resolver import ensure_columns
 from src.db.session import check_connection, engine
 
-setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -166,7 +165,8 @@ def get_db_cache_metadata(connection: Any = None) -> dict[str, Any]:
         adj_max_detected = str(adj_res[1]) if adj_res and adj_res[1] else None
 
         bench_max = conn.execute(
-            text("SELECT MAX(date) FROM benchmark_prices WHERE index_code = 'NIFTY 500'")
+            text("SELECT MAX(date) FROM benchmark_prices WHERE index_code = :code"),
+            {"code": settings.BENCHMARK_INDEX_CODE},
         ).scalar()
 
         return {
@@ -428,7 +428,7 @@ def load_indicator_snapshot(
                 import bisect
 
                 idx = bisect.bisect_left(all_dates, cutoff_date)
-                needed_warmup = max(INDICATOR_WARMUP_BARS, 300)
+                needed_warmup = max(INDICATOR_WARMUP_BARS, settings.INDICATOR_MIN_WARMUP_BARS)
                 if idx > 0:
                     warmup_idx = max(0, idx - needed_warmup)
                     warmup_start_date = all_dates[warmup_idx]
