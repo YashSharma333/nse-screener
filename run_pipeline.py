@@ -146,7 +146,7 @@ COMMANDS: list[tuple[str, Callable[[argparse.Namespace], None], bool, str]] = [
         True,
         "Ingest official raw Bhavcopy prices (all regular trading series: EQ, BE, BZ, SM, ST) "
         "from NSE archives into daily_prices. Resumable, polite, and verified. Default range: "
-        "2016-11-21 to yesterday.",
+        "2016-11-21 to today.",
     ),
     (
         "--load-mcap",

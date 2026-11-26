@@ -191,7 +191,7 @@ python run_pipeline.py --update
 
 ##### 2. Ingest Raw Bhavcopy Prices (`--load-prices`)
 ```bash
-# Ingest official raw Bhavcopy prices from NSE archives (default: 2016-11-21 to yesterday)
+# Ingest official raw Bhavcopy prices from NSE archives (default: 2016-11-21 to today)
 python run_pipeline.py --load-prices
 
 # Or across a specific historical window

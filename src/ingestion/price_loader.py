@@ -117,7 +117,7 @@ def load_raw_prices(
     start : date | str | None
         Earliest calendar day to process (default: 2016-11-21).
     end : date | str | None
-        Latest calendar day to process (default: yesterday).
+        Latest calendar day to process (default: today; NSE may not have published it yet).
     session : Session | None
         SQLAlchemy database session. If provided, uses it as given without closing.
         If None, each month is saved in its own session. A given session is never committed here.
@@ -152,9 +152,7 @@ def load_raw_prices(
         else NSE_HISTORY_START
     )
     end_date: date = (
-        (date.fromisoformat(end) if isinstance(end, str) else end)
-        if end is not None
-        else today - timedelta(days=1)
+        (date.fromisoformat(end) if isinstance(end, str) else end) if end is not None else today
     )
 
     summary = LoadPricesSummary()

@@ -473,3 +473,24 @@ def test_update_reports_gap_that_still_fails(
     assert summary.price_gaps == [date(2026, 11, 3)]
     assert "Price gaps remaining     : 1" in summary.format_text()
     assert "2026-11-03" in (settings.REPORTS_DIR / "price_gaps.csv").read_text()
+
+
+def test_default_end_date_is_today(sqlite_session: Session, tmp_path: Path) -> None:
+    """With no end date, today's file is tried too (like --update); it used to stop at yesterday."""
+    asked: list[str] = []
+
+    def not_published_yet(url: str) -> bytes:
+        asked.append(url)
+        raise NoFile(url)
+
+    load_raw_prices(
+        start=date(2026, 11, 19),
+        session=sqlite_session,
+        cache_dir=tmp_path / "cache",
+        non_trading_path=tmp_path / "nt.json",
+        fetch_fn=not_published_yet,
+        sleep_fn=lambda _: None,
+        ref_date=date(2026, 11, 20),
+    )
+
+    assert any("20261120" in url for url in asked)
