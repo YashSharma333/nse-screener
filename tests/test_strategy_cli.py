@@ -66,6 +66,7 @@ def test_cli_signals_with_snapshot(capsys: pytest.CaptureFixture[str]):
             "adj_low": [1485.0, 3180.0],
             "volume": [2_000_000, 100_000],
             "volume_sma_20": [1_000_000, 500_000],
+            "vol_multiple": [2.0, 0.2],
             "sma_50": [1400.0, 3500.0],
             "sma_200": [1300.0, 3400.0],
             "ema_20": [1450.0, 3300.0],
@@ -80,6 +81,33 @@ def test_cli_signals_with_snapshot(capsys: pytest.CaptureFixture[str]):
         assert exit_code == 0
         captured = capsys.readouterr().out
         assert "STRATEGY SIGNAL RADAR" in captured
+
+
+def test_cli_signals_missing_atr_raises():
+    """An ATR stop needs atr_14. A snapshot without it must raise, never guess close * 0.02."""
+    strategy_path = PROJECT_ROOT / "strategies" / "library" / "swing_volume_atr_trail.json"
+    snapshot = pd.DataFrame(
+        {
+            "symbol": ["INFY"],
+            "date": [pd.Timestamp("2026-03-01")],
+            "close": [1500.0],
+            "volume": [2_000_000],
+            "volume_sma_20": [1_000_000],
+            "vol_multiple": [2.0],
+            "sma_50": [1400.0],
+            "sma_200": [1300.0],
+            "ema_20": [1450.0],
+            "high_252d_prev": [1600.0],
+            "rsi_14": [65.0],
+        }
+    )
+    with (
+        patch(
+            "src.strategies.cli.load_indicator_snapshot", return_value=(snapshot, None, True, "OK")
+        ),
+        pytest.raises(Exception, match="atr_14"),
+    ):
+        cmd_signals(str(strategy_path))
 
 
 def test_cli_main_dispatch():

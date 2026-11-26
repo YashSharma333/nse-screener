@@ -15,8 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.screeners.base import get_screener_keys
-from src.screeners.rules import validate_rule
+from src.conditions.rules import validate_rule
 
 # Valid strategy lifecycle statuses
 StrategyStatus = Literal["draft", "candidate", "approved", "retired"]
@@ -27,25 +26,25 @@ class EntrySpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    screener_key: str = Field(
-        ...,
-        description="Key of the registered screener generating candidates (e.g. 'swing_volume').",
-    )
     inline_rules: list[str] = Field(
-        default_factory=list,
-        description="Optional additional rule expressions evaluated with safe AST parser.",
+        ...,
+        min_length=1,
+        description=(
+            "Rule expressions (for example 'close > sma_50'); the entry signal is true when "
+            "ALL of them are true. Checked with the safe rule parser (no eval)."
+        ),
     )
 
-    @field_validator("screener_key")
+    @model_validator(mode="before")
     @classmethod
-    def validate_screener_registered(cls, v: str) -> str:
-        registered = get_screener_keys()
-        if v not in registered:
+    def reject_removed_screener_key(cls, data: Any) -> Any:
+        """Old strategy files used screener_key; say what to write instead."""
+        if isinstance(data, dict) and "screener_key" in data:
             raise ValueError(
-                f"Screener key '{v}' is not registered in ScreenerRegistry. "
-                f"Available screeners: {sorted(registered)}"
+                "entry.screener_key was removed (the prebuilt screeners are gone). "
+                "Write the entry as entry.inline_rules, a list of rule expressions."
             )
-        return v
+        return data
 
     @field_validator("inline_rules")
     @classmethod

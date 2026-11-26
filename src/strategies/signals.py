@@ -1,9 +1,8 @@
 """
 Historical Signal Evaluation Engine
 ===================================
-Evaluates systematic Screener conditions and inline rule expressions across
-historical multi-symbol panels without look-ahead bias. Provides sparse signal
-projection for memory-efficient backtest ingestion.
+Evaluates a strategy's entry rules across historical multi-symbol panels without
+look-ahead bias. Provides sparse signal projection for memory-efficient backtest ingestion.
 """
 
 from __future__ import annotations
@@ -14,47 +13,7 @@ from collections.abc import Sequence
 
 import pandas as pd
 
-from src.screeners.base import Screener
-from src.screeners.rules import evaluate_rule
-
-
-def evaluate_screener_history(
-    screener: Screener,
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Evaluate a systematic Screener across a multi-symbol historical panel.
-
-    Parameters
-    ----------
-    screener : Screener
-        Configured Screener instance with registered conditions and evidence columns.
-    df : pd.DataFrame
-        Historical panel containing 'symbol', 'date', OHLCV and precomputed indicators.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with ['symbol', 'date', 'signal', ...evidence_columns].
-    """
-    if df.empty:
-        return pd.DataFrame(columns=["symbol", "date", "signal", *screener.evidence_columns])
-
-    df = screener.prepare(df)  # add the indicators the screener declares
-    screener._validate_required_columns(df)
-
-    cond_dict = screener.all_conditions(df)
-    if not cond_dict:
-        signal_mask = pd.Series(True, index=df.index, dtype=bool)
-    else:
-        signal_mask = functools.reduce(operator.and_, cond_dict.values())
-
-    # Build output panel with symbol, date, signal, close, and evidence columns
-    base_cols = [c for c in ("symbol", "date", "close") if c in df.columns]
-    ev_cols = [c for c in screener.evidence_columns if c in df.columns and c not in base_cols]
-
-    out_df = df[base_cols + ev_cols].copy()
-    out_df["signal"] = signal_mask
-    return out_df
+from src.conditions.rules import evaluate_rule
 
 
 def evaluate_rules_history(

@@ -12,19 +12,22 @@ the code wins. Say so in your PR and fix this file.
 
 ## 0. Read this first (one-page summary)
 
-- **What it is:** a private NSE (India) end-of-day stock screener, strategy engine and
-  backtester. Long-only, delivery, no F&O. Python, MySQL, Parquet, Streamlit.
+- **What it is:** a private NSE (India) end-of-day stock scanner (conditions the user builds), strategy
+  engine and backtester. Long-only, delivery, no F&O. Python, MySQL, Parquet, Streamlit.
 - **Who it is for:** one owner, a Python beginner who is learning through it and also using
   it as a Data Analyst portfolio project. Code and docs must be easy to read and learn from.
 - **What we are building toward:** clean data for about 1,800 stocks (market cap 500 cr or
-  more), screener rules with no hard-coded numbers, an honest backtester that answers "does
-  this strategy make money and how deep is the worst drawdown", then a Chartink-style
-  no-code scanner builder.
+  more), user-built conditions with no hard-coded numbers, an honest backtester that answers "does
+  this strategy make money and how deep is the worst drawdown". The scanner is a
+  Chartink-style builder: the user composes any condition from prices, indicators with
+  custom numbers, index prices, math and groups. There are no prebuilt screeners (dropped
+  26 Nov, CL-24B).
 - **Where we are:** the data foundation is rebuilt and finished (official raw prices from
   2016-11-21, market cap, securities, renames, official corporate actions, one daily
-  `--update` command; see 13a). The screener refactor, RS Rating, history backend,
-  backtest engine, experiment lab, analytics, UI rebuild, automation and scanner builder are
-  still to do.
+  `--update` command; see 13a). The cleanup programme (CL-xx) is under way; its current order is CL-24B (drop the
+  prebuilt screeners, done in this PR), CL-24C (condition engine) and CL-25 (16-column
+  cache). The history backend, backtest engine, experiment lab, analytics, UI rebuild,
+  automation and the scanner builder UI are still to do.
 - **How work is done:** the owner works with a Lead Architect (a separate chat) who writes
   prompts, reviews PRs and verifies claims, and with Claude Code, which implements. Claude
   Code never merges a PR. It works on the database after a backup (`CLAUDE.md`, "Working on the real database").
@@ -36,7 +39,7 @@ the code wins. Say so in your PR and fix this file.
 **What the project was at the start (Phases 0 to 2, built with Antigravity):**
 - A working Streamlit app that downloaded NSE Bhavcopy, stored it in MySQL, adjusted prices
   for splits and bonuses, computed technical indicators into a Parquet cache, and ran
-  screeners.
+  screeners (the prebuilt screeners were removed on 26 Nov, CL-24B).
 - About 498 symbols (the NIFTY 500 constituents), roughly 3 years of history, 5 benchmark
   indices, 20 screeners (three core: swing_volume, swing_momentum, rsi_momentum), a strategy
   specification, risk, cost and signal modules, and about 243 offline tests.
@@ -61,7 +64,7 @@ the code wins. Say so in your PR and fix this file.
 - On 18 Nov 2026 the real universe import ran: 1,811 active, 489 below threshold, 1 not in
   file.
 
-**What is left (in order):** review the unexplained price jumps (section 13); screener refactor and findings H1 to H11 (P2); benchmarks, RS Rating,
+**What is left (in order):** review the unexplained price jumps (section 13); the cleanup order CL-24B (drop the prebuilt screeners), CL-24C (condition engine), CL-25 (16-column cache); findings H1 to H11 (P2); benchmarks, RS Rating,
 pre-computed indicators and the dynamic-rule base (P3); history backend, run recording and
 reconciliation with Chartink (P4); backtest engine (P5); experiment lab (P6); analytics
 (P7); UI rebuild (P8); Docker and nightly automation with a private server (P9);
@@ -78,8 +81,8 @@ reference scan), a free Oracle Cloud server (later, private access only).
 
 A private, end-of-day research platform for Indian (NSE) equities, long-only delivery,
 no F&O. It must (1) hold clean, split-adjusted daily data for about 1,800 stocks with market
-cap of 500 cr or more, (2) screen them with rules that are never hard-coded (every period,
-source, threshold and ratio is a parameter), (3) turn a screener into a complete trading
+cap of 500 cr or more, (2) scan them with conditions the user composes (every period,
+source, threshold and ratio is a parameter, no prebuilt screeners), (3) turn a condition into a complete trading
 strategy and backtest it honestly (costs, slippage, look-ahead safe), answering "does this
 make money, and how bad does it get" (CAGR, max drawdown, expectancy), and eventually
 (4) let the owner build scanners in a Chartink-style no-code screen. Streamlit UI now,
@@ -102,7 +105,7 @@ React possibly much later. Private use only for now.
 
 | Word | Meaning |
 |---|---|
-| Screener | A filter list: which stocks pass today. |
+| Condition | A saved tree of parts (prices, indicators with custom numbers, index prices, math, comparisons, groups) that is true or false per stock per day. Replaces the old word Screener. |
 | Strategy | A complete trading plan: entry, exit, stop, sizing, costs. |
 | Signal | The entry condition is true at the close of day `t`. |
 | Trade | A signal that was actually taken (filled at `t+1` open). |
@@ -155,13 +158,13 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
   src/computation/indicators/calculator.py  ->  Parquet indicator cache
         |                                        (data/processed/indicators.parquet + meta.json)
         v
-  src/screeners/  (Screener base + catalog + JSON screeners + rule parser)
+  src/conditions/  (rules.py = the safe rule parser; the condition engine lands in CL-24C)
         |
         v
   src/strategies/ (StrategySpec JSON, signals, risk, costs)  ->  [backtest engine: NOT BUILT YET]
         |
         v
-  ui/ (Streamlit: Dashboard, Swing Volume, Swing Momentum, Screener Explorer)
+  ui/ (Streamlit: Dashboard; stock inspector component; condition builder page later)
 
   src/etl/daily_update.py runs the whole chain in order: `python run_pipeline.py --update`
   (9 steps, stops at the first failure). `scripts/run_app.sh` = update, then the dashboard.
@@ -180,8 +183,8 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
 | `src/db/` | `models.py`, `session.py`, `upsert.py` (MySQL-safe upsert), `data_service.py`. |
 | `src/computation/indicators/calculator.py` | All indicators, 2-year window plus 300 warm-up bars. |
 | `src/computation/cache_reader.py` | Read-only access to the indicator cache. The UI uses only this; it never builds the cache. |
-| `src/screeners/` | `base.py` (also the registry), `catalog.py` (all conditions and screeners), `declarative.py` (JSON screeners). |
-| `src/strategies/` | `spec.py` (pydantic StrategySpec), `rules.py` (safe parser, **moves to `src/screeners/rules.py`**), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
+| `src/conditions/` | `rules.py` (the safe rule parser and `MissingIndicatorError`); the condition engine is built here in CL-24C. |
+| `src/strategies/` | `spec.py` (pydantic StrategySpec, entry = `inline_rules`), `signals.py`, `risk.py`, `costs.py`, `cli.py`. |
 | `config/` | `settings.py`, `costs.json`, `adjustment_overrides.csv`. |
 | `migrations/versions/` | Alembic 001 to 010. |
 | `ui/` | Streamlit pages and components. |
@@ -265,29 +268,25 @@ Check `--help` for the truth.
 - Offsets such as "1 day ago" shift **per symbol**. The old shift-fallback bug mixed
   symbols; guard it with a test.
 
-## 8. Screener platform
+## 8. Conditions (no prebuilt screeners)
 
-- `Screener` (base.py): `rules()` returns named conditions, `explain()` shows pass or fail
-  per condition (near-miss diagnostics in the UI). T47, T54 and T56 depend on `explain()`.
-- `catalog.py` holds the conditions and the 20 screeners. Core: `swing_volume`,
-  `swing_momentum`, `rsi_momentum` (RSI(9) >= WMA(RSI,21) + 1.1, RSI between 45 and 65, plus
-  trend, near-52-week-high and volume rules). Others: `above_50_sma`, `above_200_sma`,
-  `golden_cross`, `death_cross`, `bullish_macd_cross`, `near_52w_high`, `near_52w_low`,
-  `rsi_oversold`, `rsi_overbought`, `high_volatility`, `bollinger_squeeze`,
-  `breakout_52w_volume`, `composite_trend`, `minervini_trend_template`, `rs_leaders`,
-  `rsi_pullback_uptrend`, `vcp_lite`.
-- Core screeners keep **locked default parameters**. `enforce_universe` defaults to False
-  for swing_volume and swing_momentum. Dynamic values belong in experimental screeners and
-  the builder, and every run records its parameters (T50).
-- **No hard-coded numbers inside logic.** Rule names must be neutral (not
-  `within_15pct_52wH` or `volume_gt_1_5x_avg`) because parameters change.
-- **Safe rule parser, no `eval` or `exec`.** Whitelist only: names, numbers, comparison and
-  arithmetic, and a small function set. Target: rules written as plain text such as
-  `sma(close, 50)`, `high(252) * 0.85`, `rsi(close, 9)`, via
-  `compare(df, left, op, right, ratio)` plus `require`. It lives in `src/screeners/rules.py`
-  (moving it fixes import-cycle bug H1, and Phase 10 needs it there).
-- JSON screeners (`declarative.py`) are the seed of the saved-scanner feature (T62).
-  Loading is lazy (H1 fix).
+**Owner decision 26 Nov (CL-24B):** the 25 prebuilt screeners, the `Screener` class, the
+registry, JSON screeners and the screener UI pages were deleted. Prebuilt screeners remove
+flexibility. The product is a Chartink-style builder: the user composes any condition.
+
+- A **condition** is a JSON tree of parts: number, field (open, high, low, close, volume,
+  market cap, N days ago), index close, indicator with custom numbers, window (max, min, sum,
+  count over N days), math, function, compare (including crossed above and below) and group
+  (all, any, any 1, any 2). It is true or false per stock per day. Design: CL-24C and
+  [condition_engine.md](condition_engine.md).
+- **Today** a strategy entry is a list of rule texts (`entry.inline_rules`, all must be true)
+  evaluated by the safe parser in `src/conditions/rules.py`. CL-24C replaces them with
+  condition trees.
+- **No hard-coded numbers inside logic.** Every period, threshold and ratio is a parameter.
+- **Safe rule parser, no `eval` or `exec`.** Whitelist only: names, numbers, comparison,
+  arithmetic and `and` / `or` / `not`.
+- The shipped strategies were checked against the old screeners they replaced: identical entry
+  signals on the five golden dates (the strategy files hold the rules the screeners used).
 
 ### Acceptance scan (Chartink, owner's own)
 
@@ -340,16 +339,15 @@ Chartink sectors (26 names) and cap buckets (Smallcap, Midcap, Largecap) are kep
 
 ## 11. UI
 
-Streamlit multipage: Dashboard, Swing Volume, Swing Momentum, Screener Explorer (near-miss
-diagnostics, export). `ui/data.py` is the cached data layer; it is read-only and reads the cache through `src/computation/cache_reader.py` (CL-06). The entry point is `ui/Dashboard.py`. Known smell: `screener_view.py`
-contains fallback math that hides missing-column bugs; delete it once the columns exist.
+Streamlit: the Dashboard is the only page (the screener pages were deleted in CL-24B). The
+stock inspector component (`ui/components/stock_inspector.py`) stays for the condition builder page. `ui/data.py` is the cached data layer; it is read-only and reads the cache through `src/computation/cache_reader.py` (CL-06). The entry point is `ui/Dashboard.py`.
 Later: Streamlit stays for now, React maybe much later. No separate public website.
 
 ## 12. Deployment plan (parked)
 
 Free Oracle Cloud server, always on, reachable **only from the owner's own devices**
 (Tailscale-style private network), no public exposure, MySQL never exposed. Needs: Docker
-with MySQL (T35), nightly job for Bhavcopy download, update and screener history (T57).
+with MySQL (T35), nightly job for Bhavcopy download, update and strategy signal history (T57).
 Test NSE downloads from the server first (NSE sometimes blocks data-centre IPs). The owner
 has no server experience: the guide must be a step-by-step PDF. A static IP and Kite
 Connect are NOT needed (order placement is out of scope; data is free from Bhavcopy).
@@ -457,6 +455,7 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | owner | Aliases, fill-missing, 10-year backfill | P0 not required | owner runs commands |
 | P1 | DATA-CHECK: read-only audit via MySQL MCP | backfill | **Done 19 Nov**: `docs/data_audit_P1.md`, issues #60 to #66 |
 | P2 | **B1 Fixes PR**: H1 to H11, (`conditions/` and `scaffold.py` already deleted in D12), merge registry into base, schema version bump, missing columns, remove UI fallback | P1 | **Next.** Refactor, no behaviour change. The data issues #60 to #63 are separate owner decisions and do not block it |
+| CL | **Cleanup order (26 Nov):** CL-24B drop the prebuilt screeners (strategies on inline rules), CL-24C condition engine, CL-25 16-column cache (needs CL-24C) | CL-24 | the P-rows below keep their old wording; this row has the current order |
 | P3 | **B2 Updates PR**: benchmarks, RS Rating, pre-compute list, T60 safe-parser base with two-tier lookup, neutral rule names | P2 | needs owner approval of lists |
 | P4 | **B3 Updates PR**: T46 finish (industry and sector import; `stock_master` no longer exists, so it needs a new table via a migration), T47, T48 history backend, T50 run parameter recording, T54 Chartink reconciliation, T56 look-ahead and determinism tests | P3 | acceptance = the Chartink scan |
 | P5 | Backtest engine (signals to trades to equity curve), locked rules above | P4 | the big one |
@@ -468,17 +467,15 @@ after every `--download-corporate-actions`. Symbol changes are evidence for `sym
 | P11 | Chartink-style scanner builder (Phase 10, T60 to T63, Prompt L) | P3 base, P5 for backtests on saved scanners | T62 cannot come earlier than P5 |
 
 Task IDs T01 to T65 and the findings H1 to H11, F1 to F12 live in the owner's Master Tracker
-PDF. Known H items: H1 import cycle between `strategies.rules` and `screeners.base` (fixed in I126: the parser now lives in `src/screeners/rules.py`); H4
+PDF. Known H items: H1 import cycle between `strategies.rules` and `screeners.base` (fixed in I126: the parser lived in `src/screeners/rules.py`, since CL-24B it is `src/conditions/rules.py`); H4
 strategy liquidity cap (needs `turnover_sma_20`); H5 brokerage and DP charges; H6 scaffold
 tests; H8 and H9 broad `except`, `contextlib.suppress`, `TypeVar` boilerplate. If a task
 needs an H item you cannot see, ask the owner to attach the tracker. Do not guess.
 
 ## 15. Decisions already made (do not reopen without a reason)
 
-- One file for conditions: `catalog.py`, with section headers (price, volume, momentum,
-  crossover, then screeners). No `conditions.py`.
-- Parser moves to `src/screeners/rules.py`; registry merges into `base.py`;
-  `declarative.py` stays; `conditions/` and `scaffold.py` were deleted in D12.
+- No prebuilt screeners (26 Nov, CL-24B). Conditions are user-built trees in `src/conditions/`;
+  the safe rule parser moved there (`src/conditions/rules.py`). Order: CL-24B, CL-24C, CL-25.
 - No stored universe: load every regular series, filter in the dashboard (series, minimum market cap). Price history is never deleted.
 - Monthly Chartink market-cap refresh is dropped; twice-yearly list is enough.
 - Pre-compute only 1 to 2 years of indicators. Full history on demand.

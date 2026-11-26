@@ -1,4 +1,4 @@
-"""Regression test for issue 126: importing the strategy package must not hide custom screeners.
+"""Regression test for issue 126: importing the strategy package must not hide a later import.
 
 It runs in a fresh Python process because the bug depends on which module is imported FIRST;
 inside the test run other modules are already loaded and would hide it.
@@ -11,11 +11,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_custom_screeners_load_when_strategies_are_imported_first():
+def test_conditions_and_strategies_import_in_either_order():
     code = (
         "import src.strategies.cli\n"
-        "from src.screeners.base import get_screener\n"
-        "print(get_screener('custom_tight_consolidation').key)\n"
+        "from src.conditions.rules import evaluate_rule\n"
+        "print(evaluate_rule.__name__)\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -26,4 +26,4 @@ def test_custom_screeners_load_when_strategies_are_imported_first():
     )
     assert "circular import" not in result.stderr + result.stdout
     assert result.returncode == 0, result.stderr[-500:]
-    assert "custom_tight_consolidation" in result.stdout
+    assert "evaluate_rule" in result.stdout

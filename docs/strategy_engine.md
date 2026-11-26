@@ -6,7 +6,7 @@ The **Strategy Engine** provides the infrastructure for designing, evaluating, a
 
 ## 1. Core Architecture
 
-The system decouples **Screeners** (stock selection) from **Strategies** (trade execution and capital preservation):
+A **Strategy** is a complete trading plan. Its entry is a **condition** (today a list of rules, later a condition tree, see [condition_engine.md](condition_engine.md)); the rest of the plan is trade execution and capital preservation. The prebuilt screeners were removed in CL-24B.
 
 ```
 +----------------------------------------------------------------+
@@ -16,8 +16,8 @@ The system decouples **Screeners** (stock selection) from **Strategies** (trade 
                                 |
                                 v
 +----------------------------------------------------------------+
-|                     2. Screener Execution                      |
-|     Screener.explain(df) / evaluate_screener_history(df)       |
+|                     2. Entry Rule Evaluation                   |
+|        evaluate_rules_history(entry.inline_rules, df)         |
 |             Generates Candidate Trade Signals (t)              |
 +-------------------------------+--------------------------------+
                                 |
@@ -49,6 +49,10 @@ Strategies are expressed as validated Pydantic v2 JSON models with a defined lif
 - `approved`: Validated for live execution.
 - `retired`: Deprecated historical model.
 
+### Entry rules
+
+`entry.inline_rules` is a list of rule expressions; the entry signal is true on a day when ALL of them are true. Rules read indicator columns (`close`, `sma_50`, `rsi_14`, `vol_multiple` ...) with comparisons, `+ - * /`, `and`, `or` and `not`. Function calls and anything else are refused (`src/conditions/rules.py`, no `eval`). The old `entry.screener_key` is rejected with a message. A stop measured in ATR needs `atr_14`; `signals` stops with an error if it is missing instead of guessing a number.
+
 ### Example Strategy JSON
 
 ```json
@@ -58,8 +62,16 @@ Strategies are expressed as validated Pydantic v2 JSON models with a defined lif
   "description": "Trend alignment with volume surge entry, 2.0x ATR stop, and dynamic trailing stop.",
   "status": "candidate",
   "entry": {
-    "screener_key": "swing_volume",
-    "inline_rules": ["rsi_14 < 70"]
+    "inline_rules": [
+      "ema_20 > sma_50",
+      "sma_50 > sma_200",
+      "close > sma_50",
+      "close > sma_200",
+      "close >= 0.85 * high_252d_prev",
+      "vol_multiple > 1.5",
+      "volume_sma_20 > 250000",
+      "rsi_14 < 70"
+    ]
   },
   "exit": {
     "stop_loss_type": "atr",

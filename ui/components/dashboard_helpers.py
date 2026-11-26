@@ -56,7 +56,7 @@ COLUMN_PRESETS: dict[str, list[str]] = {
 }
 
 NEAR_HIGH_PCT = 5.0  # "near the 52-week high" = within 5% of it
-VOLUME_SURGE_X = 1.5  # same multiple the Swing + Volume screener uses
+VOLUME_SURGE_X = 1.5  # same multiple the shipped strategies use
 
 
 def rename_for_display(snapshot: pd.DataFrame) -> pd.DataFrame:

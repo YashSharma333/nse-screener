@@ -18,10 +18,10 @@ import sys
 from pathlib import Path
 
 from config.settings import PROJECT_ROOT, setup_logging
+from src.conditions.rules import MissingIndicatorError
 from src.db.data_service import load_indicator_snapshot
-from src.screeners.base import get_screener
 from src.strategies.risk import initial_stop, position_size, target_price
-from src.strategies.signals import evaluate_rules_history, evaluate_screener_history, to_sparse
+from src.strategies.signals import evaluate_rules_history, to_sparse
 from src.strategies.spec import StrategySpec
 
 STRATEGIES_DIR = PROJECT_ROOT / "strategies" / "library"
@@ -44,8 +44,7 @@ def cmd_validate(path: str) -> int:
         print(f"Description: {spec.description}")
         print("-" * 60)
         print("ENTRY LOGIC:")
-        print(f"  Screener:  {spec.entry.screener_key}")
-        print(f"  Rules:     {spec.entry.inline_rules or 'None'}")
+        print(f"  Rules:     {spec.entry.inline_rules}")
         print("-" * 60)
         print("EXIT LOGIC (RISK CONTAINMENT):")
         print(f"  Stop-Loss: {spec.exit.stop_loss_type} (value: {spec.exit.stop_loss_value})")
@@ -82,7 +81,7 @@ def cmd_list() -> int:
         return 0
 
     print("=" * 80)
-    print(f"{'Strategy Name':<30} {'Status':<10} {'Entry Screener':<18} {'Stop':<10} {'Hash':<8}")
+    print(f"{'Strategy Name':<30} {'Status':<10} {'Entry Rules':<18} {'Stop':<10} {'Hash':<8}")
     print("-" * 80)
 
     for f in json_files:
@@ -91,12 +90,20 @@ def cmd_list() -> int:
             stop_str = f"{spec.exit.stop_loss_type[:3]}:{spec.exit.stop_loss_value}"
             print(
                 f"{spec.name[:28]:<30} {spec.status:<10} "
-                f"{spec.entry.screener_key[:16]:<18} {stop_str:<10} {spec.spec_hash[:8]}"
+                f"{len(spec.entry.inline_rules)} rule(s)".ljust(19)
+                + f"{stop_str:<10} {spec.spec_hash[:8]}"
             )
         except Exception as exc:
             print(f"{f.name:<30} ERROR      {str(exc)[:35]}")
     print("=" * 80)
     return 0
+
+
+def _needs_atr(spec: StrategySpec) -> bool:
+    """True when the stop or the trailing stop of this strategy is measured in ATR."""
+    return spec.exit.stop_loss_type in ("atr", "trailing_atr") or (
+        spec.exit.trailing_stop_type == "atr"
+    )
 
 
 def cmd_signals(path: str, equity: float = 500000.0) -> int:
@@ -118,15 +125,14 @@ def cmd_signals(path: str, equity: float = 500000.0) -> int:
         print(f"No market data available in database or cache. ({msg})")
         return 1
 
-    screener = get_screener(spec.entry.screener_key)
-    signals_df = evaluate_screener_history(screener, snapshot)
-
-    # Evaluate inline rules if defined
-    if spec.entry.inline_rules:
-        rule_mask = evaluate_rules_history(spec.entry.inline_rules, snapshot)
-        signals_df["signal"] = signals_df["signal"] & rule_mask
-
+    # The entry signal is true where ALL of the strategy's rules are true.
+    signals_df = snapshot.copy()
+    signals_df["signal"] = evaluate_rules_history(spec.entry.inline_rules, snapshot)
     sparse = to_sparse(signals_df)
+
+    # An ATR stop cannot be sized without the ATR: stop instead of guessing a number.
+    if _needs_atr(spec) and "atr_14" not in snapshot.columns:
+        raise MissingIndicatorError(["atr_14"])
 
     print("=" * 80)
     print(f"STRATEGY SIGNAL RADAR: {spec.name} (v{spec.version})")
@@ -148,7 +154,7 @@ def cmd_signals(path: str, equity: float = 500000.0) -> int:
     for _idx, row in sparse.iterrows():
         sym = str(row["symbol"])
         close = float(row["close"])
-        atr_val = float(row.get("atr_14", close * 0.02))
+        atr_val = float(row["atr_14"]) if "atr_14" in row.index else None
 
         try:
             stop_p = initial_stop(
