@@ -202,7 +202,7 @@ python run_pipeline.py --load-prices --from 2024-01-01 --to 2024-12-31
 
 ##### 3. Ingest Market Cap from PR Bundles (`--load-mcap`)
 ```bash
-# Ingest official market cap from NSE PR bundles (PRDDMMYY.zip) from 2024-02-01 onward
+# Ingest official market cap from NSE PR bundles (PRDDMMYY.zip), 2024-02-01 to today
 python run_pipeline.py --load-mcap
 
 # Or for a specific date range

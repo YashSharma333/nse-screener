@@ -24,7 +24,7 @@ import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -197,7 +197,7 @@ def load_market_caps(
     start : date | str | None
         Earliest date to load. Clamped to FIRST_MCAP_DATE (2024-02-01).
     end : date | str | None
-        Latest date to load (default: yesterday).
+        Latest date to load (default: today; the bundle may not be published yet).
     session : Session | None
         SQLAlchemy database session. If provided, uses it as given without closing.
     cache_dir : Path | None
@@ -231,7 +231,7 @@ def load_market_caps(
     req_end = (
         (date.fromisoformat(end) if isinstance(end, str) else end)
         if end is not None
-        else date.today() - timedelta(days=1)
+        else date.today()
     )
     end_date = req_end
 

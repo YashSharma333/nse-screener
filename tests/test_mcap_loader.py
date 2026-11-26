@@ -303,3 +303,31 @@ def test_rerun_overwrites_with_same_value(sqlite_session: Session, tmp_path: Pat
     )
     row_after2 = sqlite_session.scalar(select(DailyPrice).where(DailyPrice.symbol == "INFY"))
     assert Decimal(str(row_after2.market_cap)) == Decimal("5000000.00")
+
+
+def test_default_end_date_is_today(sqlite_session: Session, tmp_path: Path):
+    """No end date means today: today's bundle is tried too, like --update (was yesterday)."""
+    today = date.today()
+    sqlite_session.add(
+        DailyPrice(
+            symbol="INFY", date=today, series="EQ", close=Decimal("1500.00"), market_cap=None
+        )
+    )
+    sqlite_session.commit()
+    asked: list[str] = []
+
+    def not_published_yet(url: str) -> bytes:
+        asked.append(url)
+        raise NoFile(url)
+
+    summary = load_market_caps(
+        start=today,
+        session=sqlite_session,
+        cache_dir=tmp_path / "mcap",
+        fetch_fn=not_published_yet,
+        sleep_fn=lambda _: None,
+        pause_seconds=0,
+    )
+
+    assert asked
+    assert summary.missing_bundle == 1

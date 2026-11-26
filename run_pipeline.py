@@ -153,7 +153,7 @@ COMMANDS: list[tuple[str, Callable[[argparse.Namespace], None], bool, str]] = [
         run_load_mcap_command,
         True,
         "Fill daily_prices.market_cap from official NSE PR bundles (PRDDMMYY.zip) "
-        "for trading days from 2024-02-01 onward.",
+        "for trading days from 2024-02-01 to today (or --from / --to).",
     ),
     (
         "--download-corporate-actions",
