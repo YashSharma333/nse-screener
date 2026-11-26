@@ -9,9 +9,8 @@ import pandas as pd
 import pytest
 
 from src.computation.indicators.calculator import add_all_indicators
-from src.screeners.base import MissingIndicatorError, get_screener
-from src.screeners.rules import evaluate_rule, validate_rule
-from src.strategies.signals import evaluate_rules_history, evaluate_screener_history, to_sparse
+from src.conditions.rules import MissingIndicatorError, evaluate_rule, validate_rule
+from src.strategies.signals import evaluate_rules_history, to_sparse
 
 
 @pytest.fixture
@@ -93,8 +92,8 @@ def test_validate_rule_helper():
         validate_rule("close > missing_col", available_columns=["close", "open"])
 
 
-def test_evaluate_screener_history_and_to_sparse():
-    """Evaluate a registered screener across multi-day multi-symbol panel and sparse projection."""
+def test_evaluate_rules_on_a_panel_and_to_sparse():
+    """Evaluate entry rules across a multi-day multi-symbol panel, then keep only the signals."""
     np.random.seed(42)
     symbols = ["INFY", "TCS"]
     dates = pd.date_range("2024-01-01", periods=100, freq="B").strftime("%Y-%m-%d").tolist()
@@ -121,8 +120,8 @@ def test_evaluate_screener_history_and_to_sparse():
 
     indicators_df = add_all_indicators(raw_df)
 
-    screener = get_screener("above_50_sma")
-    signals_df = evaluate_screener_history(screener, indicators_df)
+    signals_df = indicators_df[["symbol", "date", "close"]].copy()
+    signals_df["signal"] = evaluate_rules_history(["close > sma_50"], indicators_df)
 
     assert "signal" in signals_df.columns
     assert "symbol" in signals_df.columns
@@ -168,9 +167,11 @@ def test_signals_point_in_time_truncation():
     raw_trunc = raw_df[raw_df["date"] <= t_eval].copy()
     trunc_df = add_all_indicators(raw_trunc)
 
-    screener = get_screener("breakout_52w_volume")
-    full_signals = evaluate_screener_history(screener, full_df)
-    trunc_signals = evaluate_screener_history(screener, trunc_df)
+    rules = ["close > sma_50", "close >= 0.85 * high_252d_prev", "vol_multiple > 1.5"]
+    full_signals = full_df[["symbol", "date"]].assign(signal=evaluate_rules_history(rules, full_df))
+    trunc_signals = trunc_df[["symbol", "date"]].assign(
+        signal=evaluate_rules_history(rules, trunc_df)
+    )
 
     full_at_t = (
         full_signals[full_signals["date"] == t_eval].sort_values("symbol").reset_index(drop=True)

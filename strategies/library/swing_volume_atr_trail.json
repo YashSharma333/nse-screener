@@ -5,8 +5,14 @@
   "author": "trader",
   "status": "candidate",
   "entry": {
-    "screener_key": "swing_volume",
     "inline_rules": [
+      "ema_20 > sma_50",
+      "sma_50 > sma_200",
+      "close > sma_50",
+      "close > sma_200",
+      "close >= 0.85 * high_252d_prev",
+      "vol_multiple > 1.5",
+      "volume_sma_20 > 250000",
       "rsi_14 < 70"
     ]
   },
@@ -30,13 +36,13 @@
   "costs": {
     "slippage_bps": 5.0,
     "dp_charge_per_scrip_day": 0.0,
-    "exchange_turnover_rate": 0.0000307,
-    "sebi_turnover_rate": 0.000001,
+    "exchange_turnover_rate": 3.07e-05,
+    "sebi_turnover_rate": 1e-06,
     "stt_buy_rate": 0.001,
     "stt_sell_rate": 0.001,
     "stamp_duty_rate": 0.00015,
     "gst_rate": 0.18,
     "brokerage_per_order": 0.0,
-    "stcg_tax_rate": 0.20
+    "stcg_tax_rate": 0.2
   }
 }

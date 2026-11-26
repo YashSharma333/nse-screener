@@ -15,7 +15,14 @@ from typing import Any
 
 import pandas as pd
 
-from src.screeners.base import MissingIndicatorError
+
+class MissingIndicatorError(Exception):
+    """Raised when a rule or strategy needs a column that the data does not have."""
+
+    def __init__(self, missing_columns: list[str] | set[str]):
+        self.missing_columns = sorted(missing_columns)
+        super().__init__(f"Missing required indicator columns: {', '.join(self.missing_columns)}")
+
 
 # Whitelist allowed AST operators
 _COMPARE_OPS: dict[type[ast.cmpop], Any] = {

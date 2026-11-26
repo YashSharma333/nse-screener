@@ -1,4 +1,4 @@
-# NSE Screener: Stock Screener & Trading Terminal for NSE India
+# NSE Screener: Stock Scanner & Trading Terminal for NSE India
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.31+-FF4B4B.svg)](https://streamlit.io/)
@@ -7,9 +7,9 @@
 [![Alembic](https://img.shields.io/badge/Alembic-1.20.1-red.svg)](https://alembic.sqlalchemy.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A clean, fast, and automated stock screener and market terminal for stocks on the **National Stock Exchange of India (NSE)**.
+A clean, fast, and automated stock scanner and market terminal for stocks on the **National Stock Exchange of India (NSE)**.
 
-The system automatically downloads official daily NSE Bhavcopy market reports, saves clean price history into a MySQL database with corporate action adjustments (splits/bonuses), calculates technical indicators (one plain function per indicator, any length, any column), and displays filtered stock setups on a modern, dark-themed **Streamlit** web terminal.
+The system automatically downloads official daily NSE Bhavcopy market reports, saves clean price history into a MySQL database with corporate action adjustments (splits/bonuses), calculates technical indicators (one plain function per indicator, any length, any column), and shows the market snapshot on a modern, dark-themed **Streamlit** web terminal. Scans are built from your own conditions (see below); there are no prebuilt screeners.
 
 ---
 
@@ -28,7 +28,7 @@ When scanning and analyzing Indian equities, traders and investors frequently ru
 - **Corporate Action Split/Bonus Adjustments:** Uses NSE's official corporate actions (exact ratios, never guessed from prices) to compute split-adjusted prices (`adj_open`, `adj_high`, `adj_low`, `adj_close`); raw prices are never changed.
 - **Benchmark Ingestion:** Ingests official NSE index benchmarks (`NIFTY 50`, `NIFTY 500`, etc.) and aligns stock performance against the broader market.
 - **Calculates 35+ Domain-Grouped Indicators:** Computes moving averages (SMA, EMA), Bollinger Bands, RSI, MACD, Volume ratios, 52-week rolling highs, and relative strength vs NIFTY 500.
-- **Interactive Web Terminal:** Displays ready-to-trade swing setups, customizable tables, and multi-panel candlestick charts with decoupled, high-performance caching.
+- **Interactive Web Terminal:** Displays the market snapshot with customizable tables, and (stock inspector component) multi-panel candlestick charts with decoupled, high-performance caching.
 
 ---
 
@@ -111,53 +111,18 @@ The tables used today are `daily_prices`, `securities`, `symbol_changes`, `corpo
 
 ---
 
-## 📐 Quantitative Screener Platform
+## 📐 Conditions and Strategies
 
-The project features an extensible, pluggable screener platform (`src/screeners/`) where screening rules are organized strictly by their nature (**Price**, **Volume**, **Crossover**, **Momentum**). Every screener lists the indicators it needs (`specs()`, so any length works) and supports deep diagnostic introspection (`explain()`), including **near-miss detection** (identifying equities that passed all criteria except a single bottleneck condition).
+There are **no prebuilt screeners** (removed in CL-24B). The product is a Chartink-style scanner: you compose a condition from prices, indicators with your own numbers, index prices, math, comparisons and groups, and the condition is true or false per stock per day.
 
-### 1. Registered Systematic Screeners
+- **Conditions** (`src/conditions/`): the condition engine is built in task CL-24C. Until it lands, `src/conditions/rules.py` is the safe rule parser (whitelisted operators, no `eval`) that evaluates rule text such as `close > sma_50 and rsi_14 < 70` against indicator columns. See [docs/condition_engine.md](docs/condition_engine.md).
+- **Indicators** (`src/computation/indicators/`): one plain function per indicator with default numbers, and a resolver that computes any custom number on demand.
+- **Strategies** (`src/strategies/`, `strategies/library/*.json`): a complete trading plan. The entry is a list of rules (all must be true); the plan also holds the stop, target, trailing stop, sizing and costs. See [docs/strategy_engine.md](docs/strategy_engine.md).
 
-| Key | Name | Category | Primary Setup Logic |
-| :--- | :--- | :--- | :--- |
-| `minervini_trend_template` | **Minervini Trend Template** | Trend | Mark Minervini's 8-point Stage 2 trend template (Close > 50 > 150 > 200 SMA, upward-sloping 200 SMA, +30% from 52W Low, within 25% of 52W High, RS leader). |
-| `breakout_52w_volume` | **52W High Breakout + Vol** | Breakout | Price within 2% or breaking 52-week High with heavy institutional volume surge (>= 2.0x 20D SMA) and minimum liquidity. |
-| `rsi_pullback_uptrend` | **RSI Pullback in Uptrend** | Pullback | Orderly, low-volume pullback (Vol <= 1.2x SMA) to bull market support zone (RSI 40-55) in an established uptrend (Close > 50 SMA > 200 SMA). |
-| `vcp_lite` | **VCP Lite (Volatility Contraction)** | Breakout | Volatility compression (ATR% <= 75% of 60D max ATR% or narrow Bollinger width) accompanied by volume dry-up (Vol <= 0.7x SMA) in an uptrend. |
-| `rs_leaders` | **Relative Strength Leaders** | Quantitative | Outperforming equities with RS 63D > 10% vs NIFTY 500 or top 20th percentile 252D return rank, trading above moving averages. |
-| `composite_trend` | **Composite Trend Regime** | Trend | Multi-indicator regime confluence: Close > 20 EMA & 50 SMA, recent Golden Cross or MA support, bullish MACD, RSI >= 50, and healthy volume. |
-| `swing_volume` | **Swing + Volume** | Swing | Uptrend alignment (EMA 20 > SMA 50 > SMA 200), within 15% of 52-week high, volume surge (> 1.5x 20D SMA), 20D SMA volume > 250k. |
-| `swing_momentum` | **Swing With Momentum** | Swing | Meets all Swing + Volume criteria with multi-quarter velocity (120D return >= 30%) and an anti-climax exhaustion guard (60D return <= 40%). |
-| `above_50_sma` / `above_200_sma` | **Above 50 / 200 SMA** | Classic | Classical moving average threshold filters. |
-| `golden_cross` / `death_cross` | **Golden / Death Cross** | Classic | State transition crossovers between 50 SMA and 200 SMA. |
-| `near_52w_high` / `near_52w_low` | **Near 52W High / Low** | Classic | Proximity filters to 52-week extremes. |
-| `rsi_oversold` / `rsi_overbought` | **RSI Oversold / Overbought**| Classic | Momentum oscillator extremes (RSI < 30 or RSI > 70). |
-| `bullish_macd_crossover` | **Bullish MACD Cross** | Classic | MACD line crossing above 9-day signal line. |
-| `high_volatility` / `bollinger_squeeze` | **Volatility & Squeeze** | Classic | Historical volatility thresholds and Bollinger Band compression. |
-
----
-
-### 2. Conditions Live in One File
-
-All screening conditions and the built-in screeners live in `src/screeners/catalog.py`. JSON screeners in `screeners/custom/` are loaded by `src/screeners/declarative.py`.
-
-### 3. Programmatic Usage Example
-
-```python
-from src.screeners.base import get_screener
-
-# Instantiate any registered screener
-screener = get_screener("minervini_trend_template")
-
-# Evaluate the newest day of every stock's history (indicators are added from the history)
-from src.computation import cache_reader
-
-history = cache_reader.read_history_up_to(screener.history_columns())
-explained_df = screener.screen(history)
-passing_stocks = explained_df[explained_df["passed"]]
-
-# Find near-miss stocks that failed by only 1 condition
-near_misses = explained_df[explained_df["near_miss"]]
-print(near_misses[["symbol", "near_miss_on"]])
+```bash
+python -m src.strategies.cli list
+python -m src.strategies.cli validate strategies/library/swing_volume_atr_trail.json
+python -m src.strategies.cli signals strategies/library/swing_volume_atr_trail.json
 ```
 
 ---
@@ -383,7 +348,7 @@ To open the dashboard without updating, use `streamlit run ui/Dashboard.py` (it 
 > **The dashboard is read-only:** it has no update button and never touches MySQL. The header badge shows `Data as of <date>`, taken from `indicators.meta.json`. To get new data, run `python run_pipeline.py --update` (new prices for **all** stocks, market cap, corporate actions, benchmarks, adjusted prices and the indicator cache; it loads up to *yesterday* only, because today's file may not be published yet), or `scripts/run_app.sh`, which updates and then opens the dashboard. The cache is rebuilt only by `--update` and `--refresh-cache`. Restart `streamlit run` after code changes: Streamlit does not reload imported `src/` modules.
 
 > [!NOTE]
-> **Screener pages (Swing + Volume, Swing With Momentum, Screener Explorer):** the sidebar has *Min market cap* (default 500 cr, **EQ stocks only**; SME and other series are never filtered) and an *Indicator settings* box built from the screener's parameters (changes last for the session; "Reset to defaults" undoes them; the locked defaults in the code never change). Results are shown in one tab per NSE series (EQ, BE, BZ, SM, ST), with near-miss stocks behind a toggle. The *Technical Stock Inspector* lists only the stocks shown on the page (passing first, then near-misses).
+> **Pages:** the dashboard is the only page for now. The screener pages were removed in CL-24B; the *Technical Stock Inspector* component stays in `ui/components/stock_inspector.py` and is reused by the condition builder page (later).
 
 ### 6. Run the Test Suite & Linters
 ```bash
@@ -623,19 +588,14 @@ nse-screener/
 │   │   ├── corporate_actions.py  # Official NSE reports downloader (actions, symbol changes, listing)
 │   │   ├── corporate_actions_parser.py # Reads NSE action text into exact price factors
 │   │   └── corporate_actions_store.py  # Stores the reports and reads adjustment-ready events
-│   └── screeners/                # Extensible Screener Platform
-│       ├── base.py               # Screener base class, explainability and the screener registry
-│       ├── catalog.py            # All conditions and the built-in screeners
-│       └── declarative.py        # JSON screeners from screeners/custom/
+│   ├── conditions/               # Condition engine (CL-24C); rules.py = the safe rule parser
+│   └── strategies/               # Strategy specs (entry rules, exit, sizing, costs), signals, CLI
+├── strategies/library/           # Strategy JSON files (entry rules, exit, sizing, costs)
 ├── tests/                        # Unit & integration tests (offline: SQLite and tmp folders)
 ├── ui/
 │   ├── data.py                  # Read-only Streamlit cache wrapper over cache_reader.py
-│   ├── Dashboard.py             # Entry point: the main screener dashboard page
-│   ├── components/              # Reusable UI components (terminal header, screener view)
-│   └── pages/
-│       ├── 2_swing_volume.py    # Screener page: Swing + Volume
-│       ├── 3_swing_momentum.py  # Screener page: Swing With Momentum
-│       └── 4_screener_explorer.py # Interactive Screener Explorer & Diagnostics
+│   ├── Dashboard.py             # Entry point: the dashboard page
+│   └── components/              # Reusable UI components (terminal header, dashboard helpers, stock inspector)
 ├── scripts/
 │   ├── run_app.sh               # Daily update, then the dashboard
 │   ├── backup_db.sh             # Compressed mysqldump to ~/nse-backups (keeps the newest 5)

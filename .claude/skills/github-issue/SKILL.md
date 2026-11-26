@@ -32,7 +32,7 @@ What should have happened.
 Short, sanitized log excerpt. No secrets, no personal data, no data exports.
 
 ## Impact
-Which part is affected and how badly (screeners, ingestion, UI, backtests).
+Which part is affected and how badly (conditions, ingestion, UI, backtests).
 
 ## Suggested fix
 Your proposal, or "needs a maintainer decision" with the options.

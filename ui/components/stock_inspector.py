@@ -24,14 +24,14 @@ def render_stock_inspector(
 ) -> None:
     """Renders interactive candlestick, volume, and momentum charts for a chosen equity.
 
-    ``symbols`` limits (and orders) the ticker list, e.g. to the stocks a screener returned.
+    ``symbols`` limits (and orders) the ticker list, e.g. to the stocks a scan returned.
     Without it every symbol in ``df_with_indicators`` is offered.
     """
     if symbols is not None:
         all_symbols = list(symbols)
         if not all_symbols:
             st.markdown("### 🔍 Technical Stock Inspector")
-            st.info("No stocks to inspect: nothing passed this screener with the current settings.")
+            st.info("No stocks to inspect: no stocks match the current filters.")
             return
     elif df_with_indicators.empty or "symbol" not in df_with_indicators.columns:
         return
@@ -104,7 +104,7 @@ def render_stock_inspector(
             delta=f"{daily_change:+.2f}%",
         )
     with m2:
-        # today's volume against the 20-day average as of yesterday (the screeners' definition)
+        # today's volume against the 20-day average as of yesterday (the strategies' volume rule)
         yesterday_average = (
             stock_df.iloc[-2]["volume_sma_20"] if len(stock_df) > 1 else latest["volume_sma_20"]
         )

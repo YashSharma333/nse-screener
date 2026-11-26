@@ -2,9 +2,9 @@
 
 Instructions for AI coding agents working in this repository. Humans can read it too.
 
-NSE (India) end-of-day stock screener, strategy engine and backtester on daily Bhavcopy data. Long-only, delivery, no F&O. Read [docs/PROJECT_BLUEPRINT.md](docs/PROJECT_BLUEPRINT.md) for the goal, history, status and roadmap. If it disagrees with the code, the code wins: say so in the PR and fix the blueprint.
+NSE (India) end-of-day stock scanner (user-built conditions), strategy engine and backtester on daily Bhavcopy data. Long-only, delivery, no F&O. Read [docs/PROJECT_BLUEPRINT.md](docs/PROJECT_BLUEPRINT.md) for the goal, history, status and roadmap. If it disagrees with the code, the code wins: say so in the PR and fix the blueprint.
 
-Terms: **Screener** = a filter list. **Strategy** = a complete trading plan. **Signal** = entry condition true at the close of day `t`. **Trade** = a signal that was taken (filled at the open of `t+1`).
+Terms: **Condition** = a saved tree of parts (prices, indicators with custom numbers, index prices, math, comparisons, groups) that is true or false per stock per day. **Strategy** = a complete trading plan. **Signal** = entry condition true at the close of day `t`. **Trade** = a signal that was taken (filled at the open of `t+1`).
 
 ## Commands
 
@@ -34,7 +34,7 @@ Gotchas:
 
 Data flows one way:
 
-`src/ingestion/` (Bhavcopy prices, PR-bundle market cap, securities, renames, benchmark, corporate actions; `nse_files.py` is the one polite download helper) -> MySQL (`src/db/models.py`) -> `src/etl/adjust.py` (adjusted prices) -> `src/db/data_service.py` + `src/computation/indicators/calculator.py` (indicators cached in `data/processed/indicators.parquet` plus `indicators.meta.json`) -> `src/screeners/` -> `src/strategies/` -> `ui/` (Streamlit, read-only: it reads the Parquet cache and may not import `src.db`, `src.ingestion` or `src.etl`; a test enforces it). `src/etl/daily_update.py` runs the whole chain (`python run_pipeline.py --update`, stops at the first failure). The backtest engine is not built yet.
+`src/ingestion/` (Bhavcopy prices, PR-bundle market cap, securities, renames, benchmark, corporate actions; `nse_files.py` is the one polite download helper) -> MySQL (`src/db/models.py`) -> `src/etl/adjust.py` (adjusted prices) -> `src/db/data_service.py` + `src/computation/indicators/calculator.py` (indicators cached in `data/processed/indicators.parquet` plus `indicators.meta.json`) -> `src/conditions/` -> `src/strategies/` -> `ui/` (Streamlit, read-only: it reads the Parquet cache and may not import `src.db`, `src.ingestion` or `src.etl`; a test enforces it). `src/etl/daily_update.py` runs the whole chain (`python run_pipeline.py --update`, stops at the first failure). The backtest engine is not built yet.
 
 - **Settings:** `config/settings.py` holds every tunable number (indicator window, `SPLIT_*` thresholds, file paths). Logic never hardcodes periods, thresholds or ratios.
 - **Indicator cache:** only the last `INDICATOR_HISTORY_YEARS` are cached, plus warm-up bars. It rebuilds when the DB max date, adjustment factors, benchmark date or schema change. **Bump `INDICATORS_SCHEMA_VERSION` (in `src/db/data_service.py`) whenever columns are added.** Never load 10 years of all stocks into one DataFrame; backtests read per-year pieces.
@@ -42,7 +42,7 @@ Data flows one way:
 - **Stocks screened:** all regular series (EQ, BE, BZ, SM, ST) are loaded, delisted ones included; price history is never deleted. Market cap is NULL before 2024-02-01 and is never guessed.
 - **Symbol renames:** raw `daily_prices.symbol` is never relabelled. Renames live in `symbol_changes` and are joined at read time (`prices_for` in `src/ingestion/renames.py`).
 - **DB layer:** `src/db/upsert.py` is the dialect-agnostic upsert. A function that takes a session uses it as given and does not commit it; the caller commits. Use `use_session` from `src/common/db.py` for "use this session or open one".
-- **Screeners and strategies:** `Screener` (`base.py`) exposes `rules()` and `explain()`; screeners register through `registry.py`; built-ins live in `catalog.py`, JSON ones in `screeners/custom/`. Strategies are `StrategySpec` JSON files in `strategies/library/`; `src/screeners/rules.py` is the whitelisting rule parser (no `eval`/`exec`). See `docs/strategy_engine.md` and `docs/adding_a_screener.md`.
+- **Conditions and strategies:** conditions are JSON trees evaluated by `src/conditions/` (until CL-24C lands, `src/conditions/rules.py` is the whitelisting rule parser, no `eval`/`exec`). Strategies are `StrategySpec` JSON files in `strategies/library/` whose entry is a condition. See `docs/strategy_engine.md` and `docs/condition_engine.md`.
 
 ## Rules that must not change
 
