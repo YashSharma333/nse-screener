@@ -1,50 +1,29 @@
 """
 Historical Signal Evaluation Engine
 ===================================
-Evaluates a strategy's entry rules across historical multi-symbol panels without
-look-ahead bias. Provides sparse signal projection for memory-efficient backtest ingestion.
+Evaluates a strategy's entry condition (a condition tree, see docs/condition_engine.md) across
+a multi-symbol price history without look-ahead bias: the answer on day ``t`` uses data up to the
+close of ``t`` only. Provides sparse signal projection for memory-efficient backtest ingestion.
 """
 
 from __future__ import annotations
 
-import functools
-import operator
-from collections.abc import Sequence
-
 import pandas as pd
 
-from src.conditions.rules import evaluate_rule
+from src.conditions import evaluate
+from src.strategies.spec import EntrySpec
 
 
-def evaluate_rules_history(
-    rules: Sequence[str],
-    df: pd.DataFrame,
+def evaluate_entry(
+    entry: EntrySpec, table: pd.DataFrame, benchmarks: pd.DataFrame | None = None
 ) -> pd.Series:
-    """Evaluate a sequence of rule expressions and return logical AND boolean Series.
+    """True on every stock-day of ``table`` where the entry condition is true at the close.
 
-    Parameters
-    ----------
-    rules : Sequence[str]
-        List of rule expression strings (e.g. ["close > sma_50", "rsi_14 < 45"]).
-    df : pd.DataFrame
-        Historical market data panel.
-
-    Returns
-    -------
-    pd.Series
-        Boolean Series aligned with df.index indicating which rows pass all rules.
+    ``table`` is a price history (symbol, date, open, high, low, close, volume, ...) with many
+    days per stock, because indicators and "N days ago" parts need the earlier rows.
+    ``benchmarks`` (index_code, date, close) is needed only when the condition has an index part.
     """
-    if df.empty:
-        return pd.Series(dtype=bool, index=df.index)
-
-    if not rules:
-        return pd.Series(True, index=df.index, dtype=bool)
-
-    masks = [evaluate_rule(rule_expr, df) for rule_expr in rules if rule_expr.strip()]
-    if not masks:
-        return pd.Series(True, index=df.index, dtype=bool)
-
-    return functools.reduce(operator.and_, masks)
+    return evaluate(entry.condition, table, benchmarks)
 
 
 def to_sparse(signals_df: pd.DataFrame) -> pd.DataFrame:

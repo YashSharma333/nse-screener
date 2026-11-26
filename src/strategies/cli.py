@@ -18,13 +18,17 @@ import sys
 from pathlib import Path
 
 from config.settings import PROJECT_ROOT, setup_logging
-from src.conditions.rules import MissingIndicatorError
-from src.db.data_service import load_indicator_snapshot
+from src.computation import cache_reader
+from src.computation.indicators.calculator import atr
 from src.strategies.risk import initial_stop, position_size, target_price
-from src.strategies.signals import evaluate_rules_history, to_sparse
+from src.strategies.signals import evaluate_entry, to_sparse
 from src.strategies.spec import StrategySpec
 
 STRATEGIES_DIR = PROJECT_ROOT / "strategies" / "library"
+
+# What an entry condition and the ATR stop read. Rolling parts (averages, highs, "N days ago")
+# need every day of the history, not one row per stock.
+HISTORY_COLUMNS = ["open", "high", "low", "close", "volume", "market_cap"]
 
 
 def cmd_validate(path: str) -> int:
@@ -44,7 +48,7 @@ def cmd_validate(path: str) -> int:
         print(f"Description: {spec.description}")
         print("-" * 60)
         print("ENTRY LOGIC:")
-        print(f"  Rules:     {spec.entry.inline_rules}")
+        print(f"  Condition: {_describe_condition(spec)}")
         print("-" * 60)
         print("EXIT LOGIC (RISK CONTAINMENT):")
         print(f"  Stop-Loss: {spec.exit.stop_loss_type} (value: {spec.exit.stop_loss_value})")
@@ -81,7 +85,7 @@ def cmd_list() -> int:
         return 0
 
     print("=" * 80)
-    print(f"{'Strategy Name':<30} {'Status':<10} {'Entry Rules':<18} {'Stop':<10} {'Hash':<8}")
+    print(f"{'Strategy Name':<30} {'Status':<10} {'Entry Parts':<18} {'Stop':<10} {'Hash':<8}")
     print("-" * 80)
 
     for f in json_files:
@@ -90,13 +94,19 @@ def cmd_list() -> int:
             stop_str = f"{spec.exit.stop_loss_type[:3]}:{spec.exit.stop_loss_value}"
             print(
                 f"{spec.name[:28]:<30} {spec.status:<10} "
-                f"{len(spec.entry.inline_rules)} rule(s)".ljust(19)
-                + f"{stop_str:<10} {spec.spec_hash[:8]}"
+                f"{_describe_condition(spec)[:16]:<18} {stop_str:<10} {spec.spec_hash[:8]}"
             )
         except Exception as exc:
             print(f"{f.name:<30} ERROR      {str(exc)[:35]}")
     print("=" * 80)
     return 0
+
+
+def _describe_condition(spec: StrategySpec) -> str:
+    """A short text for the entry: how many parts its top-level group has."""
+    condition = spec.entry.condition
+    children = getattr(condition, "children", None)
+    return f"{len(children)} parts" if children else condition.type
 
 
 def _needs_atr(spec: StrategySpec) -> bool:
@@ -107,7 +117,7 @@ def _needs_atr(spec: StrategySpec) -> bool:
 
 
 def cmd_signals(path: str, equity: float = 500000.0) -> int:
-    """Evaluate strategy signals on latest market snapshot and display sizing."""
+    """Evaluate the entry condition on the newest day of the cache and display sizing."""
     p = Path(path)
     if not p.is_file():
         print(f"Error: Strategy file not found: {path}")
@@ -119,20 +129,24 @@ def cmd_signals(path: str, equity: float = 500000.0) -> int:
         print(f"Invalid strategy specification: {exc}")
         return 1
 
-    # Load latest snapshot
-    snapshot, _, _is_live, msg = load_indicator_snapshot(snapshot_only=True)
-    if snapshot.empty:
-        print(f"No market data available in database or cache. ({msg})")
+    # Entry conditions look back, so read the whole history of every stock.
+    history = cache_reader.read_history(None, columns=HISTORY_COLUMNS)
+    if history.empty:
+        print(f"No market data available in the indicator cache. ({cache_reader.NO_CACHE_MESSAGE})")
         return 1
 
-    # The entry signal is true where ALL of the strategy's rules are true.
-    signals_df = snapshot.copy()
-    signals_df["signal"] = evaluate_rules_history(spec.entry.inline_rules, snapshot)
-    sparse = to_sparse(signals_df)
-
-    # An ATR stop cannot be sized without the ATR: stop instead of guessing a number.
-    if _needs_atr(spec) and "atr_14" not in snapshot.columns:
-        raise MissingIndicatorError(["atr_14"])
+    # The signal is true where the entry condition is true; only the newest day is shown.
+    history = history.sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
+    history["signal"] = evaluate_entry(spec.entry, history)
+    if _needs_atr(spec):
+        # An ATR stop cannot be sized without the ATR: stop instead of guessing a number.
+        try:
+            history["atr_14"] = atr(history, 14)
+        except KeyError as error:
+            raise ValueError(
+                f"The ATR stop needs the high, low and close columns: {error}"
+            ) from error
+    sparse = to_sparse(history[history["date"] == history["date"].max()])
 
     print("=" * 80)
     print(f"STRATEGY SIGNAL RADAR: {spec.name} (v{spec.version})")
@@ -155,6 +169,9 @@ def cmd_signals(path: str, equity: float = 500000.0) -> int:
         sym = str(row["symbol"])
         close = float(row["close"])
         atr_val = float(row["atr_14"]) if "atr_14" in row.index else None
+        if atr_val is not None and atr_val != atr_val:  # NaN: fewer than 14 days of history
+            print(f"{sym:<12} ₹{close:<9.2f} Error: ATR unknown (fewer than 14 days of history)")
+            continue
 
         try:
             stop_p = initial_stop(

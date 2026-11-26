@@ -15,10 +15,24 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.conditions.rules import validate_rule
+from src.conditions.nodes import TRUE_FALSE, Node
 
 # Valid strategy lifecycle statuses
 StrategyStatus = Literal["draft", "candidate", "approved", "retired"]
+
+
+def _reject_removed_field(data: Any, field: str, what: str) -> None:
+    """Old strategy files held rule text or a screener name: say what to write instead."""
+    if isinstance(data, dict) and field in data:
+        raise ValueError(
+            f"{what} was removed. Write the entry as entry.condition, a condition tree "
+            "(see docs/condition_engine.md)."
+        )
+
+
+def _must_be_true_false(part: Any, where: str) -> None:
+    if part.kind != TRUE_FALSE:
+        raise ValueError(f"{where} must be a true/false condition, got a {part.kind} part")
 
 
 class EntrySpec(BaseModel):
@@ -26,32 +40,26 @@ class EntrySpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    inline_rules: list[str] = Field(
+    condition: Node = Field(
         ...,
-        min_length=1,
         description=(
-            "Rule expressions (for example 'close > sma_50'); the entry signal is true when "
-            "ALL of them are true. Checked with the safe rule parser (no eval)."
+            "The entry condition tree (docs/condition_engine.md). The signal is true on the "
+            "stock-days where it is true at the close; the trade fills at the next open."
         ),
     )
 
     @model_validator(mode="before")
     @classmethod
-    def reject_removed_screener_key(cls, data: Any) -> Any:
-        """Old strategy files used screener_key; say what to write instead."""
-        if isinstance(data, dict) and "screener_key" in data:
-            raise ValueError(
-                "entry.screener_key was removed (the prebuilt screeners are gone). "
-                "Write the entry as entry.inline_rules, a list of rule expressions."
-            )
+    def reject_removed_fields(cls, data: Any) -> Any:
+        _reject_removed_field(data, "screener_key", "entry.screener_key")
+        _reject_removed_field(data, "inline_rules", "entry.inline_rules (rule text)")
         return data
 
-    @field_validator("inline_rules")
+    @field_validator("condition")
     @classmethod
-    def validate_rules_syntax(cls, rules: list[str]) -> list[str]:
-        for r in rules:
-            validate_rule(r)
-        return rules
+    def condition_is_true_false(cls, condition: Any) -> Any:
+        _must_be_true_false(condition, "entry.condition")
+        return condition
 
 
 class ExitSpec(BaseModel):
@@ -94,16 +102,23 @@ class ExitSpec(BaseModel):
         le=30,
         description="Maximum holding period in trading sessions (1 to 30 days for swing strategy).",
     )
-    exit_rules: list[str] = Field(
+    exit_rules: list[Node] = Field(
         default_factory=list,
-        description="Optional conditional exit rules (e.g. 'close < sma_50').",
+        description="Optional conditional exit conditions (condition trees, true = exit).",
     )
+
+    @field_validator("exit_rules", mode="before")
+    @classmethod
+    def reject_rule_text(cls, rules: Any) -> Any:
+        if isinstance(rules, list) and any(isinstance(rule, str) for rule in rules):
+            raise ValueError("exit_rules are condition trees now, not rule text")
+        return rules
 
     @field_validator("exit_rules")
     @classmethod
-    def validate_exit_rules(cls, rules: list[str]) -> list[str]:
-        for r in rules:
-            validate_rule(r)
+    def exit_rules_are_true_false(cls, rules: list[Any]) -> list[Any]:
+        for rule in rules:
+            _must_be_true_false(rule, "an exit rule")
         return rules
 
     @model_validator(mode="after")

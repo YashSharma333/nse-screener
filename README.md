@@ -115,9 +115,9 @@ The tables used today are `daily_prices`, `securities`, `symbol_changes`, `corpo
 
 There are **no prebuilt screeners** (removed in CL-24B). The product is a Chartink-style scanner: you compose a condition from prices, indicators with your own numbers, index prices, math, comparisons and groups, and the condition is true or false per stock per day.
 
-- **Conditions** (`src/conditions/`): the condition engine is built in task CL-24C. Until it lands, `src/conditions/rules.py` is the safe rule parser (whitelisted operators, no `eval`) that evaluates rule text such as `close > sma_50 and rsi_14 < 70` against indicator columns. See [docs/condition_engine.md](docs/condition_engine.md).
+- **Conditions** (`src/conditions/`): a condition is a JSON tree of parts (price fields, indicators with custom numbers, index prices, window max/min/sum/count, math, comparisons incl. crossed above/below, groups all / any / any_1 / any_2). `parse_condition`, `evaluate`, `save_condition` and `load_condition` are the entry points; the answer is true or false per stock per day and never looks ahead. See [docs/condition_engine.md](docs/condition_engine.md).
 - **Indicators** (`src/computation/indicators/`): one plain function per indicator with default numbers, and a resolver that computes any custom number on demand.
-- **Strategies** (`src/strategies/`, `strategies/library/*.json`): a complete trading plan. The entry is a list of rules (all must be true); the plan also holds the stop, target, trailing stop, sizing and costs. See [docs/strategy_engine.md](docs/strategy_engine.md).
+- **Strategies** (`src/strategies/`, `strategies/library/*.json`): a complete trading plan. The entry is a condition tree (`entry.condition`); the plan also holds the stop, target, trailing stop, sizing and costs. See [docs/strategy_engine.md](docs/strategy_engine.md).
 
 ```bash
 python -m src.strategies.cli list
@@ -588,7 +588,7 @@ nse-screener/
 │   │   ├── corporate_actions.py  # Official NSE reports downloader (actions, symbol changes, listing)
 │   │   ├── corporate_actions_parser.py # Reads NSE action text into exact price factors
 │   │   └── corporate_actions_store.py  # Stores the reports and reads adjustment-ready events
-│   ├── conditions/               # Condition engine (CL-24C); rules.py = the safe rule parser
+│   ├── conditions/               # Condition engine: nodes, evaluate, groups, save/load JSON
 │   └── strategies/               # Strategy specs (entry rules, exit, sizing, costs), signals, CLI
 ├── strategies/library/           # Strategy JSON files (entry rules, exit, sizing, costs)
 ├── tests/                        # Unit & integration tests (offline: SQLite and tmp folders)

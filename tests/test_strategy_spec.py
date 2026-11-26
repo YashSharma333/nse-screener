@@ -18,6 +18,14 @@ from src.strategies.spec import (
     StrategySpec,
 )
 
+NUM = {"type": "number", "value": 1}
+SIMPLE_ENTRY = {
+    "type": "compare",
+    "op": ">",
+    "left": {"type": "field", "name": "close"},
+    "right": {"type": "indicator", "name": "sma", "params": {"length": 50}},
+}
+
 
 def test_valid_strategy_spec_creation():
     """Verify instantiating a valid StrategySpec with full defaults and custom params."""
@@ -27,7 +35,7 @@ def test_valid_strategy_spec_creation():
         description="Flagship swing volume expansion strategy with 2R profit target.",
         status="candidate",
         entry=EntrySpec(
-            inline_rules=["close > sma_50", "rsi_14 < 65"],
+            condition=SIMPLE_ENTRY,
         ),
         exit=ExitSpec(
             stop_loss_type="atr",
@@ -68,22 +76,41 @@ def test_strategy_spec_mandatory_stop_loss_validation():
         ExitSpec(stop_loss_type="atr", stop_loss_value=2.0, target_type="rr_multiple")
 
 
-def test_entry_rejects_the_removed_screener_key():
-    """screener_key was removed in CL-24B. The error says what to write instead."""
-    with pytest.raises(ValidationError, match="inline_rules"):
-        EntrySpec(screener_key="swing_volume", inline_rules=["close > sma_50"])
+def test_entry_rejects_the_removed_screener_key_and_rule_text():
+    """screener_key and inline_rules were removed. The error says what to write instead."""
+    with pytest.raises(ValidationError, match=r"entry\.condition"):
+        EntrySpec.model_validate({"screener_key": "swing_volume", "condition": SIMPLE_ENTRY})
+    with pytest.raises(ValidationError, match=r"entry\.condition"):
+        EntrySpec.model_validate({"inline_rules": ["close > sma_50"]})
 
 
-def test_entry_needs_at_least_one_rule():
-    """An entry with no rule would signal every stock every day."""
+def test_entry_needs_a_true_false_condition():
+    """A bare number part cannot decide a signal."""
+    with pytest.raises(ValidationError, match="true/false"):
+        EntrySpec.model_validate({"condition": {"type": "field", "name": "close"}})
     with pytest.raises(ValidationError):
-        EntrySpec(inline_rules=[])
+        EntrySpec.model_validate({})  # an entry with no condition would signal nothing or all
+
+
+def test_entry_condition_errors_say_where_the_mistake_is():
+    bad = {"type": "compare", "op": ">", "left": {"type": "field", "name": "vwap"}, "right": NUM}
+    with pytest.raises(ValidationError, match=r"condition\.compare\.left\.field\.name"):
+        EntrySpec.model_validate({"condition": bad})
+
+
+def test_exit_rules_are_condition_trees_not_text():
+    with pytest.raises(ValidationError, match="condition trees"):
+        ExitSpec(stop_loss_type="percentage", stop_loss_value=5.0, exit_rules=["close < sma_50"])
+    with pytest.raises(ValidationError, match="true/false"):
+        ExitSpec(stop_loss_type="percentage", stop_loss_value=5.0, exit_rules=[NUM])
+    spec = ExitSpec(stop_loss_type="percentage", stop_loss_value=5.0, exit_rules=[SIMPLE_ENTRY])
+    assert spec.exit_rules[0].type == "compare"
 
 
 def test_library_strategy_with_screener_key_is_rejected():
     """An old strategy file that still has screener_key fails to load with a helpful message."""
     old = (
-        '{"name": "Old", "entry": {"screener_key": "swing_volume", "inline_rules": []},'
+        '{"name": "Old", "description": "x", "entry": {"screener_key": "swing_volume"},'
         ' "exit": {"stop_loss_type": "percentage", "stop_loss_value": 4.0}}'
     )
     with pytest.raises(ValidationError, match="screener_key"):
@@ -105,7 +132,7 @@ def test_strategy_spec_serialization_round_trip():
         name="RSI Momentum Swing",
         description="Fast momentum shift with trailing ATR stop.",
         status="approved",
-        entry=EntrySpec(inline_rules=["rsi_9 > 50"]),
+        entry=EntrySpec(condition=SIMPLE_ENTRY),
         exit=ExitSpec(
             stop_loss_type="atr",
             stop_loss_value=1.5,
@@ -127,12 +154,15 @@ def test_strategy_spec_serialization_round_trip():
         assert loaded_from_file.spec_hash == spec.spec_hash
 
 
-def test_every_library_strategy_loads_with_inline_rules():
-    """The shipped strategies are valid and every one has an entry made of inline rules."""
+def test_every_library_strategy_loads_with_a_condition_tree():
+    """The shipped strategies are valid and every entry is a group of conditions."""
     from config.settings import PROJECT_ROOT
 
     files = sorted((PROJECT_ROOT / "strategies" / "library").glob("*.json"))
     assert files
     for f in files:
         spec = StrategySpec.from_json(f)
-        assert spec.entry.inline_rules, f.name
+        assert spec.entry.condition.type == "group", f.name
+        assert spec.entry.condition.mode == "all", f.name
+        # saving and loading the spec again changes nothing
+        assert StrategySpec.from_json(spec.to_json()).spec_hash == spec.spec_hash, f.name
