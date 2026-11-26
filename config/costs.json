@@ -2,7 +2,7 @@
   "_meta": {
     "description": "NSE India Cash Equity Trading Cost Schedule & Statutory Rates",
     "updated_at": "2026-03-01",
-    "notes": "Verified against official circulars and statutes"
+    "notes": "Verified against official circulars and statutes. This file is the only place the rates are defined; strategies may override single rates."
   },
   "rates": {
     "exchange_turnover_rate": 0.0000307,
@@ -22,6 +22,7 @@
     "dp_charge_per_scrip_day": 0.0,
     "dp_rule": "Charged once per scrip per sell day; broker-specific",
     "default_brokerage_per_order": 0.0,
-    "default_slippage_bps": 5.0
+    "default_slippage_bps": 10.0,
+    "slippage_note": "Backtest rule (CLAUDE.md): 10 bps per side unless a strategy overrides it. Changed from 5.0 on 2026-11-26 (task CL-27)"
   }
 }

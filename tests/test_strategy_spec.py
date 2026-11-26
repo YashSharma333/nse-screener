@@ -166,3 +166,40 @@ def test_every_library_strategy_loads_with_a_condition_tree():
         assert spec.entry.condition.mode == "all", f.name
         # saving and loading the spec again changes nothing
         assert StrategySpec.from_json(spec.to_json()).spec_hash == spec.spec_hash, f.name
+
+
+def _strategy_with_costs(costs: dict | None) -> StrategySpec:
+    data = {
+        "name": "Cost Test",
+        "description": "Strategy used to test cost overrides.",
+        "entry": {"condition": SIMPLE_ENTRY},
+        "exit": {"stop_loss_type": "percentage", "stop_loss_value": 5.0},
+    }
+    if costs is not None:
+        data["costs"] = costs
+    return StrategySpec.from_json(data)
+
+
+def test_strategy_without_costs_block_uses_costs_json_rates():
+    from src.strategies.costs import load_cost_rates
+
+    rates = _strategy_with_costs(None).costs.rates()
+    file_rates = load_cost_rates()
+    assert rates["default_slippage_bps"] == file_rates["default_slippage_bps"] == 10.0
+    assert rates["stt_buy_rate"] == file_rates["stt_buy_rate"]
+
+
+def test_cost_override_changes_only_that_rate():
+    from src.strategies.costs import load_cost_rates
+
+    rates = _strategy_with_costs({"slippage_bps": 25.0}).costs.rates()
+    assert rates["default_slippage_bps"] == 25.0
+    assert rates["stt_buy_rate"] == load_cost_rates()["stt_buy_rate"]
+
+
+def test_library_strategies_hold_no_copied_cost_rates():
+    """Rates live only in config/costs.json; the shipped strategies hold no copy."""
+    import json
+
+    for path in Path("strategies/library").glob("*.json"):
+        assert "costs" not in json.loads(path.read_text(encoding="utf-8")), path.name
