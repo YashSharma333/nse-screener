@@ -73,9 +73,10 @@ def parse_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
         "--update",
         action="store_true",
         help=(
-            "The daily routine: load new prices, market cap, securities and symbol changes, "
-            "corporate actions, check bogus sessions (report only), refresh benchmarks, adjust "
-            "prices and rebuild the indicator cache. Stops at the first failing step."
+            "The daily routine: load new prices up to today, market cap, securities, symbol "
+            "changes and corporate actions, check new dates for bogus sessions (report only), "
+            "refresh benchmarks, adjust prices and rebuild the indicator cache. Stops at the "
+            "first failing step."
         ),
     )
     parser.add_argument(

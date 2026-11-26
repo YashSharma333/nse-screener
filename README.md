@@ -53,7 +53,7 @@ flowchart LR
 - **Safe Database Writes (`src/db/upsert.py`):** Loads rows in bounded chunks using dialect-agnostic upserts (`INSERT ... ON DUPLICATE KEY UPDATE` on MySQL, `ON CONFLICT DO UPDATE` on SQLite).
 - **Official Corporate Actions (`src/ingestion/corporate_actions.py`):** Downloads NSE's official corporate actions (exact split and bonus ratios), symbol changes and the listing master with one session and one retry method, keeps the raw responses and fails loudly if NSE changes a format. Beginner guide: [docs/corporate_actions.md](docs/corporate_actions.md).
 - **Corporate Action Adjustments (`src/etl/adjust.py`):** Applies the official split and bonus factors, enforces cross-sectional sanity checks, and vectorizes cumulative factor adjustments.
-- **Daily Routine (`src/etl/daily_update.py`):** The nine-step `--update` that keeps everything current.
+- **Daily Routine (`src/etl/daily_update.py`):** The seven-step `--update` that keeps everything current.
 - **Indicators Grouped by Nature (`src/computation/indicators/`):**
   - `price.py`: SMA, EMA, WMA, Bollinger Bands, ATR, 52-week High/Low, rolling volatility.
   - `volume.py`: Volume SMAs, volume expansion ratios, dry-up volume tests.
@@ -177,16 +177,16 @@ alembic upgrade head
 # Run the entire daily routine in order with fail-fast error handling
 python run_pipeline.py --update
 ```
-* **Why it exists:** One command for the whole daily routine. It runs 9 steps in sequence and stops at the first failure with a clear message naming the step:
-  1. `load_prices`: day after the last loaded date up to yesterday (all regular series). First it retries every calendar day between the first and last stored date that has no prices and is not a confirmed non-trading day (a day that failed once, for example an HTML block page); days still missing are listed in `reports/price_gaps.csv` and counted in the summary
+* **Why it exists:** One command for the whole daily routine. It runs 7 steps in sequence and stops at the first failure with a clear message naming the step:
+  1. `load_prices`: day after the last loaded date up to **today** (all regular series; if NSE has not published today's file yet, the 404 is not remembered as a holiday and the next run tries again). First it retries every calendar day between the first and last stored date that has no prices and is not a confirmed non-trading day (a day that failed once, for example an HTML block page); days still missing are listed in `reports/price_gaps.csv` and counted in the summary
   2. `market_cap`: market cap for the new dates (from 2024-02-01; older dates stay NULL)
-  3. `refresh_securities_and_renames`: `EQUITY_L.csv` and `symbolchange.csv`
-  4. `refresh_corporate_actions`: official splits, bonuses, dividends
-  5. `check_bogus_sessions`: lists dates that look like copies of the previous day in `reports/bogus_sessions.csv`; **report only, nothing is ever deleted**
-  6. `refresh_benchmarks`: NIFTY index closes for the new days (needed by the relative-strength indicators)
-  7. `rebuild_adjusted_prices`: adjusts the newly loaded rows
-  8. `rebuild_indicator_cache`: rebuilds `data/processed/indicators.parquet` when the data changed
-  9. `summary`: prints new dates, rows added, symbols and warnings
+  3. `refresh_reference_data`: `EQUITY_L.csv`, `symbolchange.csv` and NSE's official corporate actions (splits, bonuses, dividends); warns only when new events need your review
+  4. `check_bogus_sessions`: checks only the dates loaded in this run and appends dates that look like copies of the previous day to `reports/bogus_sessions.csv`; **report only, nothing is ever deleted**
+  5. `refresh_benchmarks`: NIFTY index closes for the new days (needed by the relative-strength indicators)
+  6. `adjust_prices`: adjusts the newly loaded rows
+  7. `rebuild_indicator_cache`: rebuilds `data/processed/indicators.parquet` when the data changed
+
+  The summary (new dates, rows added, symbols, warnings) is printed at the end.
 * **What it changes:** the database tables and the Parquet indicator cache. Safe to run twice: when nothing is new it does nothing.
 
 ##### 2. Ingest Raw Bhavcopy Prices (`--load-prices`)
@@ -345,7 +345,7 @@ To open the dashboard without updating, use `streamlit run ui/Dashboard.py` (it 
 > **Data Availability:** Synthetic demo-mode data was removed in Phase 1; the dashboard needs the Parquet cache (`data/processed/indicators.parquet`). If it is missing, the dashboard displays a banner with the commands that create it.
 
 > [!NOTE]
-> **The dashboard is read-only:** it has no update button and never touches MySQL. The header badge shows `Data as of <date>`, taken from `indicators.meta.json`. To get new data, run `python run_pipeline.py --update` (new prices for **all** stocks, market cap, corporate actions, benchmarks, adjusted prices and the indicator cache; it loads up to *yesterday* only, because today's file may not be published yet), or `scripts/run_app.sh`, which updates and then opens the dashboard. The cache is rebuilt only by `--update` and `--refresh-cache`. Restart `streamlit run` after code changes: Streamlit does not reload imported `src/` modules.
+> **The dashboard is read-only:** it has no update button and never touches MySQL. The header badge shows `Data as of <date>`, taken from `indicators.meta.json`. To get new data, run `python run_pipeline.py --update` (new prices for **all** stocks, market cap, corporate actions, benchmarks, adjusted prices and the indicator cache; it also tries today's file; if NSE has not published it yet, the next run picks it up), or `scripts/run_app.sh`, which updates and then opens the dashboard. The cache is rebuilt only by `--update` and `--refresh-cache`. Restart `streamlit run` after code changes: Streamlit does not reload imported `src/` modules.
 
 > [!NOTE]
 > **Pages:** the dashboard is the only page for now. The screener pages were removed in CL-24B; the *Technical Stock Inspector* component stays in `ui/components/stock_inspector.py` and is reused by the condition builder page (later).
@@ -401,9 +401,9 @@ If an ingestion tool simply checks for a successful HTTP 200 response, it will r
 
 ### 3. Checking for Bogus Duplicate Sessions
 
-The loaders reject such files, but the daily `--update` also double-checks the stored data (step 5). A date is flagged when at least 90% of the symbols it shares with the previous stored date have identical close **and** volume (at least 100 common symbols). Genuine special sessions have different prices and are not flagged.
+The loaders reject such files, but the daily `--update` also double-checks the stored data (step 4, only for the dates just loaded). A date is flagged when at least 90% of the symbols it shares with the previous stored date have identical close **and** volume (at least 100 common symbols). Genuine special sessions have different prices and are not flagged.
 
-The check **only reports**: it writes `reports/bogus_sessions.csv` (`date`, `weekday`, `%identical`) and adds a warning to the update summary. No code path in the project deletes price rows; if a date is truly bogus, ask the maintainer what to do.
+The check **only reports**: it appends to `reports/bogus_sessions.csv` (`date`, `weekday`, `%identical`; earlier findings stay) and adds a warning to the update summary. No code path in the project deletes price rows; if a date is truly bogus, ask the maintainer what to do.
 
 ### 4. The 3-Day Recent Date Rule
 
@@ -576,7 +576,7 @@ nse-screener/
 │   ├── etl/
 │   │   ├── adjust.py             # Applies official corporate actions to build adjusted prices
 │   │   ├── bogus_sessions.py     # Read-only check for duplicated sessions
-│   │   └── daily_update.py       # The 9-step daily routine behind --update
+│   │   └── daily_update.py       # The 7-step daily routine behind --update
 │   ├── ingestion/
 │   │   ├── nse_files.py          # The one polite download helper for official NSE files
 │   │   ├── bhavcopy_parser.py    # Parsers for both Bhavcopy formats

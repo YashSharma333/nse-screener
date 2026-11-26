@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,7 @@ from src.db.models import AdjFactor, Base, DailyPrice
 from src.etl.adjust import adjust_new_rows, cumulative_factors, rebuild_adjusted
 from src.etl.daily_update import run_daily_update
 from tests.official_actions import add_official_action, add_placeholder_action
+from tests.update_helpers import stub_steps
 
 
 def test_cumulative_factors_two_events():
@@ -197,7 +199,9 @@ def _price_row(symbol: str, day: date, close: float, **extra) -> DailyPrice:
     )  # fmt: skip
 
 
-def test_step_7_fills_rows_with_missing_adjusted_prices(tmp_path: Path) -> None:
+def test_adjust_step_fills_rows_with_missing_adjusted_prices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Rows left with NULL adj_* by an earlier failed run are fixed even with no new dates (B4)."""
     engine = create_engine(f"sqlite:///{tmp_path / 'adj.db'}")
     Base.metadata.create_all(engine)
@@ -206,8 +210,8 @@ def test_step_7_fills_rows_with_missing_adjusted_prices(tmp_path: Path) -> None:
         session.add_all(_price_row("INFY", date(2024, 1, d), 1500.0 + d) for d in (1, 2, 3))
         session.commit()
 
-        stubs = {i: (lambda: {}) for i in range(1, 10) if i != 7}  # only the real step 7 runs
-        run_daily_update(session=session, today=date(2024, 1, 4), step_handlers=stubs)
+        stub_steps(monkeypatch, keep=("step_adjust_prices",))  # only the real adjust step runs
+        run_daily_update(session=session, today=date(2024, 1, 4))
 
         rows = session.scalars(select(DailyPrice).order_by(DailyPrice.date)).all()
         assert [float(r.adj_close) for r in rows] == [1501.0, 1502.0, 1503.0]

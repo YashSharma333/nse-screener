@@ -24,6 +24,7 @@ from src.ingestion.price_loader import (
     load_raw_prices,
 )
 from tests.test_bhavcopy_parser import make_old_zip, make_udiff_zip
+from tests.update_helpers import stub_steps
 
 
 @pytest.fixture
@@ -420,13 +421,16 @@ def test_find_price_gaps_empty_table(sqlite_session: Session):
     assert find_price_gaps(sqlite_session, non_trading_days=set()) == []
 
 
-def _skip_steps_2_to_9() -> dict:
-    """Step handlers that do nothing, so a test can exercise step 1 alone."""
-    return {i: (lambda: {}) for i in range(2, 10)}
+def _only_load_prices_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every daily-update step except the price load a no-op."""
+    stub_steps(monkeypatch, keep=("step_load_prices",))
 
 
-def test_update_retries_gap_day_and_fills_it(sqlite_session: Session):
+def test_update_retries_gap_day_and_fills_it(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """A day missing between two stored days is downloaded again by --update."""
+    _only_load_prices_step(monkeypatch)
     _add_price_row(sqlite_session, date(2026, 11, 2))
     _add_price_row(sqlite_session, date(2026, 11, 4))
     gap_day = date(2026, 11, 3)
@@ -440,7 +444,6 @@ def test_update_retries_gap_day_and_fills_it(sqlite_session: Session):
         session=sqlite_session,
         fetch_fn=fake_fetch,
         today=date(2026, 11, 5),
-        step_handlers=_skip_steps_2_to_9(),
     )
 
     stored = set(sqlite_session.scalars(select(DailyPrice.date)).all())
@@ -448,10 +451,13 @@ def test_update_retries_gap_day_and_fills_it(sqlite_session: Session):
     assert summary.price_gaps == []
 
 
-def test_update_reports_gap_that_still_fails(sqlite_session: Session):
+def test_update_reports_gap_that_still_fails(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """A gap day that fails again stays in the summary and in reports/price_gaps.csv."""
     from config import settings
 
+    _only_load_prices_step(monkeypatch)
     _add_price_row(sqlite_session, date(2026, 11, 2))
     _add_price_row(sqlite_session, date(2026, 11, 4))
 
@@ -462,7 +468,6 @@ def test_update_reports_gap_that_still_fails(sqlite_session: Session):
         session=sqlite_session,
         fetch_fn=bad_fetch,
         today=date(2026, 11, 5),
-        step_handlers=_skip_steps_2_to_9(),
     )
 
     assert summary.price_gaps == [date(2026, 11, 3)]

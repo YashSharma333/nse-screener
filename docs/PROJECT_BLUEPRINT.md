@@ -167,7 +167,7 @@ NSE archives: Bhavcopy (2 formats), PR bundles (market cap), EQUITY_L, symbolcha
   ui/ (Streamlit: Dashboard; stock inspector component; condition builder page later)
 
   src/etl/daily_update.py runs the whole chain in order: `python run_pipeline.py --update`
-  (9 steps, stops at the first failure). `scripts/run_app.sh` = update, then the dashboard.
+  (7 steps, stops at the first failure). `scripts/run_app.sh` = update, then the dashboard.
 ```
 
 ### Key files
