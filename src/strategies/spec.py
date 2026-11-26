@@ -16,6 +16,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.conditions.nodes import TRUE_FALSE, Node
+from src.strategies.costs import load_cost_rates
 
 # Valid strategy lifecycle statuses
 StrategyStatus = Literal["draft", "candidate", "approved", "retired"]
@@ -159,61 +160,48 @@ class PositionSizingSpec(BaseModel):
 
 
 class CostModelSpec(BaseModel):
-    """Specification for transaction charges, statutory fees, and slippage."""
+    """Per-strategy overrides of the trading costs.
+
+    Every field is optional. A field left out (None) uses the rate in ``config/costs.json``,
+    which is the only place the rates are defined. Override a rate only to test a what-if.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    slippage_bps: float = Field(
-        default=5.0,
-        ge=0,
-        description="Execution slippage in basis points (5.0 bps = 0.05%).",
+    slippage_bps: float | None = Field(default=None, ge=0, description="Slippage in basis points.")
+    dp_charge_per_scrip_day: float | None = Field(
+        default=None, ge=0, description="Broker DP fee per scrip per sell day."
     )
-    dp_charge_per_scrip_day: float = Field(
-        default=0.0,
-        ge=0,
-        description="Broker DP fee per scrip per sell day (broker-specific).",
+    exchange_turnover_rate: float | None = Field(
+        default=None, ge=0, description="NSE cash transaction charge, fraction of turnover."
     )
-    exchange_turnover_rate: float = Field(
-        default=0.0000307,
-        ge=0,
-        description="NSE Cash Transaction Charge (0.00307% / ₹307/cr per circular NSE/FA/73061).",
+    sebi_turnover_rate: float | None = Field(
+        default=None, ge=0, description="SEBI turnover fee, fraction of turnover."
     )
-    sebi_turnover_rate: float = Field(
-        default=0.000001,
-        ge=0,
-        description="SEBI turnover fee (₹10 per crore / 0.0001%).",
+    stt_buy_rate: float | None = Field(default=None, ge=0, description="STT on delivery buy.")
+    stt_sell_rate: float | None = Field(default=None, ge=0, description="STT on delivery sell.")
+    stamp_duty_rate: float | None = Field(default=None, ge=0, description="Stamp duty on buy.")
+    gst_rate: float | None = Field(
+        default=None, ge=0, description="GST on (brokerage + exchange fee + SEBI fee)."
     )
-    stt_buy_rate: float = Field(
-        default=0.001,
-        ge=0,
-        description="Securities Transaction Tax on delivery buy (0.1%).",
+    brokerage_per_order: float | None = Field(
+        default=None, ge=0, description="Brokerage charge per order."
     )
-    stt_sell_rate: float = Field(
-        default=0.001,
-        ge=0,
-        description="Securities Transaction Tax on delivery sell (0.1%).",
+    stcg_tax_rate: float | None = Field(
+        default=None, ge=0, le=1.0, description="Short-term capital gains tax rate."
     )
-    stamp_duty_rate: float = Field(
-        default=0.00015,
-        ge=0,
-        description="State stamp duty on delivery buy (0.015%).",
-    )
-    gst_rate: float = Field(
-        default=0.18,
-        ge=0,
-        description="Goods and Services Tax on (brokerage + exchange fee + SEBI fee) (18%).",
-    )
-    brokerage_per_order: float = Field(
-        default=0.0,
-        ge=0,
-        description="Brokerage charge per order (e.g. ₹0 or ₹20 flat).",
-    )
-    stcg_tax_rate: float = Field(
-        default=0.20,
-        ge=0,
-        le=1.0,
-        description="Short-Term Capital Gains (STCG) tax rate parameter under Section 111A.",
-    )
+
+    def rates(self) -> dict[str, Any]:
+        """The rates to use: costs.json with this strategy's overrides applied on top."""
+        merged = dict(load_cost_rates())
+        # these two fields are named differently in costs.json
+        key_in_file = {
+            "slippage_bps": "default_slippage_bps",
+            "brokerage_per_order": "default_brokerage_per_order",
+        }
+        for field, value in self.model_dump(exclude_none=True).items():
+            merged[key_in_file.get(field, field)] = value
+        return merged
 
 
 class StrategySpec(BaseModel):

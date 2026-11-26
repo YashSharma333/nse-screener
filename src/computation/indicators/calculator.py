@@ -140,10 +140,11 @@ def true_range(df: pd.DataFrame) -> pd.Series:
 
 
 def atr(df: pd.DataFrame, length: int = 14, output: str = "value") -> pd.Series:
-    """Average true range; ``output`` is "value" or "percent" (of the close)."""
+    """Average true range, Wilder smoothing (alpha = 1/length, like RSI) so it matches charting
+    platforms; ``output`` is "value" or "percent" (of the close)."""
     check_length(length)
     check_output(output, OUTPUT_CHOICES["atr"])
-    average = ewm(df, true_range(df), span=length, adjust=False, min_periods=length)
+    average = ewm(df, true_range(df), alpha=1.0 / length, adjust=False, min_periods=length)
     if output == "value":
         return average
     return (average / df["close"].replace(0, np.nan)) * 100.0

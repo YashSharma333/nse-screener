@@ -91,12 +91,12 @@ The entry is shortened here; the full tree is in `strategies/library/swing_volum
     "max_portfolio_heat_percent": 5.0
   },
   "costs": {
-    "slippage_bps": 5.0,
-    "dp_charge_per_scrip_day": 0.0,
-    "exchange_turnover_rate": 0.0000307
+    "slippage_bps": 15.0
   }
 }
 ```
+
+The `costs` block is optional and holds overrides only. Leave it out and every rate comes from `config/costs.json`, the only place the rates are defined (read once, then cached). If `costs.json` is missing or incomplete, loading fails with a clear error; there is no built-in copy of the rates.
 
 ---
 
@@ -119,7 +119,7 @@ All risk containment functions are pure, deterministic mathematical functions:
 
 ## 4. Statutory Cost Schedule (NSE Cash Delivery)
 
-Trading costs are strictly calculated using verified official fee schedules (`config/costs.json`):
+Trading costs are strictly calculated using verified official fee schedules (`config/costs.json`, the single source of the rates):
 
 | Cost Item | Rate | Source / Circular |
 |---|---|---|
@@ -129,7 +129,7 @@ Trading costs are strictly calculated using verified official fee schedules (`co
 | **SEBI Turnover Fee** | ₹10 per crore (0.0001%) | SEBI (Stock Brokers and Sub-brokers) Regulations |
 | **GST** | 18% on (Brokerage + Exchange + SEBI) | CGST & IGST Acts |
 | **DP Charge** | Broker-specific; charged once per scrip per sell day | Brokerage contract (e.g. ₹0 or ₹15.00) |
-| **Slippage** | 5.0 bps default | Execution model |
+| **Slippage** | 10 bps per side by default (`default_slippage_bps`) | Backtest rule in `CLAUDE.md` |
 | **STCG (Tax)** | 20% on realized net gain | Section 111A, Income-tax Act (user parameter) |
 
 ---

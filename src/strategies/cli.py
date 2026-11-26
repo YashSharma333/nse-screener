@@ -63,7 +63,7 @@ def cmd_validate(path: str) -> int:
         print("SIZING & COSTS:")
         print(f"  Risk:      {spec.sizing.risk_percent}% of equity per trade")
         print(f"  Max Pos:   {spec.sizing.max_positions}")
-        print(f"  Slippage:  {spec.costs.slippage_bps} bps")
+        print(f"  Slippage:  {spec.costs.rates()['default_slippage_bps']} bps")
         print("-" * 60)
         print(f"Spec Hash:   {spec.spec_hash}")
         print("=" * 60)

@@ -9,52 +9,55 @@ Implements realistic cost modeling for NSE cash equity delivery trades:
 - SEBI Turnover Fee: ₹10 per crore (0.0001%).
 - GST: 18% on (brokerage + exchange charges + SEBI charges).
 - Depository Participant (DP) Charge: broker-specific, charged once per scrip per sell day.
-- Execution Slippage: applied to execution fills (default: 5.0 bps).
+- Execution Slippage: applied to execution fills (default: 10 bps, ``default_slippage_bps``).
 - Short-Term Capital Gains (STCG): 20% under Section 111A of Income-tax Act (user parameter).
+
+Every rate lives in ``config/costs.json`` and nowhere else. The file is read once and cached.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import cache
 from typing import Any
 
 from config.settings import PROJECT_ROOT
 
 COSTS_CONFIG_PATH = PROJECT_ROOT / "config" / "costs.json"
 
-# Verified Default Rates
-DEFAULT_EXCHANGE_RATE = 0.0000307  # ₹307 per crore per NSE/FA/73061 (effective 1 Mar 2026)
-DEFAULT_SEBI_RATE = 0.000001  # ₹10 per crore
-DEFAULT_STT_BUY_RATE = 0.001  # 0.1% delivery buy
-DEFAULT_STT_SELL_RATE = 0.001  # 0.1% delivery sell
-DEFAULT_STAMP_DUTY_RATE = 0.00015  # 0.015% delivery buy
-DEFAULT_GST_RATE = 0.18  # 18% on (brokerage + exchange + sebi)
-DEFAULT_SLIPPAGE_BPS = 5.0  # 5 bps
-DEFAULT_STCG_TAX_RATE = 0.20  # 20% Section 111A
+# Every rate the calculators read. A costs.json without one of them is rejected.
+REQUIRED_RATE_KEYS = (
+    "exchange_turnover_rate",
+    "sebi_turnover_rate",
+    "stt_buy_rate",
+    "stt_sell_rate",
+    "stamp_duty_rate",
+    "gst_rate",
+    "stcg_tax_rate",
+    "dp_charge_per_scrip_day",
+    "default_brokerage_per_order",
+    "default_slippage_bps",
+)
 
 
+@cache
 def load_cost_rates() -> dict[str, Any]:
-    """Load cost rates from config/costs.json with fallback to verified defaults."""
-    if COSTS_CONFIG_PATH.exists():
-        try:
-            with COSTS_CONFIG_PATH.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("rates", {})
-        except Exception:
-            pass
-    return {
-        "exchange_turnover_rate": DEFAULT_EXCHANGE_RATE,
-        "sebi_turnover_rate": DEFAULT_SEBI_RATE,
-        "stt_buy_rate": DEFAULT_STT_BUY_RATE,
-        "stt_sell_rate": DEFAULT_STT_SELL_RATE,
-        "stamp_duty_rate": DEFAULT_STAMP_DUTY_RATE,
-        "gst_rate": DEFAULT_GST_RATE,
-        "stcg_tax_rate": DEFAULT_STCG_TAX_RATE,
-        "dp_charge_per_scrip_day": 0.0,
-        "default_brokerage_per_order": 0.0,
-        "default_slippage_bps": DEFAULT_SLIPPAGE_BPS,
-    }
+    """Return the rates from config/costs.json (read once, then cached).
+
+    There is no built-in copy of the rates on purpose: a second copy can go stale without anyone
+    noticing. A missing, unreadable or incomplete file raises RuntimeError naming the problem.
+    In tests, patch ``COSTS_CONFIG_PATH`` and call ``load_cost_rates.cache_clear()``.
+    """
+    try:
+        with COSTS_CONFIG_PATH.open("r", encoding="utf-8") as f:
+            rates = json.load(f)["rates"]
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        raise RuntimeError(f"Cannot read the cost rates from {COSTS_CONFIG_PATH}: {exc}") from exc
+    missing = [key for key in REQUIRED_RATE_KEYS if key not in rates]
+    if missing:
+        raise RuntimeError(f"{COSTS_CONFIG_PATH} is missing rates: {', '.join(missing)}")
+    return rates
 
 
 @dataclass(frozen=True)
@@ -91,22 +94,23 @@ class TradeCosts:
 def calculate_buy_costs(
     price: float,
     shares: int,
-    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+    slippage_bps: float | None = None,
     brokerage: float = 0.0,
     rates: dict[str, Any] | None = None,
 ) -> TradeCosts:
     """Calculate execution costs and statutory fees for a delivery buy order."""
     r = rates or load_cost_rates()
+    slippage_bps = r["default_slippage_bps"] if slippage_bps is None else slippage_bps
     slippage_pct = slippage_bps / 10000.0
     fill_price = price * (1.0 + slippage_pct)
     turnover = fill_price * shares
     slippage_cost = (fill_price - price) * shares
 
-    exch_rate = float(r.get("exchange_turnover_rate", DEFAULT_EXCHANGE_RATE))
-    sebi_rate = float(r.get("sebi_turnover_rate", DEFAULT_SEBI_RATE))
-    stt_rate = float(r.get("stt_buy_rate", DEFAULT_STT_BUY_RATE))
-    stamp_rate = float(r.get("stamp_duty_rate", DEFAULT_STAMP_DUTY_RATE))
-    gst_rate = float(r.get("gst_rate", DEFAULT_GST_RATE))
+    exch_rate = float(r["exchange_turnover_rate"])
+    sebi_rate = float(r["sebi_turnover_rate"])
+    stt_rate = float(r["stt_buy_rate"])
+    stamp_rate = float(r["stamp_duty_rate"])
+    gst_rate = float(r["gst_rate"])
 
     exchange_fee = round(turnover * exch_rate, 2)
     sebi_fee = round(turnover * sebi_rate, 2)
@@ -131,22 +135,23 @@ def calculate_buy_costs(
 def calculate_sell_costs(
     price: float,
     shares: int,
-    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+    slippage_bps: float | None = None,
     brokerage: float = 0.0,
     dp_charge: float = 0.0,
     rates: dict[str, Any] | None = None,
 ) -> TradeCosts:
     """Calculate execution costs and statutory fees for a delivery sell order."""
     r = rates or load_cost_rates()
+    slippage_bps = r["default_slippage_bps"] if slippage_bps is None else slippage_bps
     slippage_pct = slippage_bps / 10000.0
     fill_price = price * (1.0 - slippage_pct)
     turnover = fill_price * shares
     slippage_cost = (price - fill_price) * shares
 
-    exch_rate = float(r.get("exchange_turnover_rate", DEFAULT_EXCHANGE_RATE))
-    sebi_rate = float(r.get("sebi_turnover_rate", DEFAULT_SEBI_RATE))
-    stt_rate = float(r.get("stt_sell_rate", DEFAULT_STT_SELL_RATE))
-    gst_rate = float(r.get("gst_rate", DEFAULT_GST_RATE))
+    exch_rate = float(r["exchange_turnover_rate"])
+    sebi_rate = float(r["sebi_turnover_rate"])
+    stt_rate = float(r["stt_sell_rate"])
+    gst_rate = float(r["gst_rate"])
 
     exchange_fee = round(turnover * exch_rate, 2)
     sebi_fee = round(turnover * sebi_rate, 2)
@@ -173,7 +178,7 @@ def calculate_round_trip_costs(
     buy_price: float,
     sell_price: float,
     shares: int,
-    slippage_bps: float = DEFAULT_SLIPPAGE_BPS,
+    slippage_bps: float | None = None,
     brokerage_per_order: float = 0.0,
     dp_charge_per_scrip_day: float = 0.0,
     include_stcg: bool = False,
@@ -205,7 +210,7 @@ def calculate_round_trip_costs(
 
     stcg_tax = 0.0
     if include_stcg and net_profit > 0:
-        stcg_rate = float(r.get("stcg_tax_rate", DEFAULT_STCG_TAX_RATE))
+        stcg_rate = float(r["stcg_tax_rate"])
         stcg_tax = round(net_profit * stcg_rate, 2)
 
     profit_after_tax = round(net_profit - stcg_tax, 2)
