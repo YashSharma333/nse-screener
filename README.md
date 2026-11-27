@@ -214,7 +214,7 @@ python run_pipeline.py --load-mcap --from 2024-02-01 --to 2024-06-30
 ##### 4. Securities Master and Symbol Changes (part of `--update`)
 There is no separate flag: step 3 of `python run_pipeline.py --update` imports the official equity listing master (`EQUITY_L.csv`) into `securities` and the official ticker rename history (`symbolchange.csv`) into `symbol_changes`.
 * **Why it exists:** Tracks all listed equities, ISINs, listing dates and active trading status, and resolves ticker rename chains across NSE's historical changes.
-* **What it changes:** Upserts into the `securities` and `symbol_changes` tables.
+* **What it changes:** Upserts into the `securities` and `symbol_changes` tables. A rename is stored only if its old or new symbol is a stock we hold (in `daily_prices` or `securities`): `symbolchange.csv` has no ISIN, so this is how ETF and bond renames stay out.
 
 ##### 5. Download Official Corporate Actions (`--download-corporate-actions`)
 ```bash
@@ -292,7 +292,7 @@ PYTHONPATH=. python scripts/drop_funds.py
 PYTHONPATH=. python scripts/drop_funds.py --apply
 ```
 * **Why it exists:** ETFs and fund units (ISIN starts with `INF`, setting `EXCLUDED_ISIN_PREFIXES`) are not screened. New loads skip them already (Bhavcopy parser, Parquet cache read, corporate actions). This script removes the ones loaded earlier.
-* **What it changes:** deletes the fund rows from `daily_prices`, `adj_factors`, `corporate_actions`, `symbol_changes`, `securities` and rewrites the per-day Parquet caches without them. Run `python run_pipeline.py --update` afterwards so the indicator cache is rebuilt.
+* **What it changes:** deletes the fund rows from `daily_prices`, `adj_factors`, `corporate_actions`, `symbol_changes`, `securities` and rewrites the per-day Parquet caches without them. Run `python run_pipeline.py --update` afterwards so the indicator cache is rebuilt. The script finds funds by ISIN, so renames of funds that no longer have price rows are not found by it; the rename import now skips them (see section 4), and rows left from before can be deleted with a `DELETE FROM symbol_changes` where neither symbol is in `daily_prices` or `securities`.
 
 ---
 

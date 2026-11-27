@@ -79,6 +79,18 @@ class RenameChains:
         ]
 
 
+def keep_held_symbols(session: Session, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only renames where the old or the new symbol is a stock we hold.
+
+    WHY: symbolchange.csv has no ISIN, so the fund (ETF) rule cannot see fund renames. Funds
+    are not stored, so a rename that matches no stored price and no listed security is not ours.
+    """
+    wanted = {r["old_symbol"] for r in records} | {r["new_symbol"] for r in records}
+    held = set(session.scalars(select(DailyPrice.symbol).where(DailyPrice.symbol.in_(wanted))))
+    held |= set(session.scalars(select(Security.symbol).where(Security.symbol.in_(wanted))))
+    return [r for r in records if r["old_symbol"] in held or r["new_symbol"] in held]
+
+
 def load_renames(session: Session | None = None) -> int:
     """Download and upsert symbol changes from symbolchange.csv into symbol_changes.
 
@@ -99,10 +111,14 @@ def load_renames(session: Session | None = None) -> int:
         return 0
 
     def _execute_load(s: Session) -> int:
+        records_kept = keep_held_symbols(s, records)
+        if not records_kept:
+            logger.info("No symbol change belongs to a stock we hold.")
+            return 0
         count = upsert_rows(
             session=s,
             model=SymbolChange,
-            rows=records,
+            rows=records_kept,
             index_elements=["old_symbol", "new_symbol", "effective_date"],
         )
         logger.info("Upserted %d symbol changes into `symbol_changes` table", count)
