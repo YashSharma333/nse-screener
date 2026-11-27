@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from scripts.crosscheck_52w import run_crosscheck_for_date
+from scripts.crosscheck_52w import print_summary, run_crosscheck_for_date
 from src.db.models import AdjFactor, Base, DailyPrice, SymbolChange
 from src.etl.adjust import (
     CorporateActionsMissingError,
@@ -23,6 +23,7 @@ from src.etl.adjust import (
     read_official_events,
     rebuild_adjusted,
 )
+from src.ingestion import nse_files
 from tests.official_actions import add_official_action, add_prices
 
 
@@ -166,7 +167,7 @@ def test_override_apply_and_ignore_still_win(session: Session, tmp_path: Path) -
 
 
 def test_crosscheck_flags_difference_over_tolerance_and_does_not_modify_prices(
-    session: Session,
+    session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """52-week cross-check flags discrepancies and leaves database prices completely untouched."""
     check_day = date(2024, 11, 18)
@@ -182,8 +183,7 @@ def test_crosscheck_flags_difference_over_tolerance_and_does_not_modify_prices(
         b'"CHECK_SYM","EQ","200.00","01-AUG-2024","100.00","17-NOV-2023"\n'
     )
 
-    def fake_fetch(_url: str) -> bytes:
-        return fake_csv
+    monkeypatch.setattr(nse_files, "fetch", lambda _url: fake_csv)
 
     # Record DB state before crosscheck
     before_prices = [
@@ -191,7 +191,7 @@ def test_crosscheck_flags_difference_over_tolerance_and_does_not_modify_prices(
         for r in session.scalars(select(DailyPrice)).all()
     ]
 
-    recs = run_crosscheck_for_date(check_day, session, fetch_fn=fake_fetch)
+    recs = run_crosscheck_for_date(check_day, session)
     assert len(recs) == 2  # 52W_HIGH and 52W_LOW
 
     high_rec = next(r for r in recs if r["metric"] == "52W_HIGH")
@@ -272,3 +272,31 @@ def test_big_gaps_classification() -> None:
     up = gaps[gaps["symbol"] == "STOCK_B"].iloc[0]
     assert up["move_type"] == "GAP_UP"
     assert up["pct_change"] == 30.0
+
+
+def test_crosscheck_summary_states_the_definition_and_passes_or_fails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The printed summary names the 365-day definition; above the tolerance it says FAIL."""
+    close = pd.DataFrame(
+        [
+            {
+                "date": "2024-11-18",
+                "symbol": "AAA",
+                "metric": "52W_HIGH",
+                "official": 100.0,
+                "ours": 100.5,
+                "difference_pct": 0.5,
+            }
+        ]
+    )
+    far = close.assign(difference_pct=25.0)
+
+    assert print_summary(close) is True
+    first = capsys.readouterr().out
+    assert "365 calendar days" in first and "not the 252-bar cache column" in first
+    assert "Result: PASS" in first
+
+    assert print_summary(far) is False
+    assert "Result: FAIL" in capsys.readouterr().out
+    assert print_summary(close.iloc[0:0]) is False  # nothing compared is not a pass

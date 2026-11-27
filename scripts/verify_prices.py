@@ -15,10 +15,9 @@ import logging
 import random
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -29,8 +28,8 @@ from config import settings
 from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
+from src.ingestion import nse_files
 from src.ingestion.bhavcopy_parser import parse_bhavcopy
-from src.ingestion.nse_files import bhavcopy_url, fetch
 
 logger = logging.getLogger(__name__)
 
@@ -118,181 +117,91 @@ def _values_equal(val_a: Any, val_b: Any) -> bool:
     return str(val_a).strip() == str(val_b).strip()
 
 
-def verify_prices(
-    check_dates: Sequence[date] | None = None,
-    *,
-    session: Session | None = None,
-    fetch_fn: Callable[..., bytes] = fetch,
-    parse_fn: Callable[[bytes, date | str], pd.DataFrame] = parse_bhavcopy,
-    report_path: Path | None = None,
-    pause_seconds: float = 0.2,
-    sleep_fn: Callable[[float], Any] = time.sleep,
-) -> tuple[int, pd.DataFrame]:
-    """Verify stored daily_prices by re-downloading fresh files directly from NSE.
+COMPARED_COLUMNS = ("series", "open", "high", "low", "close", "prev_close", "volume", "isin")
 
-    Compares every column: symbol, series, open, high, low, close, prev_close, volume, isin.
-    In addition, spot-checks 3-5 individual stocks per date.
 
-    Returns
-    -------
-    tuple[int, pd.DataFrame]
-        Total number of differences found, and DataFrame summary per date.
-    """
-    rep_path = report_path or (settings.REPORTS_DIR / "verify_prices.csv")
-    rep_path.parent.mkdir(parents=True, exist_ok=True)
+def download_fresh_file(d: date) -> pd.DataFrame:
+    """Download and parse NSE's Bhavcopy for ``d``, bypassing every local cache."""
+    file_df = parse_bhavcopy(nse_files.fetch(nse_files.bhavcopy_url(d)), d)
+    if settings.PRICE_DOWNLOAD_PAUSE_SECONDS > 0:
+        time.sleep(settings.PRICE_DOWNLOAD_PAUSE_SECONDS)  # be polite to NSE
+    return file_df
 
-    summary_rows: list[dict[str, Any]] = []
-    total_diff_count: int = 0
 
-    def _run_verification(s: Session) -> None:
-        nonlocal total_diff_count
-        dates_to_check: list[date]
-        if check_dates is not None:
-            dates_to_check = list(check_dates)
-        else:
-            all_dates = get_trading_dates(s)
-            dates_to_check = select_check_dates(all_dates, sample_size=40, seed=7)
+def changed_columns(file_row: pd.Series, db_row: DailyPrice) -> list[str]:
+    """Describe every compared column where the file and the database row disagree."""
+    return [
+        f"{db_row.symbol}.{column}: file={file_row.get(column)!r} != db={getattr(db_row, column)!r}"
+        for column in COMPARED_COLUMNS
+        if not _values_equal(file_row.get(column), getattr(db_row, column))
+    ]
 
-        logger.info("Starting price accuracy check across %d dates...", len(dates_to_check))
 
-        for idx, d in enumerate(dates_to_check, 1):
-            url = bhavcopy_url(d)
-            try:
-                # 1. Fresh download from NSE (bypasses all local caches)
-                raw_bytes = fetch_fn(url)
-                file_df = parse_fn(raw_bytes, d)
-                if pause_seconds > 0:
-                    sleep_fn(pause_seconds)
-            except Exception as exc:
-                logger.error("Failed fresh download for %s: %s", d, exc)
-                summary_rows.append(
-                    {
-                        "date": d.isoformat(),
-                        "file_rows": 0,
-                        "db_rows": 0,
-                        "missing_in_db": 0,
-                        "extra_in_db": 0,
-                        "changed_values": 1,
-                        "status": f"FETCH_ERROR: {exc}",
-                    }
-                )
-                total_diff_count += 1
-                continue
+def compare_day(file_df: pd.DataFrame, db_rows: list[DailyPrice]) -> dict[str, Any]:
+    """Compare one day's file with the stored rows: missing, extra and changed symbols."""
+    file_by_symbol = {row["symbol"]: row for _, row in file_df.iterrows()}
+    db_by_symbol = {row.symbol: row for row in db_rows}
 
-            # 2. Query database for date d
-            stmt = select(DailyPrice).where(DailyPrice.date == d)
-            db_records = list(s.scalars(stmt).all())
+    details: list[str] = []
+    changed = 0
+    for symbol in sorted(file_by_symbol.keys() & db_by_symbol.keys()):
+        differences = changed_columns(file_by_symbol[symbol], db_by_symbol[symbol])
+        details.extend(differences)
+        changed += bool(differences)
 
-            # Convert DB records to mapping keyed by symbol
-            db_by_sym = {row.symbol: row for row in db_records}
-            file_by_sym = {row["symbol"]: row for _, row in file_df.iterrows()}
+    missing = len(file_by_symbol.keys() - db_by_symbol.keys())
+    extra = len(db_by_symbol.keys() - file_by_symbol.keys())
+    return {
+        "file_rows": len(file_by_symbol),
+        "db_rows": len(db_by_symbol),
+        "missing_in_db": missing,
+        "extra_in_db": extra,
+        "changed_values": changed,
+        "details": "; ".join(details[:5]),
+        "status": "PASS" if missing + extra + changed == 0 else "FAIL",
+    }
 
-            file_symbols = set(file_by_sym.keys())
-            db_symbols = set(db_by_sym.keys())
 
-            missing_in_db = len(file_symbols - db_symbols)
-            extra_in_db = len(db_symbols - file_symbols)
+def verify_one_date(session: Session, d: date) -> dict[str, Any]:
+    """One report row for date ``d``: fresh NSE file against the stored prices."""
+    try:
+        file_df = download_fresh_file(d)
+    except Exception as exc:  # any failure (network, bad file) counts as a difference
+        logger.error("Failed fresh download for %s: %s", d, exc)
+        return {
+            "date": d.isoformat(),
+            "file_rows": 0,
+            "db_rows": 0,
+            "missing_in_db": 0,
+            "extra_in_db": 0,
+            "changed_values": 1,
+            "details": "",
+            "status": f"FETCH_ERROR: {exc}",
+        }
 
-            changed_values = 0
-            mismatch_details: list[str] = []
+    db_rows = list(session.scalars(select(DailyPrice).where(DailyPrice.date == d)).all())
+    row = {"date": d.isoformat(), **compare_day(file_df, db_rows)}
+    if row["status"] == "FAIL":
+        logger.error(
+            "Date %s MISMATCH: missing=%d, extra=%d, changed=%d. First diffs: %s",
+            d,
+            row["missing_in_db"],
+            row["extra_in_db"],
+            row["changed_values"],
+            row["details"],
+        )
+    return row
 
-            # Compare all matching symbols on all columns
-            common_symbols = sorted(file_symbols & db_symbols)
-            for sym in common_symbols:
-                f_row = file_by_sym[sym]
-                db_row = db_by_sym[sym]
 
-                cols_to_check = (
-                    ("series", f_row["series"], db_row.series),
-                    ("open", f_row["open"], db_row.open),
-                    ("high", f_row["high"], db_row.high),
-                    ("low", f_row["low"], db_row.low),
-                    ("close", f_row["close"], db_row.close),
-                    ("prev_close", f_row["prev_close"], db_row.prev_close),
-                    ("volume", f_row["volume"], db_row.volume),
-                    ("isin", f_row.get("isin"), db_row.isin),
-                )
+def count_differences(report: pd.DataFrame) -> int:
+    """Total differences in the report (missing + extra + changed symbols, fetch errors count 1)."""
+    if report.empty:
+        return 0
+    return int(report[["missing_in_db", "extra_in_db", "changed_values"]].sum().sum())
 
-                sym_changed = False
-                for col_name, f_val, db_val in cols_to_check:
-                    if not _values_equal(f_val, db_val):
-                        sym_changed = True
-                        mismatch_details.append(
-                            f"{sym}.{col_name}: file={f_val!r} != db={db_val!r}"
-                        )
 
-                if sym_changed:
-                    changed_values += 1
-
-            # 3. Multi-Stock Sample Verification (3 to 5 stocks)
-            # Pick 1 fixed anchor stock (RELIANCE if available, else first) + 2-4 random stocks
-            sample_stocks: list[str] = []
-            if "RELIANCE" in common_symbols:
-                sample_stocks.append("RELIANCE")
-            elif common_symbols:
-                sample_stocks.append(common_symbols[0])
-
-            other_candidates = [s_sym for s_sym in common_symbols if s_sym not in sample_stocks]
-            if other_candidates:
-                # Deterministic sample per date
-                date_rng = random.Random(int(d.strftime("%Y%m%d")))
-                sample_count = min(3, len(other_candidates))
-                sample_stocks.extend(date_rng.sample(other_candidates, sample_count))
-
-            sample_info = []
-            for s_sym in sample_stocks:
-                f_row = file_by_sym[s_sym]
-                d_row = db_by_sym[s_sym]
-                sample_info.append(
-                    f"{s_sym}(series={d_row.series}, close={d_row.close}, vol={d_row.volume})"
-                )
-
-            date_diffs = missing_in_db + extra_in_db + changed_values
-            total_diff_count += date_diffs
-            status = "PASS" if date_diffs == 0 else "FAIL"
-
-            logger.info(
-                "[%d/%d] Date %s: %d file rows, %d DB rows -> %s. Spot-checked: %s",
-                idx,
-                len(dates_to_check),
-                d,
-                len(file_symbols),
-                len(db_symbols),
-                status,
-                ", ".join(sample_info),
-            )
-
-            if date_diffs > 0:
-                logger.error(
-                    "Date %s MISMATCH: missing=%d, extra=%d, changed=%d. First diffs: %s",
-                    d,
-                    missing_in_db,
-                    extra_in_db,
-                    changed_values,
-                    mismatch_details[:5],
-                )
-
-            summary_rows.append(
-                {
-                    "date": d.isoformat(),
-                    "file_rows": len(file_symbols),
-                    "db_rows": len(db_symbols),
-                    "missing_in_db": missing_in_db,
-                    "extra_in_db": extra_in_db,
-                    "changed_values": changed_values,
-                    "details": "; ".join(mismatch_details[:5]),
-                    "status": status,
-                }
-            )
-
-    with use_session(session) as s:
-        _run_verification(s)
-
-    report_df = pd.DataFrame(summary_rows)
-    report_df.to_csv(rep_path, index=False)
-    logger.info("Saved verification report to %s", rep_path)
-
-    # Print summary table
+def print_summary(report: pd.DataFrame, differences: int) -> None:
+    """Print the per-date table and the PASS/FAIL line."""
     print("\n" + "=" * 80)
     print("INDEPENDENT PRICE VERIFICATION REPORT (D7)")
     print("=" * 80)
@@ -301,19 +210,53 @@ def verify_prices(
         f"{'Extra':<8} {'Changed':<9} {'Status':<6}"
     )
     print("-" * 80)
-    for _, r in report_df.iterrows():
+    for r in report.itertuples():
         print(
-            f"{r['date']:<12} {r['file_rows']:<11} {r['db_rows']:<11} "
-            f"{r['missing_in_db']:<9} {r['extra_in_db']:<8} "
-            f"{r['changed_values']:<9} {r['status']:<6}"
+            f"{r.date:<12} {r.file_rows:<11} {r.db_rows:<11} "
+            f"{r.missing_in_db:<9} {r.extra_in_db:<8} {r.changed_values:<9} {r.status:<6}"
         )
     print("=" * 80)
     print(
-        f"Total dates checked: {len(report_df)} | Total differences: {total_diff_count} | "
-        f"Result: {'PASS (0 diffs)' if total_diff_count == 0 else 'FAIL (discrepancies found)'}\n"
+        f"Total dates checked: {len(report)} | Total differences: {differences} | "
+        f"Result: {'PASS (0 diffs)' if differences == 0 else 'FAIL (discrepancies found)'}\n"
     )
 
-    return total_diff_count, report_df
+
+def verify_prices(
+    check_dates: Sequence[date] | None = None,
+    *,
+    session: Session | None = None,
+) -> tuple[int, pd.DataFrame]:
+    """Verify stored daily_prices by re-downloading fresh files directly from NSE.
+
+    Compares every column of ``COMPARED_COLUMNS`` for every symbol of every checked date
+    (default: ``select_check_dates`` over all stored dates). Writes
+    reports/verify_prices.csv and prints a PASS/FAIL summary.
+
+    Returns the total number of differences and the report (one row per date).
+    """
+    with use_session(session) as s:
+        dates = (
+            list(check_dates)
+            if check_dates is not None
+            else select_check_dates(get_trading_dates(s))
+        )
+        logger.info("Starting price accuracy check across %d dates...", len(dates))
+        rows = []
+        for number, d in enumerate(dates, start=1):
+            row = verify_one_date(s, d)
+            logger.info("[%d/%d] Date %s -> %s", number, len(dates), d, row["status"])
+            rows.append(row)
+
+    report = pd.DataFrame(rows)
+    report_path = settings.REPORTS_DIR / "verify_prices.csv"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report.to_csv(report_path, index=False)
+    logger.info("Saved verification report to %s", report_path)
+
+    differences = count_differences(report)
+    print_summary(report, differences)
+    return differences, report
 
 
 def main() -> None:

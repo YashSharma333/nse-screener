@@ -10,14 +10,15 @@ import subprocess
 import sys
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from config import settings
 from scripts.verify_prices import select_check_dates, verify_prices
 from src.db.models import Base, DailyPrice
+from src.ingestion import nse_files
 from tests.test_load_prices import make_day_udiff_zip
 
 
@@ -91,31 +92,29 @@ def seed_day(
 # ---------------------------------------------------------------------------
 
 
-def test_identical_data_gives_zero_differences(sqlite_session: Session, tmp_path: Path):
+def test_identical_data_gives_zero_differences(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """When DB records match fresh download exactly, 0 differences are reported."""
     d = date(2024, 1, 1)
     seed_day(sqlite_session, d)
 
     raw_zip = make_day_udiff_zip(d)
-    rep_path = tmp_path / "verify.csv"
+    monkeypatch.setattr(nse_files, "fetch", lambda url: raw_zip)
 
     diff_count, report_df = verify_prices(
         check_dates=[d],
         session=sqlite_session,
-        fetch_fn=lambda _: raw_zip,
-        report_path=rep_path,
-        pause_seconds=0,
-        sleep_fn=lambda _: None,
     )
 
     assert diff_count == 0
     assert len(report_df) == 1
     assert report_df["status"].iloc[0] == "PASS"
-    assert rep_path.exists()
+    assert (settings.REPORTS_DIR / "verify_prices.csv").exists()
 
 
 def test_changed_close_is_reported_with_symbol_and_date(
-    sqlite_session: Session, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
     """Changed close price is flagged as a discrepancy with date and symbol logged."""
     d = date(2024, 1, 1)
@@ -123,15 +122,11 @@ def test_changed_close_is_reported_with_symbol_and_date(
     seed_day(sqlite_session, d, close_infy="1599.99")
 
     raw_zip = make_day_udiff_zip(d)
-    rep_path = tmp_path / "verify.csv"
+    monkeypatch.setattr(nse_files, "fetch", lambda url: raw_zip)
 
     diff_count, report_df = verify_prices(
         check_dates=[d],
         session=sqlite_session,
-        fetch_fn=lambda _: raw_zip,
-        report_path=rep_path,
-        pause_seconds=0,
-        sleep_fn=lambda _: None,
     )
 
     assert diff_count >= 1
@@ -141,22 +136,18 @@ def test_changed_close_is_reported_with_symbol_and_date(
     assert "INFY.close" in caplog.text
 
 
-def test_missing_and_extra_rows_reported(sqlite_session: Session, tmp_path: Path):
+def test_missing_and_extra_rows_reported(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """Detects when a symbol is missing in DB or when extra symbol exists in DB."""
     d = date(2024, 1, 1)
     # File has INFY + RELIANCE. DB has INFY + EXTRA_STOCK (missing RELIANCE, extra EXTRA_STOCK)
     seed_day(sqlite_session, d, include_reliance=False, extra_symbol="EXTRA_STOCK")
 
     raw_zip = make_day_udiff_zip(d)
-    rep_path = tmp_path / "verify.csv"
+    monkeypatch.setattr(nse_files, "fetch", lambda url: raw_zip)
 
     diff_count, report_df = verify_prices(
         check_dates=[d],
         session=sqlite_session,
-        fetch_fn=lambda _: raw_zip,
-        report_path=rep_path,
-        pause_seconds=0,
-        sleep_fn=lambda _: None,
     )
 
     assert diff_count >= 2
@@ -224,3 +215,21 @@ def test_must_include_dates_always_selected_and_selection_is_seeded():
     assert date(2020, 2, 1) in selection1
     assert date(2023, 11, 12) in selection1
     assert max(all_dates) in selection1
+
+
+def test_failed_download_counts_as_a_difference(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A date NSE cannot serve is never a silent pass: it is a FETCH_ERROR with one difference."""
+    d = date(2024, 1, 1)
+    seed_day(sqlite_session, d)
+
+    def broken_fetch(url: str) -> bytes:
+        raise nse_files.NoFile(url)
+
+    monkeypatch.setattr(nse_files, "fetch", broken_fetch)
+
+    diff_count, report = verify_prices(check_dates=[d], session=sqlite_session)
+
+    assert diff_count == 1
+    assert report["status"].iloc[0].startswith("FETCH_ERROR")

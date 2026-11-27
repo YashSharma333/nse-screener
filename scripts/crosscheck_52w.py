@@ -1,9 +1,15 @@
 """
-Official 52-Week High/Low Cross-Check (Task D10)
-===============================================
+Official 52-Week High/Low Cross-Check (Task D10, CL-32)
+======================================================
 Downloads official adjusted 52-week High/Low files (CM_52_wk_High_low_DDMMYYYY.csv)
-for ~10 dates, compares them against the database rolling 52-week max adj_high and
-min adj_low across stock rename lineages, and writes reports/adj_crosscheck.csv.
+for ~10 dates, compares them against our stored prices across stock rename lineages, and
+writes reports/adj_crosscheck.csv.
+
+52-week definition (NSE's own, on purpose): the highest adj_high and lowest adj_low over the
+last CROSSCHECK_WINDOW_DAYS (365) CALENDAR days up to and including the checked date. It is
+NOT the indicator cache's 252-bar column: the cache window is trading rows, ends the day
+before, and a rarely-trading stock spans years in 252 rows. Using NSE's definition keeps this
+an independent check of our data. A comparison FAILS above CROSSCHECK_TOLERANCE_PCT.
 
 Differences are LISTED, never auto-fixed.
 """
@@ -13,9 +19,8 @@ from __future__ import annotations
 import io
 import logging
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -27,7 +32,7 @@ from config.settings import REGULAR_SERIES
 from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
-from src.ingestion.nse_files import cm_52_wk_url, fetch
+from src.ingestion import nse_files
 from src.ingestion.renames import RenameChains, family, load_chains_from_db
 
 logger = logging.getLogger(__name__)
@@ -101,154 +106,141 @@ def select_crosscheck_dates(
     return sorted(rng.sample(eligible, n_dates))
 
 
-def run_crosscheck_for_date(
-    check_date: date,
-    session: Session,
-    fetch_fn: Callable[[str], bytes] = fetch,
-    chains: RenameChains | None = None,
-) -> list[dict[str, Any]]:
-    """Download and compare official 52-week High/Low against DB for one date.
+def official_levels(check_date: date) -> pd.DataFrame:
+    """NSE's official 52-week high and low for every stock on ``check_date``."""
+    return parse_52_wk_csv(nse_files.fetch(nse_files.cm_52_wk_url(check_date)))
 
-    Returns comparison records: date, symbol, metric, official, ours, difference_pct.
-    Does not modify the database.
-    """
-    if chains is None:
-        chains = load_chains_from_db(session)
 
-    url = cm_52_wk_url(check_date)
-    raw_bytes = fetch_fn(url)
-    official_df = parse_52_wk_csv(raw_bytes)
-    if official_df.empty:
-        return []
-
+def our_levels(session: Session, check_date: date) -> dict[str, tuple[float, float]]:
+    """Our 52-week (high, low) per stored symbol: the 365-calendar-day window, adjusted prices."""
     window_start = check_date - timedelta(days=settings.CROSSCHECK_WINDOW_DAYS)
-
-    # 1. Query DB prices over [check_date - CROSSCHECK_WINDOW_DAYS, check_date]
-    # Aggregate max(adj_high or high) and min(adj_low or low) per symbol
     stmt = (
         select(
             DailyPrice.symbol,
             func.max(func.coalesce(DailyPrice.adj_high, DailyPrice.high)).label("max_high"),
             func.min(func.coalesce(DailyPrice.adj_low, DailyPrice.low)).label("min_low"),
         )
-        .where(
-            DailyPrice.date >= window_start,
-            DailyPrice.date <= check_date,
-        )
+        .where(DailyPrice.date >= window_start, DailyPrice.date <= check_date)
         .group_by(DailyPrice.symbol)
     )
-    db_rows = session.execute(stmt).all()
-    db_metrics: dict[str, tuple[float | None, float | None]] = {
-        row.symbol: (
-            float(row.max_high) if row.max_high is not None else None,
-            float(row.min_low) if row.min_low is not None else None,
-        )
-        for row in db_rows
+    return {
+        row.symbol: (float(row.max_high), float(row.min_low))
+        for row in session.execute(stmt).all()
+        if row.max_high is not None and row.min_low is not None
     }
 
+
+def comparison(check_date: date, symbol: str, metric: str, official: float, ours: float) -> dict:
+    """One report row: the official number, ours and the difference in percent."""
+    return {
+        "date": check_date.isoformat(),
+        "symbol": symbol,
+        "metric": metric,
+        "official": official,
+        "ours": ours,
+        "difference_pct": round(abs(ours - official) / official * 100, 2),
+    }
+
+
+def compare_levels(
+    check_date: date,
+    official: pd.DataFrame,
+    ours: dict[str, tuple[float, float]],
+    chains: RenameChains,
+) -> list[dict[str, Any]]:
+    """Compare official and our levels. A renamed stock uses the best value across its names."""
     records: list[dict[str, Any]] = []
-
-    for row in official_df.itertuples():
-        sym = row.symbol
-        # Incorporate former names if renamed
-        names = family(sym, chains)
-
-        # Find best high and low across all family symbols in DB
-        highs = [
-            db_metrics[s][0] for s in names if s in db_metrics and db_metrics[s][0] is not None
-        ]
-        lows = [db_metrics[s][1] for s in names if s in db_metrics and db_metrics[s][1] is not None]
-
-        if not highs or not lows:
+    for row in official.itertuples():
+        ours_for_stock = [ours[name] for name in family(row.symbol, chains) if name in ours]
+        if not ours_for_stock:
             continue
+        our_high = max(high for high, _ in ours_for_stock)
+        our_low = min(low for _, low in ours_for_stock)
+        official_high, official_low = float(row.official_high), float(row.official_low)
 
-        ours_high = max(highs)
-        ours_low = min(lows)
-
-        off_high = float(row.official_high)
-        off_low = float(row.official_low)
-
-        diff_high_pct = round(abs(ours_high - off_high) / off_high * 100, 2)
-        records.append(
-            {
-                "date": check_date.isoformat(),
-                "symbol": sym,
-                "metric": "52W_HIGH",
-                "official": off_high,
-                "ours": ours_high,
-                "difference_pct": diff_high_pct,
-            }
-        )
-
-        if off_low > 0:
-            diff_low_pct = round(abs(ours_low - off_low) / off_low * 100, 2)
-            records.append(
-                {
-                    "date": check_date.isoformat(),
-                    "symbol": sym,
-                    "metric": "52W_LOW",
-                    "official": off_low,
-                    "ours": ours_low,
-                    "difference_pct": diff_low_pct,
-                }
-            )
-
+        records.append(comparison(check_date, row.symbol, "52W_HIGH", official_high, our_high))
+        if official_low > 0:
+            records.append(comparison(check_date, row.symbol, "52W_LOW", official_low, our_low))
     return records
+
+
+def run_crosscheck_for_date(
+    check_date: date,
+    session: Session,
+    chains: RenameChains | None = None,
+) -> list[dict[str, Any]]:
+    """Download and compare official 52-week High/Low against our prices for one date.
+
+    Returns comparison records: date, symbol, metric, official, ours, difference_pct.
+    Does not modify the database.
+    """
+    official = official_levels(check_date)
+    if official.empty:
+        return []
+    chains = chains if chains is not None else load_chains_from_db(session)
+    return compare_levels(check_date, official, our_levels(session, check_date), chains)
+
+
+def print_summary(report: pd.DataFrame) -> bool:
+    """Print the definition, the counts and the PASS/FAIL line. Returns True for PASS."""
+    tolerance = settings.CROSSCHECK_TOLERANCE_PCT
+    failing = report[report["difference_pct"] > tolerance] if not report.empty else report
+    passed = not report.empty and failing.empty  # nothing compared is not a pass
+    print("=" * 80)
+    print("OFFICIAL 52-WEEK HIGH/LOW CROSS-CHECK")
+    print(
+        f"Definition: highest adj_high / lowest adj_low over {settings.CROSSCHECK_WINDOW_DAYS} "
+        "calendar days up to the checked date (NSE's definition, not the 252-bar cache column)."
+    )
+    print("=" * 80)
+    print(f"Dates: {report['date'].nunique() if not report.empty else 0}")
+    print(f"Comparisons: {len(report)} | above {tolerance}%: {len(failing)}")
+    if not failing.empty:
+        print("\nWorst differences:")
+        print(failing.head(10).to_string(index=False))
+    print(f"Result: {'PASS' if passed else 'FAIL'}")
+    return passed
 
 
 def crosscheck_52w(
     dates: Sequence[date] | None = None,
     session: Session | None = None,
-    fetch_fn: Callable[[str], bytes] = fetch,
-    report_path: Path | None = None,
 ) -> pd.DataFrame:
-    """Run 52-week cross-check over target dates and write report.
+    """Run the 52-week cross-check over the target dates, write the report, print PASS/FAIL.
 
-    Differences are never auto-fixed.
+    Differences are never auto-fixed. A date whose official file cannot be read is logged
+    and skipped (the summary then counts fewer dates).
     """
-    target_path = report_path or (settings.REPORTS_DIR / "adj_crosscheck.csv")
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def _execute(s: Session) -> pd.DataFrame:
-        nonlocal dates
-        if dates is None:
-            # Query trading dates from daily_prices
-            dates = select_crosscheck_dates(get_trading_dates(s), n_dates=10)
-
-        chains = load_chains_from_db(s)
-        all_records: list[dict[str, Any]] = []
-
-        logger.info("Running 52-week cross-check for %d dates...", len(dates))
-        for d in dates:
-            try:
-                recs = run_crosscheck_for_date(d, s, fetch_fn=fetch_fn, chains=chains)
-                logger.info("Cross-check %s: compared %d metrics", d, len(recs))
-                all_records.extend(recs)
-            except Exception as exc:
-                logger.warning("Cross-check for %s failed: %s", d, exc)
-
-        res_df = pd.DataFrame(all_records, columns=CROSSCHECK_COLUMNS)
-        if not res_df.empty:
-            res_df = res_df.sort_values(
-                ["difference_pct", "date", "symbol"], ascending=[False, True, True]
-            ).reset_index(drop=True)
-
-        res_df.to_csv(target_path, index=False)
-        logger.info(
-            "Saved 52-week cross-check report to %s (%d comparisons)",
-            target_path,
-            len(res_df),
-        )
-        return res_df
-
     with use_session(session) as s:
-        return _execute(s)
+        target_dates = (
+            list(dates)
+            if dates is not None
+            else select_crosscheck_dates(get_trading_dates(s), n_dates=10)
+        )
+        chains = load_chains_from_db(s)
+        records: list[dict[str, Any]] = []
+        logger.info("Running 52-week cross-check for %d dates...", len(target_dates))
+        for d in target_dates:
+            try:
+                found = run_crosscheck_for_date(d, s, chains=chains)
+            except Exception as exc:  # one unreadable official file must not stop the run
+                logger.warning("Cross-check for %s failed: %s", d, exc)
+                continue
+            logger.info("Cross-check %s: compared %d metrics", d, len(found))
+            records.extend(found)
+
+    report = pd.DataFrame(records, columns=CROSSCHECK_COLUMNS)
+    report = report.sort_values(
+        ["difference_pct", "date", "symbol"], ascending=[False, True, True]
+    ).reset_index(drop=True)
+    report_path = settings.REPORTS_DIR / "adj_crosscheck.csv"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report.to_csv(report_path, index=False)
+    logger.info("Saved 52-week cross-check report to %s (%d comparisons)", report_path, len(report))
+    print_summary(report)
+    return report
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    df_result = crosscheck_52w()
-    print(f"Cross-check finished. Total comparisons: {len(df_result)}")
-    if not df_result.empty:
-        print("\nTop 20 Differences:")
-        print(df_result.head(20).to_string(index=False))
+    crosscheck_52w()
