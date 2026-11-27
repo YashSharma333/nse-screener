@@ -81,6 +81,16 @@ def count(session: Session, model) -> int:
     return session.execute(select(func.count()).select_from(model)).scalar_one()
 
 
+def test_fund_unit_actions_are_not_stored() -> None:
+    """A split of an ETF (ISIN INF...) never reaches the table; company rows are unchanged."""
+    etf = {**sample_rows()[0], "symbol": "GOLDBEES", "isin": "INF204KB14I2"}
+
+    without_etf, _ = build_action_rows(sample_rows(), NOW)
+    with_etf, _ = build_action_rows([*sample_rows(), etf], NOW)
+
+    assert with_etf == without_etf
+
+
 # ---------------------------------------------------------------------------
 # Storing
 # ---------------------------------------------------------------------------
@@ -102,10 +112,24 @@ def test_storing_again_refreshes_a_changed_row_in_place(session) -> None:
 
 
 def test_symbol_changes_are_upserted(session) -> None:
+    session.add_all(
+        [
+            Security(symbol="ICICILIFE", name="ICICI Life", status="active"),
+            Security(symbol="NEWX", name="New X", status="active"),
+        ]
+    )
     frame = parse_symbol_changes(SYMBOL_CHANGE_CSV)
     store_symbol_changes(session, frame)
     store_symbol_changes(session, frame)
     assert count(session, SymbolChange) == 2
+
+
+def test_renames_of_stocks_we_do_not_hold_are_not_stored(session) -> None:
+    """A rename that matches no stored stock (an ETF, a bond) is skipped."""
+    session.add(Security(symbol="ICICILIFE", name="ICICI Life", status="active"))
+    stored = store_symbol_changes(session, parse_symbol_changes(SYMBOL_CHANGE_CSV))
+    assert stored == 1
+    assert session.execute(select(SymbolChange.new_symbol)).scalars().all() == ["ICICILIFE"]
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +211,7 @@ def test_full_job_writes_files_and_tables(session, tmp_path) -> None:
     assert summary["api_rows"] == 20
     assert summary["rows_stored"] == count(session, CorporateAction)
     assert summary["by_type"]["BONUS"] == 7
-    assert summary["symbol_changes_stored"] == 2
+    assert summary["symbol_changes_stored"] == 1  # OLDX -> NEWX is not a stock we hold
     assert summary["symbol_changes_touching_securities"] == 1  # only ICICILIFE is in securities
     assert summary["listing_rows"] == 1
     assert summary["unparsed_price_share"] < 0.2

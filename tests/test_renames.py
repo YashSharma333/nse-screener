@@ -239,6 +239,8 @@ def test_load_renames_idempotent(sqlite_session: Session, serve_nse_file) -> Non
         "Cadila Healthcare Limited,CADILAHC,ZYDUSLIFE,07-MAR-2022\n"
     )
     serve_nse_file(csv_data)
+    _add_price(sqlite_session, "TATACONSUM")
+    _add_price(sqlite_session, "ZYDUSLIFE")
     count1 = load_renames(session=sqlite_session)
     assert count1 == 2
     assert len(sqlite_session.scalars(select(SymbolChange)).all()) == 2
@@ -247,3 +249,32 @@ def test_load_renames_idempotent(sqlite_session: Session, serve_nse_file) -> Non
     count2 = load_renames(session=sqlite_session)
     assert count2 == 2
     assert len(sqlite_session.scalars(select(SymbolChange)).all()) == 2
+
+
+def _add_price(session: Session, symbol: str) -> None:
+    """One stored price row, so the symbol counts as a stock we hold."""
+    session.add(
+        DailyPrice(
+            symbol=symbol, date=date(2024, 1, 2), series="EQ", close=Decimal("100"), volume=1
+        )
+    )
+    session.flush()
+
+
+def test_fund_renames_are_not_stored(sqlite_session: Session, serve_nse_file) -> None:
+    """symbolchange.csv has no ISIN, so a rename is kept only if we hold one of its symbols.
+
+    ETFs were removed from the database; without this their renames would come back on
+    every daily update.
+    """
+    csv_data = (
+        "NAME OF THE COMPANY,OLD SYMBOL,NEW SYMBOL,EFFECTIVE DATE\n"
+        "Tata Global Beverages Limited,TATAGLOBAL,TATACONSUM,10-FEB-2020\n"
+        "Axis Gold ETF,AXISGOLD,GOLDAXIS,07-MAR-2022\n"
+    )
+    serve_nse_file(csv_data)
+    _add_price(sqlite_session, "TATACONSUM")
+
+    assert load_renames(session=sqlite_session) == 1
+    stored = sqlite_session.scalars(select(SymbolChange.old_symbol)).all()
+    assert stored == ["TATAGLOBAL"]

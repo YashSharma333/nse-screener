@@ -26,6 +26,7 @@ import pandas as pd
 from config import settings
 from config.settings import REGULAR_SERIES
 from src.common.dates import parse_nse_date
+from src.common.symbols import drop_funds
 from src.ingestion.nse_files import BadFile, check_date, check_zip
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,7 @@ def parse_bhavcopy(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataFr
 
     # 4. Filter: keep only rows with series in REGULAR_SERIES
     df = df[df["series"].isin(REGULAR_SERIES)].copy()
+    df = drop_funds(df)  # ETFs / fund units are not screened (ISIN starts with INF)
 
     # 5. Type conversions: numeric columns to float/int, date to datetime.date
     for price_col in ("open", "high", "low", "close", "prev_close"):

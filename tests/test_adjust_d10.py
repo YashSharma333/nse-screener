@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from scripts.crosscheck_52w import print_summary, run_crosscheck_for_date
+from scripts.crosscheck_52w import our_levels, print_summary, run_crosscheck_for_date
 from src.db.models import AdjFactor, Base, DailyPrice, SymbolChange
 from src.etl.adjust import (
     CorporateActionsMissingError,
@@ -300,3 +300,48 @@ def test_crosscheck_summary_states_the_definition_and_passes_or_fails(
     assert print_summary(far) is False
     assert "Result: FAIL" in capsys.readouterr().out
     assert print_summary(close.iloc[0:0]) is False  # nothing compared is not a pass
+
+
+def _add_factor(session: Session, symbol: str, ex_date: date, factor: float) -> None:
+    """Insert one adj_factors row (a split/bonus that applies to every row before ``ex_date``)."""
+    session.add(AdjFactor(symbol=symbol, date=ex_date, factor=factor, ratio_kind="test"))
+    session.flush()
+
+
+def test_our_levels_ignore_events_after_the_check_date(session: Session) -> None:
+    """NSE's file is adjusted as of its own date: a later split must not change our level.
+
+    Raw high 100 on 1 Nov; a 1:2 split (factor 0.5) on 20 Nov is AFTER the check date 10 Nov,
+    so the as-of level stays 100 (the stored adj_high would be 50).
+    """
+    add_prices(session, "LATE", [100.0, 90.0], start=date(2024, 11, 1))
+    _add_factor(session, "LATE", date(2024, 11, 20), 0.5)
+    for row in session.scalars(select(DailyPrice).where(DailyPrice.symbol == "LATE")):
+        row.adj_high, row.adj_low = row.high / 2, row.low / 2  # adjusted to today
+    session.flush()
+
+    levels = our_levels(session, date(2024, 11, 10))
+
+    assert levels["LATE"] == (100.0, 90.0)
+
+
+def test_our_levels_apply_events_inside_the_window_to_earlier_rows_only(session: Session) -> None:
+    """A split on 5 Nov (before the check date) halves rows before it and not rows after it."""
+    add_prices(session, "SPLITTER", [100.0] * 8, start=date(2024, 11, 1))  # 1..8 Nov
+    _add_factor(session, "SPLITTER", date(2024, 11, 5), 0.5)
+
+    high, low = our_levels(session, date(2024, 11, 10))["SPLITTER"]
+
+    assert high == 100.0  # rows on or after the ex-date are untouched
+    assert low == 50.0  # rows before the ex-date are halved
+
+
+def test_our_levels_stack_several_events_in_the_window(session: Session) -> None:
+    """Two events after a row multiply: 0.5 on 5 Nov and 0.2 on 7 Nov take 1 Nov's 100 to 10."""
+    add_prices(session, "TWICE", [100.0] * 8, start=date(2024, 11, 1))
+    _add_factor(session, "TWICE", date(2024, 11, 5), 0.5)
+    _add_factor(session, "TWICE", date(2024, 11, 7), 0.2)
+
+    high, low = our_levels(session, date(2024, 11, 10))["TWICE"]
+
+    assert (high, low) == (100.0, 10.0)

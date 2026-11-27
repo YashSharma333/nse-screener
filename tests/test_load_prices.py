@@ -470,3 +470,22 @@ def test_default_end_date_is_today(
     )
 
     assert any("20261120" in url for url in asked)
+
+
+def test_cached_day_written_before_the_etf_rule_is_filtered_on_read(tmp_path) -> None:
+    """An old cache file that still holds an ETF must not bring the ETF back into the database."""
+    import pandas as pd
+
+    from src.ingestion.price_loader import read_cached_day
+
+    old_cache = pd.DataFrame(
+        {
+            "date": [date(2024, 1, 1)] * 2,
+            "symbol": ["GOLDBEES", "INFY"],
+            "isin": ["INF204KB14I2", "INE009A01021"],
+        }
+    )
+    settings.BHAVCOPY_ALL_DIR.mkdir(parents=True, exist_ok=True)
+    old_cache.to_parquet(settings.BHAVCOPY_ALL_DIR / "2024-01-01.parquet", index=False)
+
+    assert read_cached_day(date(2024, 1, 1))["symbol"].tolist() == ["INFY"]

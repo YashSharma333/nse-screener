@@ -32,6 +32,7 @@ from config import settings
 from config.settings import NSE_HISTORY_START
 from src.common.dates import date_or_default
 from src.common.db import use_session
+from src.common.symbols import drop_funds
 from src.common.trading_calendar import (
     PRICES,
     get_trading_dates,
@@ -125,7 +126,8 @@ def read_cached_day(d: date) -> pd.DataFrame | None:
     if not path.exists():
         return None
     try:
-        return pd.read_parquet(path)
+        # Drop funds again on read: a cache file written before the ETF rule must never re-add them.
+        return drop_funds(pd.read_parquet(path))
     except (OSError, ValueError) as exc:
         logger.warning("Corrupt parquet cache for %s (%s); will re-download.", d, exc)
         return None

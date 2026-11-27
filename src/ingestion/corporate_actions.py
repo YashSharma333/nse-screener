@@ -38,7 +38,7 @@ from config.settings import (
     NSE_CORP_ACTIONS_API_PATH,
 )
 from src.common.dates import parse_nse_date
-from src.common.symbols import normalise_symbol
+from src.common.symbols import is_fund_isin, normalise_symbol
 from src.ingestion import nse_files
 from src.ingestion.corporate_actions_parser import (
     ActionPart,
@@ -217,6 +217,8 @@ def build_action_rows(
     all_parts: list[ActionPart] = []
 
     for raw in raw_rows:
+        if is_fund_isin(raw.get("isin")):
+            continue  # ETFs / fund units are not screened
         fingerprint = json.dumps(raw, sort_keys=True, default=str)
         if fingerprint in seen_raw:
             continue

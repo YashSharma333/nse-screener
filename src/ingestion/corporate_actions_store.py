@@ -52,7 +52,7 @@ from src.ingestion.corporate_actions_parser import (
     STATUS_REVIEW,
     unparsed_price_share,
 )
-from src.ingestion.renames import family, load_chains_from_db
+from src.ingestion.renames import family, keep_held_symbols, load_chains_from_db
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,11 @@ def store_corporate_actions(session: Session, rows: list[dict[str, Any]]) -> int
 
 
 def store_symbol_changes(session: Session, frame: pd.DataFrame) -> int:
-    """Upsert the official symbol changes."""
+    """Upsert the official symbol changes of stocks we hold (fund renames are skipped)."""
     rows = frame[["old_symbol", "new_symbol", "effective_date", "company"]].to_dict("records")
+    rows = keep_held_symbols(session, rows)
+    if not rows:
+        return 0
     return upsert_rows(
         session,
         SymbolChange,

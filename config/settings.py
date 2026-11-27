@@ -213,6 +213,11 @@ FIRST_MCAP_DATE: date = date(2024, 2, 1)
 # are other instruments sharing a ticker symbol that would violate the (symbol, date) primary key.
 REGULAR_SERIES: tuple[str, ...] = ("EQ", "BE", "BZ", "SM", "ST")
 
+# Fund units (ETFs, mutual fund units) are not screened. Their ISIN starts with "INF" while a
+# company share starts with "INE". The ISIN is in every Bhavcopy row, so this also catches
+# delisted funds.
+EXCLUDED_ISIN_PREFIXES: tuple[str, ...] = ("INF",)
+
 # Raw parsed Bhavcopy parquet cache (new full-universe folder; old EQ-only cache is deprecated)
 BHAVCOPY_ALL_DIR: Path = PROJECT_ROOT / "data" / "raw" / "nse" / "bhavcopy_all"
 
