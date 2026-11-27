@@ -461,3 +461,25 @@ def test_parquet_roundtrip_keeps_date32(tmp_path: Path):
     roundtrip_df = pd.read_parquet(target_path)
     assert isinstance(roundtrip_df["date"].iloc[0], date)
     pd.testing.assert_frame_equal(df, roundtrip_df)
+
+
+def test_fund_units_are_not_kept():
+    """An ETF (ISIN INF...) in series EQ is dropped; the company share next to it stays."""
+    base = {
+        "TradDt": "2024-01-01",
+        "SctySrs": "EQ",
+        "OpnPric": "10",
+        "HghPric": "11",
+        "LwPric": "9",
+        "ClsPric": "10",
+        "PrvsClsgPric": "10",
+        "TtlTradgVol": "5",
+    }
+    records = [
+        {**base, "TckrSymb": "GOLDBEES", "ISIN": "INF204KB14I2"},
+        {**base, "TckrSymb": "INFY", "ISIN": "INE009A01021"},
+    ]
+
+    df = parse_bhavcopy(make_udiff_zip(records), date(2024, 1, 1))
+
+    assert df["symbol"].tolist() == ["INFY"]

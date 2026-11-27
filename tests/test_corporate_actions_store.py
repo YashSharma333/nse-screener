@@ -81,6 +81,16 @@ def count(session: Session, model) -> int:
     return session.execute(select(func.count()).select_from(model)).scalar_one()
 
 
+def test_fund_unit_actions_are_not_stored() -> None:
+    """A split of an ETF (ISIN INF...) never reaches the table; company rows are unchanged."""
+    etf = {**sample_rows()[0], "symbol": "GOLDBEES", "isin": "INF204KB14I2"}
+
+    without_etf, _ = build_action_rows(sample_rows(), NOW)
+    with_etf, _ = build_action_rows([*sample_rows(), etf], NOW)
+
+    assert with_etf == without_etf
+
+
 # ---------------------------------------------------------------------------
 # Storing
 # ---------------------------------------------------------------------------

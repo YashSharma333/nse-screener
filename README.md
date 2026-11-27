@@ -282,7 +282,17 @@ python run_pipeline.py --crosscheck-52w
 ```
 * **Why it exists:** Audits split and bonus adjusted rolling 52-week High and Low against NSE's official `CM_52_wk_High_low_DDMMYYYY.csv`.
 * **What it changes:** Read-only operation. Writes discrepancies to `reports/adj_crosscheck.csv`. Differences are listed and never auto-fixed.
-* **52-week definition:** NSE's own: highest `adj_high` and lowest `adj_low` over the last 365 calendar days up to the checked date (`CROSSCHECK_WINDOW_DAYS`), not the indicator cache's 252-bar column. The printed summary says PASS or FAIL: a comparison fails above `CROSSCHECK_TOLERANCE_PCT` (1%) and nothing compared is not a pass.
+* **52-week definition:** NSE's own: highest high and lowest low over the last 365 calendar days up to the checked date (`CROSSCHECK_WINDOW_DAYS`), adjusted **as of the checked date** (only the splits and bonuses up to that date, like NSE's file, so a later split does not count), not the indicator cache's 252-bar column. Known gap: NSE also adjusts for rights issues and we do not yet (tracked in issue #144). The printed summary says PASS or FAIL: a comparison fails above `CROSSCHECK_TOLERANCE_PCT` (1%) and nothing compared is not a pass.
+
+##### 11. Remove ETFs / fund units (one-time, `scripts/drop_funds.py`)
+```bash
+# Dry run: counts what would go (changes nothing)
+PYTHONPATH=. python scripts/drop_funds.py
+# Delete (back up first: bash scripts/backup_db.sh)
+PYTHONPATH=. python scripts/drop_funds.py --apply
+```
+* **Why it exists:** ETFs and fund units (ISIN starts with `INF`, setting `EXCLUDED_ISIN_PREFIXES`) are not screened. New loads skip them already (Bhavcopy parser, Parquet cache read, corporate actions). This script removes the ones loaded earlier.
+* **What it changes:** deletes the fund rows from `daily_prices`, `adj_factors`, `corporate_actions`, `symbol_changes`, `securities` and rewrites the per-day Parquet caches without them. Run `python run_pipeline.py --update` afterwards so the indicator cache is rebuilt.
 
 ---
 
@@ -592,6 +602,7 @@ nse-screener/
 │   ├── backup_db.sh             # Compressed mysqldump to ~/nse-backups (keeps the newest 5)
 │   ├── verify_prices.py         # Independent price accuracy check (--verify-prices)
 │   ├── crosscheck_52w.py        # 52-week High/Low cross-check (--crosscheck-52w)
+│   ├── drop_funds.py            # One-time removal of ETFs / fund units (dry run unless --apply)
 │   └── check_nse_reports.py     # Live, read-only health check of NSE report formats
 ├── pyproject.toml               # Project configuration, ruff & pytest-cov settings
 ├── requirements.txt             # Runtime Python dependencies (pinned)
