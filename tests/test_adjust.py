@@ -16,6 +16,27 @@ from tests.official_actions import add_official_action, add_placeholder_action
 from tests.update_helpers import stub_steps
 
 
+def test_cumulative_factors_ignore_event_order_no_events_and_non_material_rows():
+    """Events given newest-first give the same answer; no events (or non-material) mean 1.0."""
+    dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(30)]
+    shuffled = pd.DataFrame(
+        [
+            {"date": date(2024, 1, 21), "factor": 0.5, "ratio_kind": "material"},
+            {"date": date(2024, 1, 11), "factor": 0.2, "ratio_kind": "material"},
+        ]
+    )
+    result = cumulative_factors(dates, shuffled)
+    assert abs(result[0] - 0.1) < 1e-12  # before both events
+    assert abs(result[15] - 0.5) < 1e-12  # between them
+    assert result[25] == 1.0  # after both
+    # An event on the day itself does not apply to that day's price (it applies to older ones).
+    assert abs(result[10] - 0.5) < 1e-12
+
+    assert list(cumulative_factors(dates, pd.DataFrame())) == [1.0] * 30
+    other = pd.DataFrame([{"date": date(2024, 1, 11), "factor": 0.5, "ratio_kind": "review"}])
+    assert list(cumulative_factors(dates, other)) == [1.0] * 30
+
+
 def test_cumulative_factors_two_events():
     """Two material splits: 1:2 on day 10 (factor 0.5) and 1:2 on day 20 (factor 0.5)."""
     dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(30)]
