@@ -144,16 +144,57 @@ def _symbol_changes_touching_securities(session: Session, frame: pd.DataFrame) -
 # ---------------------------------------------------------------------------
 # The reader for the price-adjustment code
 # ---------------------------------------------------------------------------
+def _stored_targets(symbol: str, chains: Any, stored_symbols: set[str]) -> set[str]:
+    """The stored price symbols an NSE action applies to (all names of the same stock).
+
+    Why: an event listed under a former name must adjust prices stored under the new name
+    (and the other way round). With no stored match the action keeps its own symbol.
+    """
+    sym = normalise_symbol(symbol)
+    family_in_prices = family(sym, chains) & stored_symbols if stored_symbols else {sym}
+    return family_in_prices or {sym}
+
+
+def _in_window(stmt: Any, start: date | None, end: date | None) -> Any:
+    """Limit a corporate-actions query to ex-dates from ``start`` to ``end`` (both optional)."""
+    if start is not None:
+        stmt = stmt.where(CorporateAction.ex_date >= start)
+    if end is not None:
+        stmt = stmt.where(CorporateAction.ex_date <= end)
+    return stmt
+
+
+def _combine_exact_parts(exact: pd.DataFrame) -> pd.DataFrame:
+    """One row per (symbol, date): the product of every exact factor on that ex-date."""
+    if exact.empty:
+        return pd.DataFrame(columns=["symbol", "date", "factor", "kinds", "n_parts"])
+    # The same action can be listed under two series (for example EQ and BE); count it once.
+    exact = exact.drop_duplicates(["symbol", "date", "subject_hash", "part_no"])
+    exact["factor"] = exact["factor"].astype(float)
+    events = (
+        exact.groupby(["symbol", "date"])
+        .agg(
+            factor=("factor", "prod"),
+            kinds=("kind", lambda kinds: "+".join(sorted(set(kinds)))),
+            n_parts=("factor", "size"),
+        )
+        .reset_index()
+    )
+    events["factor"] = events["factor"].round(8)
+    return events.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+
 def get_price_adjustment_events(
     session: Session,
-    start: date | Sequence[str] | None = None,
-    end: date | None = None,
     symbols: Sequence[str] | None = None,
+    start: date | None = None,
+    end: date | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Read official corporate actions in the shape the adjustment code needs.
 
-    Maps events under former names to the stock's stored price symbols so adjustments
-    apply across rename boundaries.
+    ``symbols`` limits the result to those stocks (all their names); ``start`` and ``end``
+    limit the ex-dates. Events under former names are mapped to the stock's stored price
+    symbols, so adjustments apply across rename boundaries.
 
     Returns ``(events, review)``:
 
@@ -164,40 +205,17 @@ def get_price_adjustment_events(
       but have no exact factor (rights, mergers, demergers, unreadable text). They are never
       applied automatically.
     """
-    actual_symbols = symbols
-    actual_start: date | None = None
-    actual_end: date | None = end
-
-    if isinstance(start, (list, tuple, set)):
-        actual_symbols = list(start)
-    elif isinstance(start, str):
-        actual_symbols = [start]
-    elif isinstance(start, date):
-        actual_start = start
-
     chains = load_chains_from_db(session)
+    wanted: set[str] = set()
+    for symbol in symbols or []:
+        wanted.update(family(symbol, chains))
 
-    target_symbols: set[str] = set()
-    if actual_symbols is not None:
-        for s in actual_symbols:
-            target_symbols.update(family(s, chains))
-
-    if target_symbols:
-        stored_stmt = (
-            select(DailyPrice.symbol).where(DailyPrice.symbol.in_(target_symbols)).distinct()
-        )
-    else:
-        stored_stmt = select(DailyPrice.symbol).distinct()
+    stored_stmt = select(DailyPrice.symbol).distinct()
+    if wanted:
+        stored_stmt = stored_stmt.where(DailyPrice.symbol.in_(wanted))
     stored_symbols = set(session.execute(stored_stmt).scalars().all())
 
-    def _window(stmt: Any) -> Any:
-        if actual_start is not None:
-            stmt = stmt.where(CorporateAction.ex_date >= actual_start)
-        if actual_end is not None:
-            stmt = stmt.where(CorporateAction.ex_date <= actual_end)
-        return stmt
-
-    exact_stmt = _window(
+    exact_stmt = _in_window(
         select(
             CorporateAction.symbol,
             CorporateAction.ex_date,
@@ -208,79 +226,50 @@ def get_price_adjustment_events(
         ).where(
             CorporateAction.parse_status == STATUS_EXACT,
             CorporateAction.action_type.in_(PRICE_ACTION_TYPES),
-        )
+        ),
+        start,
+        end,
     )
-    if actual_symbols is not None and target_symbols:
-        exact_stmt = exact_stmt.where(CorporateAction.symbol.in_(target_symbols))
-
-    raw_exact_rows = session.execute(exact_stmt).all()
-    mapped_exact: list[tuple[str, date, str, str, int, float]] = []
-    for row in raw_exact_rows:
-        sym = normalise_symbol(row.symbol)
-        stock_stored = family(sym, chains) & stored_symbols if stored_symbols else {sym}
-        targets = stock_stored if stock_stored else {sym}
-        for target_sym in targets:
-            mapped_exact.append(
-                (
-                    target_sym,
-                    row.ex_date,
-                    row.action_type,
-                    row.subject_hash,
-                    row.part_no,
-                    float(row.price_factor),
-                )
-            )
-
-    exact = pd.DataFrame(
-        mapped_exact,
-        columns=["symbol", "date", "kind", "subject_hash", "part_no", "factor"],
-    )
-    if exact.empty:
-        events = pd.DataFrame(columns=["symbol", "date", "factor", "kinds", "n_parts"])
-    else:
-        # The same action can be listed under two series (for example EQ and BE); count it once.
-        exact = exact.drop_duplicates(["symbol", "date", "subject_hash", "part_no"])
-        exact["factor"] = exact["factor"].astype(float)
-        events = (
-            exact.groupby(["symbol", "date"])
-            .agg(
-                factor=("factor", "prod"),
-                kinds=("kind", lambda kinds: "+".join(sorted(set(kinds)))),
-                n_parts=("factor", "size"),
-            )
-            .reset_index()
-        )
-        events["factor"] = events["factor"].round(8)
-        events = events.sort_values(["symbol", "date"]).reset_index(drop=True)
-
-    review_stmt = _window(
+    review_stmt = _in_window(
         select(
             CorporateAction.symbol,
             CorporateAction.ex_date,
             CorporateAction.action_type,
             CorporateAction.subject,
-        ).where(CorporateAction.parse_status == STATUS_REVIEW)
+        ).where(CorporateAction.parse_status == STATUS_REVIEW),
+        start,
+        end,
     )
-    if actual_symbols is not None and target_symbols:
-        review_stmt = review_stmt.where(CorporateAction.symbol.in_(target_symbols))
+    if wanted:
+        exact_stmt = exact_stmt.where(CorporateAction.symbol.in_(wanted))
+        review_stmt = review_stmt.where(CorporateAction.symbol.in_(wanted))
 
-    raw_review_rows = session.execute(review_stmt).all()
-    mapped_review: list[tuple[str, date, str, str]] = []
-    for row in raw_review_rows:
-        sym = normalise_symbol(row.symbol)
-        stock_stored = family(sym, chains) & stored_symbols if stored_symbols else {sym}
-        targets = stock_stored if stock_stored else {sym}
-        for target_sym in targets:
-            mapped_review.append((target_sym, row.ex_date, row.action_type, row.subject))
-
-    review = pd.DataFrame(
-        mapped_review,
-        columns=["symbol", "date", "action_type", "subject"],
+    exact_parts = [
+        (
+            target,
+            row.ex_date,
+            row.action_type,
+            row.subject_hash,
+            row.part_no,
+            float(row.price_factor),
+        )
+        for row in session.execute(exact_stmt).all()
+        for target in _stored_targets(row.symbol, chains, stored_symbols)
+    ]
+    exact = pd.DataFrame(
+        exact_parts, columns=["symbol", "date", "kind", "subject_hash", "part_no", "factor"]
     )
+
+    review_items = [
+        (target, row.ex_date, row.action_type, row.subject)
+        for row in session.execute(review_stmt).all()
+        for target in _stored_targets(row.symbol, chains, stored_symbols)
+    ]
+    review = pd.DataFrame(review_items, columns=["symbol", "date", "action_type", "subject"])
     if not review.empty:
         review = review.drop_duplicates(["symbol", "date", "action_type", "subject"])
     review = review.sort_values(["symbol", "date"]).reset_index(drop=True)
-    return events, review
+    return _combine_exact_parts(exact), review
 
 
 # ---------------------------------------------------------------------------

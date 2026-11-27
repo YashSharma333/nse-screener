@@ -118,3 +118,18 @@ def test_each_symbol_is_compared_with_its_own_previous_close():
         ignore_index=True,
     )
     assert find_unexplained_jumps(df, NO_EVENTS).empty
+
+
+def test_find_jumps_compares_each_symbol_with_its_own_previous_close():
+    """A jump is never measured across two symbols: A's last close and B's first are unrelated."""
+    from src.etl.adjust import find_jumps
+
+    days = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
+    rows = [("AAA", d, 100.0) for d in days] + [("BBB", d, 10.0) for d in days[:2]]
+    rows += [("BBB", days[2], 4.0)]  # a real 2.5x fall inside BBB
+    df = pd.DataFrame(rows, columns=["symbol", "date", "close"])
+
+    jumps = find_jumps(df, global_trading_days=days)
+
+    assert jumps[["symbol", "day"]].to_dict("records") == [{"symbol": "BBB", "day": days[2]}]
+    assert abs(float(jumps["ratio"].iloc[0]) - 2.5) < 1e-9

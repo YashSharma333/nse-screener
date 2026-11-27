@@ -10,7 +10,6 @@ import io
 import zipfile
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -18,7 +17,9 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from config import settings
 from src.db.models import Base, DailyPrice
+from src.ingestion import nse_files
 from src.ingestion.mcap_loader import (
     load_market_caps,
     parse_mcap_file,
@@ -103,7 +104,7 @@ def test_member_name_match_is_case_insensitive():
     assert "INFY" in df_lower["symbol"].values
 
 
-def test_market_cap_stored_as_published(sqlite_session: Session, tmp_path: Path):
+def test_market_cap_stored_as_published(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """Value 12345678901.25 round-trips without float truncation or rounding."""
     d = date(2024, 2, 1)
 
@@ -119,15 +120,12 @@ def test_market_cap_stored_as_published(sqlite_session: Session, tmp_path: Path)
     sqlite_session.commit()
 
     raw_zip = make_mcap_zip(sample_records(mcap_val="12345678901.25"))
+    monkeypatch.setattr(nse_files, "fetch", lambda url: raw_zip)
 
     load_market_caps(
         start=d,
         end=d,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=lambda _: raw_zip,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     db_row = sqlite_session.scalar(select(DailyPrice).where(DailyPrice.symbol == "INFY"))
@@ -135,13 +133,15 @@ def test_market_cap_stored_as_published(sqlite_session: Session, tmp_path: Path)
     assert Decimal(str(db_row.market_cap)) == Decimal("12345678901.25")
 
     # Parquet cache also preserves Decimal
-    parquet_file = tmp_path / "mcap" / "2024-02-01.parquet"
+    parquet_file = settings.MCAP_DIR / "2024-02-01.parquet"
     assert parquet_file.exists()
     cached_df = pd.read_parquet(parquet_file)
     assert cached_df["market_cap"].iloc[0] == Decimal("12345678901.25")
 
 
-def test_dates_before_2024_02_01_are_skipped_and_stay_null(sqlite_session: Session, tmp_path: Path):
+def test_dates_before_2024_02_01_are_skipped_and_stay_null(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """Dates before 2024-02-01 are not queried and keep market_cap as NULL."""
     old_date = date(2024, 1, 15)
 
@@ -155,25 +155,17 @@ def test_dates_before_2024_02_01_are_skipped_and_stay_null(sqlite_session: Sessi
     sqlite_session.add(row)
     sqlite_session.commit()
 
-    fetch_called = False
-
-    def fake_fetch(_url: str) -> bytes:
-        nonlocal fetch_called
-        fetch_called = True
-        return b""
+    asked: list[str] = []
+    monkeypatch.setattr(nse_files, "fetch", lambda url: asked.append(url) or b"")
 
     summary = load_market_caps(
         start=old_date,
         end=old_date,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     # Clamping start to FIRST_MCAP_DATE means old_date > end_date -> skipped
-    assert fetch_called is False
+    assert asked == []
     assert summary.updated_rows == 0
 
     db_row = sqlite_session.scalar(select(DailyPrice).where(DailyPrice.symbol == "INFY"))
@@ -181,7 +173,7 @@ def test_dates_before_2024_02_01_are_skipped_and_stay_null(sqlite_session: Sessi
     assert db_row.market_cap is None
 
 
-def test_missing_bundle_leaves_null(sqlite_session: Session, tmp_path: Path):
+def test_missing_bundle_leaves_null(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """Missing PR bundle (NoFile) leaves market_cap as NULL and counts missing_bundle."""
     d = date(2024, 2, 5)
 
@@ -198,14 +190,12 @@ def test_missing_bundle_leaves_null(sqlite_session: Session, tmp_path: Path):
     def fake_fetch(url: str) -> bytes:
         raise NoFile(url)
 
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
+
     summary = load_market_caps(
         start=d,
         end=d,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     assert summary.missing_bundle == 1
@@ -226,7 +216,9 @@ def test_wrong_date_in_mcap_file_rejected():
         parse_mcap_file(raw_zip, expected_d)
 
 
-def test_unmatched_symbol_is_counted_not_inserted(sqlite_session: Session, tmp_path: Path):
+def test_unmatched_symbol_is_counted_not_inserted(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """Symbols in mcap file not present in daily_prices are counted and NOT inserted."""
     d = date(2024, 2, 1)
 
@@ -242,15 +234,12 @@ def test_unmatched_symbol_is_counted_not_inserted(sqlite_session: Session, tmp_p
     sqlite_session.commit()
 
     raw_zip = make_mcap_zip(sample_records())
+    monkeypatch.setattr(nse_files, "fetch", lambda url: raw_zip)
 
     summary = load_market_caps(
         start=d,
         end=d,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=lambda _: raw_zip,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     assert summary.updated_rows == 1  # INFY updated
@@ -262,7 +251,7 @@ def test_unmatched_symbol_is_counted_not_inserted(sqlite_session: Session, tmp_p
     assert all_rows[0].symbol == "INFY"
 
 
-def test_rerun_overwrites_with_same_value(sqlite_session: Session, tmp_path: Path):
+def test_rerun_overwrites_with_same_value(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """Running load_market_caps twice produces identical idempotent results."""
     d = date(2024, 2, 1)
 
@@ -277,16 +266,13 @@ def test_rerun_overwrites_with_same_value(sqlite_session: Session, tmp_path: Pat
     sqlite_session.commit()
 
     raw_zip = make_mcap_zip(sample_records(mcap_val="5000000.00"))
+    monkeypatch.setattr(nse_files, "fetch", lambda url: raw_zip)
 
     # First run
     load_market_caps(
         start=d,
         end=d,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=lambda _: raw_zip,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
     row_after1 = sqlite_session.scalar(select(DailyPrice).where(DailyPrice.symbol == "INFY"))
     assert Decimal(str(row_after1.market_cap)) == Decimal("5000000.00")
@@ -296,16 +282,12 @@ def test_rerun_overwrites_with_same_value(sqlite_session: Session, tmp_path: Pat
         start=d,
         end=d,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=lambda _: raw_zip,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
     row_after2 = sqlite_session.scalar(select(DailyPrice).where(DailyPrice.symbol == "INFY"))
     assert Decimal(str(row_after2.market_cap)) == Decimal("5000000.00")
 
 
-def test_default_end_date_is_today(sqlite_session: Session, tmp_path: Path):
+def test_default_end_date_is_today(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """No end date means today: today's bundle is tried too, like --update (was yesterday)."""
     today = date.today()
     sqlite_session.add(
@@ -320,13 +302,11 @@ def test_default_end_date_is_today(sqlite_session: Session, tmp_path: Path):
         asked.append(url)
         raise NoFile(url)
 
+    monkeypatch.setattr(nse_files, "fetch", not_published_yet)
+
     summary = load_market_caps(
         start=today,
         session=sqlite_session,
-        cache_dir=tmp_path / "mcap",
-        fetch_fn=not_published_yet,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     assert asked

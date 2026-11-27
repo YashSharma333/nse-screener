@@ -23,7 +23,6 @@ holiday (see nse-data-integrity), so an early run just picks the file up the nex
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -36,7 +35,6 @@ from config.settings import FIRST_MCAP_DATE, NSE_HISTORY_START
 from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates, latest_date
 from src.db.models import CorporateAction, DailyPrice, Security, SymbolChange
-from src.ingestion.nse_files import fetch
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +111,6 @@ class DailyUpdateSummary:
 class UpdateContext:
     """What every step needs besides the database session."""
 
-    fetch_fn: Callable[[str], bytes]
     today: date
     summary: DailyUpdateSummary = field(default_factory=DailyUpdateSummary)
 
@@ -133,9 +130,7 @@ def step_load_prices(s: Session, ctx: UpdateContext) -> dict[str, Any]:
     # never be visited again otherwise.
     for gap_day in find_price_gaps(s):
         logger.info("Retrying price gap %s...", gap_day)
-        load_raw_prices(
-            start=gap_day, end=gap_day, session=s, fetch_fn=ctx.fetch_fn, ref_date=ctx.today
-        )
+        load_raw_prices(start=gap_day, end=gap_day, session=s, ref_date=ctx.today)
 
     result = {"new_dates": [], "rows_added": 0}
     max_date = latest_date(s)
@@ -148,7 +143,6 @@ def step_load_prices(s: Session, ctx: UpdateContext) -> dict[str, Any]:
             start=start_date,
             end=ctx.today,
             session=s,
-            fetch_fn=ctx.fetch_fn,
             ref_date=ctx.today,
         )
         ctx.summary.new_dates = get_trading_dates(s, start_date, ctx.today)
@@ -197,9 +191,7 @@ def step_market_cap(s: Session, ctx: UpdateContext) -> dict[str, Any]:
         min(target_dates),
         max(target_dates),
     )
-    mcap = load_market_caps(
-        start=min(target_dates), end=max(target_dates), session=s, fetch_fn=ctx.fetch_fn
-    )
+    mcap = load_market_caps(start=min(target_dates), end=max(target_dates), session=s)
     ctx.summary.mcap_rows_updated = mcap.updated_rows
     if mcap.unmatched_symbols > 0:
         ctx.summary.warnings.append(
@@ -364,15 +356,14 @@ def step_rebuild_indicator_cache(s: Session, ctx: UpdateContext) -> dict[str, An
 
 def run_daily_update(
     session: Session | None = None,
-    fetch_fn: Callable[[str], bytes] = fetch,
     today: date | None = None,
 ) -> DailyUpdateSummary:
     """Run the seven steps in order; stop at the first failure with a DailyUpdateError.
 
-    ``session`` is optional (a session is opened when missing); ``fetch_fn`` lets tests
-    avoid the network; ``today`` is the last day to try (default: date.today()).
+    ``session`` is optional (a session is opened when missing); ``today`` is the last day
+    to try (default: date.today()). Tests replace ``nse_files.fetch`` to stay offline.
     """
-    ctx = UpdateContext(fetch_fn=fetch_fn, today=today or date.today())
+    ctx = UpdateContext(today=today or date.today())
     # Looked up here, not at import, so a test can replace one step function.
     steps = [
         ("load_prices", step_load_prices),

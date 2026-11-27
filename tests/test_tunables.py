@@ -28,37 +28,47 @@ def test_jump_report_settings_replace_the_old_split_names() -> None:
 
 
 def test_price_loader_pause_comes_from_settings_at_call_time(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    nse_sleeps: list[float], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Changing the setting after import changes the pause between two downloads."""
     monkeypatch.setattr(settings, "PRICE_DOWNLOAD_PAUSE_SECONDS", 0.123)
-    pauses: list[float] = []
     day = date(2026, 11, 2)
+    monkeypatch.setattr(nse_files, "fetch", lambda url: make_day_udiff_zip(day))
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
 
     with Session(engine) as session:
-        load_raw_prices(
-            start=day,
-            end=day,
-            session=session,
-            cache_dir=tmp_path / "cache",
-            non_trading_path=tmp_path / "nt.json",
-            fetch_fn=lambda url: make_day_udiff_zip(day),
-            sleep_fn=pauses.append,
-            ref_date=date(2026, 11, 20),
-        )
+        load_raw_prices(start=day, end=day, session=session, ref_date=date(2026, 11, 20))
 
-    assert pauses == [0.123]
+    assert nse_sleeps == [0.123]
 
 
-@pytest.mark.parametrize(
-    ("function", "parameter"),
-    [(load_market_caps, "pause_seconds"), (load_benchmarks, "delay")],
-)
-def test_pause_defaults_mean_use_the_setting(function, parameter: str) -> None:
+def test_benchmark_pause_default_means_use_the_setting() -> None:
     """None = read settings when called (a number here would be copied at import time)."""
-    assert inspect.signature(function).parameters[parameter].default is None
+    assert inspect.signature(load_benchmarks).parameters["delay"].default is None
+
+
+def test_market_cap_pause_comes_from_settings_at_call_time(
+    nse_sleeps: list[float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The market cap loader reads the same pause setting when it runs."""
+    from decimal import Decimal
+
+    from src.db.models import DailyPrice
+    from tests.test_mcap_loader import make_mcap_zip, sample_records
+
+    monkeypatch.setattr(settings, "PRICE_DOWNLOAD_PAUSE_SECONDS", 0.456)
+    day = date(2024, 2, 1)
+    monkeypatch.setattr(nse_files, "fetch", lambda url: make_mcap_zip(sample_records()))
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(DailyPrice(symbol="INFY", date=day, series="EQ", close=Decimal("1")))
+        session.flush()
+        load_market_caps(start=day, end=day, session=session)
+
+    assert nse_sleeps == [0.456]
 
 
 def test_crosscheck_history_window_comes_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:

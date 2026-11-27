@@ -170,18 +170,14 @@ def read_official_events(
     Why it stops on an empty table: with no official data every price would silently be
     "not adjusted" and the old adjustment would be wiped. A clear error is safer.
     """
-
-    def _read(active: Session) -> tuple[pd.DataFrame, pd.DataFrame]:
-        stored = active.execute(select(func.count()).select_from(CorporateAction)).scalar() or 0
+    with use_session(session) as s:
+        stored = s.execute(select(func.count()).select_from(CorporateAction)).scalar() or 0
         if stored == 0:
             raise CorporateActionsMissingError(
                 "The corporate_actions table is empty. "
                 "Run: python run_pipeline.py --download-corporate-actions"
             )
-        return get_price_adjustment_events(active, symbols=symbols)
-
-    with use_session(session) as s:
-        return _read(s)
+        return get_price_adjustment_events(s, symbols=symbols)
 
 
 def _keep_events_inside_price_history(official: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
@@ -289,6 +285,71 @@ def build_events(
     return events.sort_values(["symbol", "date"]).reset_index(drop=True)
 
 
+def find_jumps(
+    df: pd.DataFrame,
+    global_trading_days: Sequence[date] | None = None,
+    non_trading_days: set[date] | None = None,
+) -> pd.DataFrame:
+    """Every overnight move of ``JUMP_REPORT_MIN_RATIO`` or more, in either direction.
+
+    ``df`` needs ``symbol``, ``date`` and ``close``. A move is ``previous close / close``,
+    compared with the previous stored row of the same symbol. Rows after a data gap are
+    left out (the move may hide several normal days). Returns ``symbol, day, close_prev,
+    close, ratio``; ``ratio`` is ``close_prev / close`` (above 1 = price fell).
+
+    Why one function: the review report and the gap report use the same candidates and
+    only differ in what they add (explained-by-event check or move type).
+    """
+    columns = ["symbol", "day", "close_prev", "close", "ratio"]
+    if df.empty or "close" not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    work = df[["symbol", "date", "close"]].copy()
+    work["date"] = pd.to_datetime(work["date"])
+    work = work.sort_values(["symbol", "date"]).reset_index(drop=True)
+    work["close_prev"] = work.groupby("symbol")["close"].shift(1)  # shift inside each symbol
+    work["date_prev"] = work.groupby("symbol")["date"].shift(1)
+
+    usable = (work["close_prev"] > 0) & (work["close"] > 0)
+    ratio = work["close_prev"] / work["close"].where(work["close"] > 0)
+    size = np.maximum(ratio, 1.0 / ratio)
+    candidates = work[usable & (size >= JUMP_REPORT_MIN_RATIO)].copy()
+    candidates["ratio"] = ratio[candidates.index]
+    if candidates.empty:
+        return pd.DataFrame(columns=columns)
+
+    consecutive = _has_preceding_trading_day(candidates, global_trading_days, non_trading_days)
+    candidates = candidates[consecutive].copy()
+    candidates["day"] = candidates["date"].dt.date
+    return candidates[columns].reset_index(drop=True)
+
+
+def _review_types(official_review: pd.DataFrame | None) -> dict[tuple[str, date], list[str]]:
+    """Map (symbol, date) to the NSE action types that need a person's review."""
+    types: dict[tuple[str, date], list[str]] = {}
+    if official_review is not None and not official_review.empty:
+        for row in official_review.itertuples():
+            types.setdefault((row.symbol, row.date), []).append(row.action_type)
+    return types
+
+
+def _drop_market_wide_jump_days(jumps: pd.DataFrame, total_symbols: int) -> pd.DataFrame:
+    """Cross-sectional guard: many symbols jumping on one date means bad data, not actions."""
+    if total_symbols < JUMP_REPORT_MIN_SYMBOLS or jumps.empty:
+        return jumps
+    per_day = jumps.groupby("day")["symbol"].nunique()
+    bad_days = per_day[per_day / total_symbols > JUMP_REPORT_MAX_BAD_DAY_SHARE].index.tolist()
+    for bad_day in bad_days:
+        logger.warning(
+            "Cross-sectional guard: %d / %d symbols jumped on %s. "
+            "Treating as a data problem and leaving this date out of the review report.",
+            per_day[bad_day],
+            total_symbols,
+            bad_day,
+        )
+    return jumps[~jumps["day"].isin(bad_days)]
+
+
 def find_unexplained_jumps(
     df: pd.DataFrame,
     events: pd.DataFrame,
@@ -299,63 +360,29 @@ def find_unexplained_jumps(
 ) -> pd.DataFrame:
     """List big overnight price moves that no applied event explains. Report only.
 
-    A move is big when ``previous close / close`` is at least ``JUMP_REPORT_MIN_RATIO``
-    in either direction. Why report it: a split or bonus missing from NSE's list (or a
-    wrong ex-date) shows up here, and the owner can approve it in
-    ``config/adjustment_overrides.csv``. Nothing in this report changes a price.
+    Why report it: a split or bonus missing from NSE's list (or a wrong ex-date) shows up
+    here, and the owner can approve it in ``config/adjustment_overrides.csv``. Nothing in
+    this report changes a price.
 
     ``reason`` is ``official action needs review: <type>`` when NSE lists a rights issue,
     demerger or similar on that date, otherwise ``no official action``. Rows after a data
     gap and market-wide jumps (bad data) are skipped.
     """
-    empty = pd.DataFrame(columns=JUMP_COLUMNS)
-    if df.empty or "close" not in df.columns:
-        return empty
+    jumps = find_jumps(df, global_trading_days, non_trading_days)
+    if jumps.empty:
+        return pd.DataFrame(columns=JUMP_COLUMNS)
 
-    work = df[["symbol", "date", "close"]].copy()
-    work["date"] = pd.to_datetime(work["date"])
-    work = work.sort_values(["symbol", "date"]).reset_index(drop=True)
-    work["close_prev"] = work.groupby("symbol")["close"].shift(1)
-    work["date_prev"] = work.groupby("symbol")["date"].shift(1)
+    total_symbols = total_db_symbols if total_db_symbols is not None else df["symbol"].nunique()
+    jumps = _drop_market_wide_jump_days(jumps, total_symbols)
 
-    usable = (work["close_prev"] > 0) & (work["close"] > 0)
-    ratio = work["close_prev"] / work["close"].where(work["close"] > 0)
-    size = np.maximum(ratio, 1.0 / ratio)
-    candidates = work[usable & (size >= JUMP_REPORT_MIN_RATIO)].copy()
-    candidates["ratio"] = ratio[candidates.index]
-    if candidates.empty:
-        return empty
-
-    consecutive = _has_preceding_trading_day(candidates, global_trading_days, non_trading_days)
-    candidates = candidates[consecutive].copy()
-    candidates["day"] = candidates["date"].dt.date
-
-    # Cross-sectional guard: many symbols jumping on one date means bad data.
-    n_total = total_db_symbols if total_db_symbols is not None else work["symbol"].nunique()
-    if n_total >= JUMP_REPORT_MIN_SYMBOLS and not candidates.empty:
-        per_day = candidates.groupby("day")["symbol"].nunique()
-        bad_days = per_day[per_day / n_total > JUMP_REPORT_MAX_BAD_DAY_SHARE].index.tolist()
-        for bad_day in bad_days:
-            logger.warning(
-                "Cross-sectional guard: %d / %d symbols jumped on %s. "
-                "Treating as a data problem and leaving this date out of the review report.",
-                per_day[bad_day],
-                n_total,
-                bad_day,
-            )
-        candidates = candidates[~candidates["day"].isin(bad_days)]
-
-    keys = list(zip(candidates["symbol"], candidates["day"], strict=True))
     explained = (
         set(zip(events["symbol"], events["date"], strict=True)) if not events.empty else set()
     )
-    review_types: dict[tuple[str, date], list[str]] = {}
-    if official_review is not None and not official_review.empty:
-        for row in official_review.itertuples():
-            review_types.setdefault((row.symbol, row.date), []).append(row.action_type)
+    review_types = _review_types(official_review)
 
     rows = []
-    for key, (_, cand) in zip(keys, candidates.iterrows(), strict=True):
+    for jump in jumps.itertuples():
+        key = (jump.symbol, jump.day)
         if key in explained:
             continue
         types = review_types.get(key)
@@ -366,12 +393,12 @@ def find_unexplained_jumps(
         )
         rows.append(
             {
-                "symbol": key[0],
-                "date": key[1],
-                "ratio": round(float(cand["ratio"]), 4),
-                "implied_factor": round(1.0 / float(cand["ratio"]), 4),
-                "close_prev": float(cand["close_prev"]),
-                "close": float(cand["close"]),
+                "symbol": jump.symbol,
+                "date": jump.day,
+                "ratio": round(float(jump.ratio), 4),
+                "implied_factor": round(1.0 / float(jump.ratio), 4),
+                "close_prev": float(jump.close_prev),
+                "close": float(jump.close),
                 "reason": reason,
             }
         )
@@ -385,108 +412,66 @@ def find_big_gaps(
     global_trading_days: Sequence[date] | None = None,
     non_trading_days: set[date] | None = None,
 ) -> pd.DataFrame:
-    """Detect and classify big overnight gap-ups and gap-downs across stocks.
+    """Classify every big overnight gap-up and gap-down (a move of 1.25x or more).
 
-    - GAP_DOWN: overnight drop >= 20% (pct_change <= -20% or ratio >= 1.25)
-    - GAP_UP: overnight surge >= 25% (pct_change >= +25% or 1/ratio >= 1.25)
-
-    Cross-references whether an official corporate action or review item occurred on that date.
-    Report only.
+    GAP_DOWN: the price fell; GAP_UP: it rose. Each row says whether an official corporate
+    action or review item sits on that date. Report only.
     """
-    empty = pd.DataFrame(columns=GAP_COLUMNS)
-    if df.empty or "close" not in df.columns:
-        return empty
-
-    work = df[["symbol", "date", "close"]].copy()
-    work["date"] = pd.to_datetime(work["date"])
-    work = work.sort_values(["symbol", "date"]).reset_index(drop=True)
-    work["close_prev"] = work.groupby("symbol")["close"].shift(1)
-    work["date_prev"] = work.groupby("symbol")["date"].shift(1)
-
-    usable = (work["close_prev"] > 0) & (work["close"] > 0)
-    ratio = work["close_prev"] / work["close"].where(work["close"] > 0)
-    size = np.maximum(ratio, 1.0 / ratio)
-    candidates = work[usable & (size >= JUMP_REPORT_MIN_RATIO)].copy()
-    if candidates.empty:
-        return empty
-
-    consecutive = _has_preceding_trading_day(candidates, global_trading_days, non_trading_days)
-    candidates = candidates[consecutive].copy()
-    if candidates.empty:
-        return empty
-
-    candidates["day"] = candidates["date"].dt.date
-    candidates["ratio"] = (candidates["close_prev"] / candidates["close"]).round(4)
-    candidates["pct_change"] = (
-        (candidates["close"] - candidates["close_prev"]) / candidates["close_prev"] * 100
-    ).round(2)
+    jumps = find_jumps(df, global_trading_days, non_trading_days)
+    if jumps.empty:
+        return pd.DataFrame(columns=GAP_COLUMNS)
 
     explained: dict[tuple[str, date], str] = {}
     if events is not None and not events.empty:
-        for ev_row in events.itertuples():
-            explained[(ev_row.symbol, ev_row.date)] = str(
-                getattr(ev_row, "kinds", "corporate_action")
-            )
+        for event in events.itertuples():
+            explained[(event.symbol, event.date)] = str(getattr(event, "kinds", "corporate_action"))
+    review_types = _review_types(official_review)
 
-    review_types: dict[tuple[str, date], list[str]] = {}
-    if official_review is not None and not official_review.empty:
-        for rev_row in official_review.itertuples():
-            review_types.setdefault((rev_row.symbol, rev_row.date), []).append(rev_row.action_type)
-
-    gap_rows = []
-    for _, cand in candidates.iterrows():
-        key = (cand["symbol"], cand["day"])
-        is_down = cand["close"] < cand["close_prev"]
-        move_type = "GAP_DOWN" if is_down else "GAP_UP"
-
-        has_ca = key in explained or key in review_types
-        act_parts = []
+    jumps = jumps.assign(
+        pct_change=((jumps["close"] - jumps["close_prev"]) / jumps["close_prev"] * 100).round(2),
+        gap_ratio=(jumps["close_prev"] / jumps["close"]).round(4),
+    )
+    rows = []
+    for jump in jumps.itertuples():
+        key = (jump.symbol, jump.day)
+        action_parts = []
         if key in explained:
-            act_parts.append(explained[key])
-        if key in review_types:
-            act_parts.extend(review_types[key])
-        action_type = ", ".join(sorted(set(act_parts))) if act_parts else "NONE"
-
-        gap_rows.append(
+            action_parts.append(explained[key])
+        action_parts.extend(review_types.get(key, []))
+        rows.append(
             {
-                "symbol": cand["symbol"],
-                "date": cand["day"],
-                "move_type": move_type,
-                "pct_change": float(cand["pct_change"]),
-                "close_prev": float(cand["close_prev"]),
-                "close": float(cand["close"]),
-                "ratio": float(cand["ratio"]),
-                "has_corp_action": has_ca,
-                "action_type": action_type,
+                "symbol": jump.symbol,
+                "date": jump.day,
+                "move_type": "GAP_DOWN" if jump.close < jump.close_prev else "GAP_UP",
+                "pct_change": float(jump.pct_change),
+                "close_prev": float(jump.close_prev),
+                "close": float(jump.close),
+                "ratio": float(jump.gap_ratio),
+                "has_corp_action": key in explained or key in review_types,
+                "action_type": ", ".join(sorted(set(action_parts))) if action_parts else "NONE",
             }
         )
-
-    res_df = pd.DataFrame(gap_rows, columns=GAP_COLUMNS)
-    return res_df.sort_values(["date", "symbol"]).reset_index(drop=True)
+    gaps = pd.DataFrame(rows, columns=GAP_COLUMNS)
+    return gaps.sort_values(["date", "symbol"]).reset_index(drop=True)
 
 
 def cumulative_factors(dates: Sequence[date], events_df: pd.DataFrame) -> np.ndarray:
-    """Compute cumulative backward adjustment factor for each date in a symbol series."""
-    sorted_dates = pd.to_datetime(pd.Series(dates)).reset_index(drop=True)
+    """The backward adjustment factor for each date of one symbol's price history.
+
+    A price is multiplied by the factor of every event that happens AFTER its date
+    (a 2:1 split on June 1 halves every price before June 1). Events are applied oldest
+    first, so the multiplication order is always the same.
+    """
+    price_dates = pd.to_datetime(pd.Series(dates)).reset_index(drop=True).to_numpy()
+    factors = np.ones(len(price_dates), dtype=np.float64)
     if events_df.empty:
-        return np.ones(len(sorted_dates), dtype=np.float64)
+        return factors
 
-    mat_events = events_df[events_df["ratio_kind"] == "material"].copy()
-    if mat_events.empty:
-        return np.ones(len(sorted_dates), dtype=np.float64)
-
-    mat_events["date"] = pd.to_datetime(mat_events["date"])
-    event_dates = mat_events["date"].to_numpy()
-    event_factors = mat_events["factor"].to_numpy()
-
-    date_matrix = sorted_dates.to_numpy()[:, None]  # Shape (N, 1)
-    event_matrix = event_dates[None, :]  # Shape (1, E)
-
-    applies = event_matrix > date_matrix  # Shape (N, E)
-    factors_grid = np.where(applies, event_factors[None, :], 1.0)
-    cum_factors = np.prod(factors_grid, axis=1)
-
-    return cum_factors
+    material = events_df[events_df["ratio_kind"] == "material"].copy()
+    material["date"] = pd.to_datetime(material["date"])
+    for event in material.sort_values("date").itertuples():
+        factors[price_dates < event.date.to_datetime64()] *= float(event.factor)
+    return factors
 
 
 def _write_report(df: pd.DataFrame, path: Path, only_symbols: list[str] | None) -> None:
@@ -535,6 +520,148 @@ def save_events_report(
         logger.info("Saved %d big gap moves to %s", len(gaps_df), target_gaps)
 
 
+UPDATE_ADJUSTED_SQL = text("""
+    UPDATE daily_prices
+    SET adj_open = :b_adj_open,
+        adj_high = :b_adj_high,
+        adj_low = :b_adj_low,
+        adj_close = :b_adj_close,
+        adj_volume = :b_adj_volume
+    WHERE symbol = :b_symbol AND date = :b_date
+""")
+UPDATE_BATCH_SIZE = 1000
+COPY_RAW_TO_ADJUSTED_SQL = text("""
+    UPDATE daily_prices
+    SET adj_open = open,
+        adj_high = high,
+        adj_low = low,
+        adj_close = close,
+        adj_volume = volume
+    WHERE symbol = :b_symbol AND date = :b_date
+""")
+
+
+def read_prices(
+    connection: Any, symbols: list[str] | None
+) -> tuple[pd.DataFrame, int, list[date] | None]:
+    """Read the raw prices to adjust, how many symbols the database has, and the market's days.
+
+    Returns ``(prices, total_symbols, trading_days)``. ``total_symbols`` and ``trading_days``
+    always cover the whole database (the jump reports need the full picture even when only a
+    few symbols are rebuilt).
+    """
+    total_symbols = connection.execute(
+        select(func.count(func.distinct(DailyPrice.symbol)))
+    ).scalar()
+    stmt = select(
+        DailyPrice.symbol,
+        DailyPrice.date,
+        DailyPrice.open,
+        DailyPrice.high,
+        DailyPrice.low,
+        DailyPrice.close,
+        DailyPrice.prev_close,
+        DailyPrice.volume,
+        DailyPrice.adj_close,
+    ).order_by(DailyPrice.symbol, DailyPrice.date)
+    if symbols:
+        stmt = stmt.where(DailyPrice.symbol.in_(symbols))
+    prices = pd.read_sql(stmt, connection)
+
+    days = pd.read_sql(select(DailyPrice.date).distinct().order_by(DailyPrice.date), connection)
+    trading_days = pd.to_datetime(days["date"]).dt.date.tolist() if not days.empty else None
+    return prices, total_symbols or 0, trading_days
+
+
+def load_events(
+    session: Session | None,
+    prices: pd.DataFrame,
+    symbols: list[str] | None,
+    overrides_path: Path | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The events that adjust prices (official + owner overrides) and the actions to review."""
+    official, official_review = read_official_events(session, symbols=symbols)
+    events = build_events(official, prices, overrides=load_adjustment_overrides(overrides_path))
+    return events, official_review
+
+
+def write_factors(session: Session | None, events: pd.DataFrame, symbols: list[str]) -> None:
+    """Replace the stored ``adj_factors`` rows of ``symbols`` with the applied ``events``."""
+    with use_session(session) as s:
+        if symbols:
+            s.execute(delete(AdjFactor).where(AdjFactor.symbol.in_(symbols)))
+        if not events.empty:
+            records = [
+                {
+                    "symbol": ev["symbol"],
+                    "date": ev["date"],
+                    "factor": float(ev["factor"]),
+                    "ratio_kind": ev["ratio_kind"],
+                }
+                for ev in events.to_dict("records")
+            ]
+            upsert_rows(s, AdjFactor, records)
+
+
+def _none_if_nan(value: float) -> float | None:
+    return None if np.isnan(value) else float(value)
+
+
+def compute_adjusted_rows(prices: pd.DataFrame, events: pd.DataFrame) -> list[dict[str, Any]]:
+    """The ``adj_*`` values of every price row whose adjusted close changed (or is still NULL).
+
+    Prices are multiplied by the backward factor; volume is divided by it (a split gives
+    more shares). Rows already holding the right value (within 0.0001) are left out so a
+    re-run writes almost nothing.
+    """
+    records: list[dict[str, Any]] = []
+    for symbol, rows in prices.groupby("symbol"):
+        symbol_events = events[events["symbol"] == symbol] if not events.empty else events
+        factor = cumulative_factors(rows["date"].tolist(), symbol_events)
+
+        adj_open = np.round(rows["open"].to_numpy(dtype=float) * factor, 4)
+        adj_high = np.round(rows["high"].to_numpy(dtype=float) * factor, 4)
+        adj_low = np.round(rows["low"].to_numpy(dtype=float) * factor, 4)
+        adj_close = np.round(rows["close"].to_numpy(dtype=float) * factor, 4)
+        adj_volume = np.round(
+            rows["volume"].to_numpy(dtype=float) / np.where(factor != 0, factor, 1.0)
+        ).astype("int64")
+
+        stored_close = rows["adj_close"].astype(float).to_numpy()
+        unchanged = (
+            ~np.isnan(stored_close)
+            & ~np.isnan(adj_close)
+            & (np.abs(stored_close - adj_close) < 1e-4)
+        )
+        days = pd.to_datetime(rows["date"]).dt.date.to_numpy()
+        for i in np.flatnonzero(~unchanged):
+            records.append(
+                {
+                    "b_symbol": symbol,
+                    "b_date": days[i],
+                    "b_adj_open": _none_if_nan(adj_open[i]),
+                    "b_adj_high": _none_if_nan(adj_high[i]),
+                    "b_adj_low": _none_if_nan(adj_low[i]),
+                    "b_adj_close": _none_if_nan(adj_close[i]),
+                    "b_adj_volume": int(adj_volume[i]),
+                }
+            )
+    return records
+
+
+def update_prices(session: Session | None, records: list[dict[str, Any]]) -> None:
+    """Write the computed ``adj_*`` values to daily_prices, 1000 rows per statement."""
+    with use_session(session) as s:
+        run_in_batches(s, UPDATE_ADJUSTED_SQL, records)
+    logger.info("Adjusted prices update complete: modified %d rows.", len(records))
+
+
+def run_in_batches(session: Session, statement: Any, records: list[dict[str, Any]]) -> None:
+    """Execute ``statement`` for ``records`` in batches of ``UPDATE_BATCH_SIZE``."""
+    for start in range(0, len(records), UPDATE_BATCH_SIZE):
+        session.execute(statement, records[start : start + UPDATE_BATCH_SIZE])
+
+
 def rebuild_adjusted(
     symbols: list[str] | None = None,
     session: Session | None = None,
@@ -543,185 +670,58 @@ def rebuild_adjusted(
 ) -> int:
     """Recompute corporate action adjustment factors and update daily_prices.
 
-    Idempotent: updates adj_open, adj_high, adj_low, adj_close, adj_volume.
-    Updates only rows whose adjusted values changed or are NULL.
-    The owner's corrections in config/adjustment_overrides.csv are applied on top of the
-    detected events (``overrides_path`` replaces that file, mainly for tests).
+    Idempotent: updates adj_open, adj_high, adj_low, adj_close, adj_volume, only on rows
+    whose adjusted values changed or are NULL. The owner's corrections in
+    config/adjustment_overrides.csv are applied on top of the official events
+    (``overrides_path`` replaces that file, mainly for tests). Returns the rows updated.
     """
-    target_engine = engine or default_engine
     logger.info(
         "Rebuilding adjusted prices (symbols=%s)...", "all" if symbols is None else len(symbols)
     )
-
     if session is not None:
-        conn = session.connection()
-        close_conn = False
+        prices, total_symbols, trading_days = read_prices(session.connection(), symbols)
     else:
-        conn = target_engine.connect()
-        close_conn = True
-
-    try:
-        # Determine total symbol count in database for the cross-sectional guard
-        total_syms_stmt = select(func.count(func.distinct(DailyPrice.symbol)))
-        total_db_symbols = conn.execute(total_syms_stmt).scalar() or 0
-
-        columns_to_select = [
-            DailyPrice.symbol,
-            DailyPrice.date,
-            DailyPrice.open,
-            DailyPrice.high,
-            DailyPrice.low,
-            DailyPrice.close,
-            DailyPrice.prev_close,
-            DailyPrice.volume,
-            DailyPrice.adj_close,
-        ]
-
-        if symbols:
-            stmt = (
-                select(*columns_to_select)
-                .where(DailyPrice.symbol.in_(symbols))
-                .order_by(DailyPrice.symbol, DailyPrice.date)
-            )
-        else:
-            stmt = select(*columns_to_select).order_by(DailyPrice.symbol, DailyPrice.date)
-
-        df = pd.read_sql(stmt, conn)
-
-        # Global trading days
-        g_stmt = select(DailyPrice.date).distinct().order_by(DailyPrice.date)
-        g_dates_df = pd.read_sql(g_stmt, conn)
-        global_trading_days = (
-            pd.to_datetime(g_dates_df["date"]).dt.date.tolist() if not g_dates_df.empty else None
-        )
-    finally:
-        if close_conn:
-            conn.close()
-
-    if df.empty:
+        with (engine or default_engine).connect() as connection:
+            prices, total_symbols, trading_days = read_prices(connection, symbols)
+    if prices.empty:
         logger.info("No prices to adjust.")
         return 0
 
-    # 2. Official events + owner overrides adjust prices; unexplained jumps are only reported.
-    official, official_review = read_official_events(session, symbols=symbols)
-    events_df = build_events(official, df, overrides=load_adjustment_overrides(overrides_path))
-    review_df = find_unexplained_jumps(
-        df,
-        events_df,
+    # Official events + owner overrides adjust prices; unexplained jumps are only reported.
+    events, official_review = load_events(session, prices, symbols, overrides_path)
+    review = find_unexplained_jumps(
+        prices,
+        events,
         official_review,
-        global_trading_days=global_trading_days,
-        total_db_symbols=total_db_symbols,
+        global_trading_days=trading_days,
+        total_db_symbols=total_symbols,
     )
-    gaps_df = find_big_gaps(
-        df,
-        events_df,
-        official_review,
-        global_trading_days=global_trading_days,
+    gaps = find_big_gaps(prices, events, official_review, global_trading_days=trading_days)
+
+    write_factors(session, events, symbols or prices["symbol"].unique().tolist())
+    save_events_report(events, review_df=review, gaps_df=gaps, only_symbols=symbols or None)
+
+    records = compute_adjusted_rows(prices, events)
+    update_prices(session, records)
+    return len(records)
+
+
+def _last_rows_before(connection: Any, symbols: list[str], day: date) -> pd.DataFrame:
+    """Each symbol's last stored row before ``day`` (an event needs prices before it)."""
+    latest = (
+        select(DailyPrice.symbol, func.max(DailyPrice.date).label("max_date"))
+        .where(DailyPrice.symbol.in_(symbols), DailyPrice.date < day)
+        .group_by(DailyPrice.symbol)
+        .subquery()
     )
-
-    def _sync_db(active_session: Session) -> None:
-        target_symbols = symbols or df["symbol"].unique().tolist()
-        if target_symbols:
-            del_stmt = delete(AdjFactor).where(AdjFactor.symbol.in_(target_symbols))
-            active_session.execute(del_stmt)
-
-        if not events_df.empty:
-            ev_records = [
-                {
-                    "symbol": ev["symbol"],
-                    "date": ev["date"],
-                    "factor": float(ev["factor"]),
-                    "ratio_kind": ev["ratio_kind"],
-                }
-                for ev in events_df.to_dict("records")
-            ]
-            upsert_rows(active_session, AdjFactor, ev_records)
-
-    with use_session(session) as s:
-        _sync_db(s)
-
-    save_events_report(
-        events_df, review_df=review_df, gaps_df=gaps_df, only_symbols=symbols or None
+    stmt = (
+        select(DailyPrice.symbol, DailyPrice.date)
+        .join(
+            latest, (DailyPrice.symbol == latest.c.symbol) & (DailyPrice.date == latest.c.max_date)
+        )
+        .order_by(DailyPrice.symbol, DailyPrice.date)
     )
-
-    # 3. Vectorized adjusted price calculation per symbol, updating only changed/NULL rows
-    updated_rows = 0
-    grouped = df.groupby("symbol")
-    update_sql = text("""
-        UPDATE daily_prices
-        SET adj_open = :b_adj_open,
-            adj_high = :b_adj_high,
-            adj_low = :b_adj_low,
-            adj_close = :b_adj_close,
-            adj_volume = :b_adj_volume
-        WHERE symbol = :b_symbol AND date = :b_date
-    """)
-
-    def _apply_updates(active_session: Session) -> int:
-        nonlocal updated_rows
-        all_update_records = []
-
-        for sym, sym_df in grouped:
-            sym_events = (
-                events_df[events_df["symbol"] == sym] if not events_df.empty else pd.DataFrame()
-            )
-            dates_list = sym_df["date"].tolist()
-            cum_facts = cumulative_factors(dates_list, sym_events)
-
-            open_vals = sym_df["open"].to_numpy(dtype=float)
-            high_vals = sym_df["high"].to_numpy(dtype=float)
-            low_vals = sym_df["low"].to_numpy(dtype=float)
-            close_vals = sym_df["close"].to_numpy(dtype=float)
-            vol_vals = sym_df["volume"].to_numpy(dtype=float)
-
-            adj_open = np.round(open_vals * cum_facts, 4)
-            adj_high = np.round(high_vals * cum_facts, 4)
-            adj_low = np.round(low_vals * cum_facts, 4)
-            adj_close = np.round(close_vals * cum_facts, 4)
-
-            cum_nonzero = np.where(cum_facts != 0, cum_facts, 1.0)
-            adj_volume = np.round(vol_vals / cum_nonzero).astype("int64")
-
-            sym_dates = [
-                d.date() if isinstance(d, pd.Timestamp) else d for d in sym_df["date"].tolist()
-            ]
-
-            existing_adj = sym_df["adj_close"].to_numpy() if "adj_close" in sym_df.columns else None
-
-            for i in range(len(sym_dates)):
-                target_c = float(adj_close[i]) if not np.isnan(adj_close[i]) else None
-                # Update only rows whose values changed or are NULL
-                if (
-                    existing_adj is not None
-                    and (ex_val := existing_adj[i]) is not None
-                    and not np.isnan(ex_val)
-                    and target_c is not None
-                    and abs(float(ex_val) - target_c) < 1e-4
-                ):
-                    continue
-
-                all_update_records.append(
-                    {
-                        "b_symbol": sym,
-                        "b_date": sym_dates[i],
-                        "b_adj_open": None if np.isnan(adj_open[i]) else float(adj_open[i]),
-                        "b_adj_high": None if np.isnan(adj_high[i]) else float(adj_high[i]),
-                        "b_adj_low": None if np.isnan(adj_low[i]) else float(adj_low[i]),
-                        "b_adj_close": target_c,
-                        "b_adj_volume": int(adj_volume[i]),
-                    }
-                )
-
-        updated_rows = len(all_update_records)
-        for b_start in range(0, len(all_update_records), 1000):
-            batch = all_update_records[b_start : b_start + 1000]
-            active_session.execute(update_sql, batch)
-
-        logger.info("Adjusted prices update complete: modified %d rows.", updated_rows)
-        return updated_rows
-
-    with use_session(session) as s:
-        return _apply_updates(s)
+    return pd.read_sql(stmt, connection)
 
 
 def adjust_new_rows(
@@ -738,7 +738,6 @@ def adjust_new_rows(
     if new_df.empty:
         return 0
 
-    target_engine = engine or default_engine
     work_new = new_df.copy()
     if not pd.api.types.is_datetime64_any_dtype(work_new["date"]):
         work_new["date"] = pd.to_datetime(work_new["date"])
@@ -746,47 +745,23 @@ def adjust_new_rows(
     symbols = work_new["symbol"].unique().tolist()
     min_date = work_new["date"].dt.date.min()
 
-    def _fetch_prior_rows(active_conn: Any) -> pd.DataFrame:
-        """Each symbol's last stored row before the new days (an event needs prices before it)."""
-        sub = (
-            select(DailyPrice.symbol, func.max(DailyPrice.date).label("max_date"))
-            .where(DailyPrice.symbol.in_(symbols), DailyPrice.date < min_date)
-            .group_by(DailyPrice.symbol)
-            .subquery()
-        )
-        prior_stmt = (
-            select(DailyPrice.symbol, DailyPrice.date)
-            .join(
-                sub,
-                (DailyPrice.symbol == sub.c.symbol) & (DailyPrice.date == sub.c.max_date),
-            )
-            .order_by(DailyPrice.symbol, DailyPrice.date)
-        )
-        return pd.read_sql(prior_stmt, active_conn)
-
     if session is not None:
-        prior_df = _fetch_prior_rows(session.connection())
+        prior_df = _last_rows_before(session.connection(), symbols, min_date)
     else:
-        with target_engine.connect() as conn:
-            prior_df = _fetch_prior_rows(conn)
+        with (engine or default_engine).connect() as connection:
+            prior_df = _last_rows_before(connection, symbols, min_date)
 
-    if not prior_df.empty:
-        combined_df = pd.concat([prior_df, work_new], ignore_index=True)
-    else:
-        combined_df = work_new
+    combined_df = (
+        pd.concat([prior_df, work_new], ignore_index=True) if not prior_df.empty else work_new
+    )
 
     # Only events on or after the first new day matter here; older ones were handled by the
     # last full rebuild (run --rebuild-adjusted after every --download-corporate-actions).
     official, _official_review = read_official_events(session, symbols=symbols)
     new_events = build_events(official, combined_df, overrides=load_adjustment_overrides())
-    if not new_events.empty:
-        new_events = new_events[new_events["date"] >= min_date].copy()
-
-    material_events = (
-        new_events[new_events["ratio_kind"] == "material"]
-        if not new_events.empty
-        else pd.DataFrame()
-    )
+    material_events = new_events[
+        (new_events["date"] >= min_date) & (new_events["ratio_kind"] == "material")
+    ]
 
     if not material_events.empty:
         affected_symbols = material_events["symbol"].unique().tolist()
@@ -797,27 +772,12 @@ def adjust_new_rows(
         return rebuild_adjusted(symbols=affected_symbols, session=session, engine=engine)
 
     # No new corporate actions: set adj_* = raw
-    update_sql = text("""
-        UPDATE daily_prices
-        SET adj_open = open,
-            adj_high = high,
-            adj_low = low,
-            adj_close = close,
-            adj_volume = volume
-        WHERE symbol = :b_symbol AND date = :b_date
-    """)
-
-    sym_list = work_new["symbol"].tolist()
-    date_list = [d.date() if isinstance(d, pd.Timestamp) else d for d in work_new["date"].tolist()]
-    records = [{"b_symbol": s, "b_date": d} for s, d in zip(sym_list, date_list, strict=False)]
-
-    def _run_adj(active_session: Session) -> None:
-        for b_start in range(0, len(records), 1000):
-            active_session.execute(update_sql, records[b_start : b_start + 1000])
-
+    days = work_new["date"].dt.date.tolist()
+    records = [
+        {"b_symbol": sym, "b_date": day} for sym, day in zip(work_new["symbol"], days, strict=True)
+    ]
     with use_session(session) as s:
-        _run_adj(s)
-
+        run_in_batches(s, COPY_RAW_TO_ADJUSTED_SQL, records)
     return len(records)
 
 

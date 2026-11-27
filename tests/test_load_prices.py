@@ -9,15 +9,16 @@ from __future__ import annotations
 import subprocess
 import sys
 from datetime import date
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from config import settings
 from src.common.trading_calendar import PRICES, load_non_trading_days
 from src.db.models import Base, DailyPrice
 from src.etl.daily_update import run_daily_update
+from src.ingestion import nse_files
 from src.ingestion.nse_files import BadFile, NoFile
 from src.ingestion.price_loader import (
     find_price_gaps,
@@ -108,12 +109,12 @@ def make_day_old_zip(d: date) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def test_loads_two_days_and_rows_match_parsed_frame(sqlite_session: Session, tmp_path: Path):
+def test_loads_two_days_and_rows_match_parsed_frame(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """Loads two trading days; inserted database rows match parsed frame."""
     day1 = date(2024, 1, 1)
     day2 = date(2024, 1, 2)
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
 
     def fake_fetch(url: str) -> bytes:
         if "20240101" in url:
@@ -122,15 +123,12 @@ def test_loads_two_days_and_rows_match_parsed_frame(sqlite_session: Session, tmp
             return make_day_udiff_zip(day2)
         raise NoFile(url)
 
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
+
     summary = load_raw_prices(
         start=day1,
         end=day2,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     assert summary.downloaded == 2
@@ -154,16 +152,14 @@ def test_loads_two_days_and_rows_match_parsed_frame(sqlite_session: Session, tmp
     assert rows[3].symbol == "RELIANCE"
 
     # Parquet cache files were created
-    assert (cache_dir / "2024-01-01.parquet").exists()
-    assert (cache_dir / "2024-01-02.parquet").exists()
+    assert (settings.BHAVCOPY_ALL_DIR / "2024-01-01.parquet").exists()
+    assert (settings.BHAVCOPY_ALL_DIR / "2024-01-02.parquet").exists()
 
 
-def test_resume_skips_dates_already_in_db(sqlite_session: Session, tmp_path: Path):
+def test_resume_skips_dates_already_in_db(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """Resuming skips dates already stored in daily_prices (fetch call count is 0)."""
     day1 = date(2024, 1, 1)
     day2 = date(2024, 1, 2)
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
 
     calls: list[str] = []
 
@@ -176,15 +172,12 @@ def test_resume_skips_dates_already_in_db(sqlite_session: Session, tmp_path: Pat
         raise NoFile(url)
 
     # First load only day1
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
+
     load_raw_prices(
         start=day1,
         end=day1,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
     assert len(calls) == 1
     calls.clear()
@@ -194,11 +187,6 @@ def test_resume_skips_dates_already_in_db(sqlite_session: Session, tmp_path: Pat
         start=day1,
         end=day2,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     # Day 1 is in DB, so fake_fetch must NOT be called for day 1
@@ -207,24 +195,21 @@ def test_resume_skips_dates_already_in_db(sqlite_session: Session, tmp_path: Pat
     assert summary.rows_inserted == 2  # Only day 2 rows inserted
 
 
-def test_404_records_non_trading_and_inserts_nothing(sqlite_session: Session, tmp_path: Path):
+def test_404_records_non_trading_and_inserts_nothing(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """HTTP 404 outside 3-day buffer records date as non-trading and inserts nothing."""
     holiday = date(2024, 1, 26)  # Republic Day holiday
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
 
     def fake_fetch(url: str) -> bytes:
         raise NoFile(url)
+
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
 
     summary = load_raw_prices(
         start=holiday,
         end=holiday,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
         ref_date=date(2024, 2, 1),  # holiday is > 3 days in the past
     )
 
@@ -232,29 +217,26 @@ def test_404_records_non_trading_and_inserts_nothing(sqlite_session: Session, tm
     assert summary.rows_inserted == 0
 
     # Date must be recorded in non_trading_days.json
-    stored_nt = load_non_trading_days(PRICES, nt_path)
+    stored_nt = load_non_trading_days(PRICES)
     assert holiday in stored_nt
 
 
-def test_404_in_last_3_days_not_recorded_as_holiday(sqlite_session: Session, tmp_path: Path):
+def test_404_in_last_3_days_not_recorded_as_holiday(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """HTTP 404 within the last 3 days is NOT permanently recorded as holiday."""
     ref_today = date(2024, 1, 10)
     recent_date = date(2024, 1, 9)  # 1 day ago (within 3-day window)
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
 
     def fake_fetch(url: str) -> bytes:
         raise NoFile(url)
+
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
 
     summary = load_raw_prices(
         start=recent_date,
         end=recent_date,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
         ref_date=ref_today,
     )
 
@@ -262,28 +244,25 @@ def test_404_in_last_3_days_not_recorded_as_holiday(sqlite_session: Session, tmp
     assert summary.rows_inserted == 0
 
     # Date must NOT be recorded as non-trading
-    stored_nt = load_non_trading_days(PRICES, nt_path)
+    stored_nt = load_non_trading_days(PRICES)
     assert recent_date not in stored_nt
 
 
-def test_bad_file_not_inserted_and_counted(sqlite_session: Session, tmp_path: Path):
+def test_bad_file_not_inserted_and_counted(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """Corrupt or bad file is logged, counted, and never inserted into database."""
     target_d = date(2024, 1, 5)
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
 
     def fake_fetch(url: str) -> bytes:
         raise BadFile("HTML error block returned with 200 OK")
+
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
 
     summary = load_raw_prices(
         start=target_d,
         end=target_d,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     assert summary.bad_file == 1
@@ -293,26 +272,37 @@ def test_bad_file_not_inserted_and_counted(sqlite_session: Session, tmp_path: Pa
     assert len(rows) == 0
 
 
-def test_weekend_special_session_is_loaded(sqlite_session: Session, tmp_path: Path):
+def test_file_with_the_wrong_date_inside_is_rejected(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NSE sometimes serves another day's file: it is counted as bad and never stored."""
+    asked_day = date(2024, 1, 5)
+    monkeypatch.setattr(nse_files, "fetch", lambda url: make_day_udiff_zip(date(2024, 1, 4)))
+
+    summary = load_raw_prices(start=asked_day, end=asked_day, session=sqlite_session)
+
+    assert summary.bad_file == 1
+    assert summary.rows_inserted == 0
+    assert sqlite_session.scalars(select(DailyPrice)).all() == []
+    assert not (settings.BHAVCOPY_ALL_DIR / "2024-01-05.parquet").exists()
+
+
+def test_weekend_special_session_is_loaded(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+):
     """Weekend special trading session (e.g. Sunday Diwali Muhurat trading) is loaded."""
     sunday = date(2024, 1, 7)  # Calendar Sunday
     assert sunday.weekday() == 6  # Sunday
 
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
-
     def fake_fetch(url: str) -> bytes:
         return make_day_udiff_zip(sunday)
+
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
 
     summary = load_raw_prices(
         start=sunday,
         end=sunday,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
 
     assert summary.downloaded == 1
@@ -323,12 +313,10 @@ def test_weekend_special_session_is_loaded(sqlite_session: Session, tmp_path: Pa
     assert sunday in dates_in_db
 
 
-def test_rerun_is_idempotent(sqlite_session: Session, tmp_path: Path):
+def test_rerun_is_idempotent(sqlite_session: Session, monkeypatch: pytest.MonkeyPatch):
     """Running load_raw_prices twice over the same window leaves row counts identical."""
     day1 = date(2024, 1, 1)
     day2 = date(2024, 1, 2)
-    cache_dir = tmp_path / "bhavcopy_all"
-    nt_path = tmp_path / "non_trading_days.json"
 
     def fake_fetch(url: str) -> bytes:
         if "20240101" in url:
@@ -338,15 +326,12 @@ def test_rerun_is_idempotent(sqlite_session: Session, tmp_path: Path):
         raise NoFile(url)
 
     # First run
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
+
     load_raw_prices(
         start=day1,
         end=day2,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
     count1 = len(sqlite_session.scalars(select(DailyPrice)).all())
     assert count1 == 4
@@ -356,11 +341,6 @@ def test_rerun_is_idempotent(sqlite_session: Session, tmp_path: Path):
         start=day1,
         end=day2,
         session=sqlite_session,
-        cache_dir=cache_dir,
-        non_trading_path=nt_path,
-        fetch_fn=fake_fetch,
-        sleep_fn=lambda _: None,
-        pause_seconds=0,
     )
     count2 = len(sqlite_session.scalars(select(DailyPrice)).all())
     assert count2 == 4
@@ -440,11 +420,9 @@ def test_update_retries_gap_day_and_fills_it(
             return make_day_udiff_zip(gap_day)
         raise NoFile(url)
 
-    summary = run_daily_update(
-        session=sqlite_session,
-        fetch_fn=fake_fetch,
-        today=date(2026, 11, 5),
-    )
+    monkeypatch.setattr(nse_files, "fetch", fake_fetch)
+
+    summary = run_daily_update(session=sqlite_session, today=date(2026, 11, 5))
 
     stored = set(sqlite_session.scalars(select(DailyPrice.date)).all())
     assert gap_day in stored
@@ -464,18 +442,18 @@ def test_update_reports_gap_that_still_fails(
     def bad_fetch(url: str) -> bytes:
         raise BadFile("html block page")
 
-    summary = run_daily_update(
-        session=sqlite_session,
-        fetch_fn=bad_fetch,
-        today=date(2026, 11, 5),
-    )
+    monkeypatch.setattr(nse_files, "fetch", bad_fetch)
+
+    summary = run_daily_update(session=sqlite_session, today=date(2026, 11, 5))
 
     assert summary.price_gaps == [date(2026, 11, 3)]
     assert "Price gaps remaining     : 1" in summary.format_text()
     assert "2026-11-03" in (settings.REPORTS_DIR / "price_gaps.csv").read_text()
 
 
-def test_default_end_date_is_today(sqlite_session: Session, tmp_path: Path) -> None:
+def test_default_end_date_is_today(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """With no end date, today's file is tried too (like --update); it used to stop at yesterday."""
     asked: list[str] = []
 
@@ -483,13 +461,11 @@ def test_default_end_date_is_today(sqlite_session: Session, tmp_path: Path) -> N
         asked.append(url)
         raise NoFile(url)
 
+    monkeypatch.setattr(nse_files, "fetch", not_published_yet)
+
     load_raw_prices(
         start=date(2026, 11, 19),
         session=sqlite_session,
-        cache_dir=tmp_path / "cache",
-        non_trading_path=tmp_path / "nt.json",
-        fetch_fn=not_published_yet,
-        sleep_fn=lambda _: None,
         ref_date=date(2026, 11, 20),
     )
 

@@ -146,8 +146,18 @@ def test_reader_counts_one_action_once_even_if_listed_under_two_series(session) 
 def test_reader_respects_the_date_window(session) -> None:
     rows, _ = build_action_rows(sample_rows(), NOW)
     store_corporate_actions(session, rows)
-    events, review = get_price_adjustment_events(session, date(2024, 1, 1), date(2024, 12, 31))
+    events, review = get_price_adjustment_events(
+        session, start=date(2024, 1, 1), end=date(2024, 12, 31)
+    )
     assert set(events.symbol) == {"COCHINSHIP", "PREMEXPLN"}
+    assert review.empty
+
+
+def test_reader_limits_the_result_to_the_given_symbols(session) -> None:
+    rows, _ = build_action_rows(sample_rows(), NOW)
+    store_corporate_actions(session, rows)
+    events, review = get_price_adjustment_events(session, symbols=["COCHINSHIP"])
+    assert set(events.symbol) == {"COCHINSHIP"}
     assert review.empty
 
 

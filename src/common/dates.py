@@ -72,3 +72,10 @@ def _parse_text(text: str, formats: tuple[str, ...], dayfirst: bool | None) -> d
     except (ValueError, TypeError, OverflowError):
         return None
     return None if pd.isna(parsed) else parsed.date()
+
+
+def date_or_default(value: date | str | None, default: date) -> date:
+    """A date, an ISO string ('2026-11-20') or None (use ``default``) as a date."""
+    if value is None:
+        return default
+    return date.fromisoformat(value) if isinstance(value, str) else value
