@@ -20,12 +20,13 @@ from config.settings import setup_logging
 setup_logging()
 logger = logging.getLogger("ui.dashboard")
 
-import contextlib
-
+import pandas as pd
 import streamlit as st
 
 from ui.components.dashboard_helpers import (
+    COLUMN_DISPLAY,
     COLUMN_PRESETS,
+    PERCENT_CHANGE_LABELS,
     SERIES_LABELS,
     color_change,
     compute_dashboard_kpis,
@@ -38,34 +39,30 @@ from ui.components.terminal_styles import apply_terminal_theme, render_terminal_
 from ui.data import get_snapshot, render_uninitialized_prompt
 
 
-def setup_page_config() -> None:
-    # Configure high-resolution widescreen layout for trading terminal
-    with contextlib.suppress(Exception):
-        st.set_page_config(
-            page_title="Master Dashboard | NSE Trading Terminal",
-            page_icon="📊",
-            layout="wide",
-            initial_sidebar_state="expanded",
-        )
+def setup_page() -> pd.DataFrame | None:
+    """Configure the page, draw the theme and header, and return the snapshot.
 
+    Returns None after showing the "no data yet" prompt, so the caller stops there.
+    ``st.set_page_config`` must be the first Streamlit call and runs once per page run.
+    """
+    st.set_page_config(
+        page_title="Master Dashboard | NSE Trading Terminal",
+        page_icon="📊",
+        layout="wide",  # widescreen layout for the trading terminal
+        initial_sidebar_state="expanded",
+    )
+    apply_terminal_theme()
 
-COLUMN_CONFIG = {
-    "Close": st.column_config.NumberColumn("Close (₹)", format="₹%.2f"),
-    "Volume": st.column_config.NumberColumn("Volume", format="%d"),
-    "% Change Daily": st.column_config.NumberColumn("% Change Daily", format="%.2f%%"),
-    "% Change 1M": st.column_config.NumberColumn("% Change 1M", format="%.2f%%"),
-    "% Change 3M": st.column_config.NumberColumn("% Change 3M", format="%.2f%%"),
-    "% Change 6M": st.column_config.NumberColumn("% Change 6M", format="%.2f%%"),
-    "% Change 12M": st.column_config.NumberColumn("% Change 12M", format="%.2f%%"),
-    "% From 52W High": st.column_config.NumberColumn("% From 52W High", format="%.1f%%"),
-    "SMA 50": st.column_config.NumberColumn("SMA 50", format="₹%.2f"),
-    "SMA 200": st.column_config.NumberColumn("SMA 200", format="₹%.2f"),
-    "EMA 12": st.column_config.NumberColumn("EMA 12", format="₹%.2f"),
-    "EMA 20": st.column_config.NumberColumn("EMA 20", format="₹%.2f"),
-    "EMA 26": st.column_config.NumberColumn("EMA 26", format="₹%.2f"),
-    "RSI": st.column_config.NumberColumn("RSI (14)", format="%.1f"),
-}
-PERCENT_COLUMNS = [c for c in COLUMN_CONFIG if c.startswith("% Change")]
+    data = get_snapshot()
+    render_terminal_header(
+        title="NSE Screener",
+        subtitle="TECHNICAL & QUANTITATIVE SNAPSHOT",
+        as_of=data["as_of"],
+    )
+    if data["snapshot"].empty:
+        render_uninitialized_prompt()
+        return None
+    return data["snapshot"]
 
 
 def render_kpis(kpis: list[tuple[str, str, str]]) -> None:
@@ -79,20 +76,8 @@ def render_kpis(kpis: list[tuple[str, str, str]]) -> None:
 
 def main() -> None:
     try:
-        setup_page_config()
-        apply_terminal_theme()
-
-        data = get_snapshot()
-        snapshot = data["snapshot"]
-
-        render_terminal_header(
-            title="NSE Screener",
-            subtitle="TECHNICAL & QUANTITATIVE SNAPSHOT",
-            as_of=data["as_of"],
-        )
-
-        if snapshot.empty:
-            render_uninitialized_prompt()
+        snapshot = setup_page()
+        if snapshot is None:
             return
 
         as_of = snapshot["date"].max() if "date" in snapshot.columns else "unknown"
@@ -130,15 +115,15 @@ def main() -> None:
         shown_cols = [c for c in chosen_cols if c in table.columns] or list(table.columns)
         display_view = table[shown_cols]
 
-        # Green/red text for % changes; number formats come from COLUMN_CONFIG.
-        percent_shown = [c for c in PERCENT_COLUMNS if c in display_view.columns]
+        # Green/red text for % changes; number formats come from COLUMN_DISPLAY.
+        percent_shown = [c for c in PERCENT_CHANGE_LABELS if c in display_view.columns]
         styled = display_view.style.map(color_change, subset=percent_shown)
-        st.dataframe(
-            styled,
-            width="stretch",
-            hide_index=True,
-            column_config={k: v for k, v in COLUMN_CONFIG.items() if k in display_view.columns},
-        )
+        column_config = {
+            label: st.column_config.NumberColumn(label, format=number_format)
+            for label, number_format in COLUMN_DISPLAY.values()
+            if number_format and label in display_view.columns
+        }
+        st.dataframe(styled, width="stretch", hide_index=True, column_config=column_config)
 
         st.download_button(
             label="📥 Download table (CSV)",

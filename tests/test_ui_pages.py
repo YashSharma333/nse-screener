@@ -12,6 +12,41 @@ class TestStreamlitPages(unittest.TestCase):
         at.run()
         self.assertFalse(at.exception, f"Dashboard page raised exception: {at.exception}")
 
+    def test_dashboard_with_data_shows_a_table_with_the_display_names(self):
+        """A snapshot with data draws the table; column names and formats come from one dict."""
+        import pandas as pd
+
+        from ui import data as ui_data
+        from ui.components.dashboard_helpers import COLUMN_DISPLAY
+
+        snapshot = pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "series": "EQ",
+                    "date": "2026-11-20",
+                    "close": 100.0,
+                    "volume": 5000,
+                    "percent_change_close_1": 1.5,
+                    "rsi_close_14": 55.0,
+                }
+            ]
+        )
+        original = ui_data.get_snapshot
+        ui_data.get_snapshot = lambda: {"snapshot": snapshot, "as_of": "2026-11-20", "message": ""}
+        try:
+            at = AppTest.from_file(str(PROJECT_ROOT / "ui" / "Dashboard.py"), default_timeout=30)
+            at.run()
+        finally:
+            ui_data.get_snapshot = original
+
+        self.assertFalse(at.exception, f"Dashboard raised: {at.exception}")
+        self.assertEqual(len(at.dataframe), 1)
+        shown = at.dataframe[0].value.columns.tolist()
+        labels = [label for label, _ in COLUMN_DISPLAY.values()]
+        self.assertTrue(set(shown) <= set(labels))
+        self.assertIn("Close", shown)
+
     def test_stock_inspector_renders_candlestick(self):
         import pandas as pd
 
