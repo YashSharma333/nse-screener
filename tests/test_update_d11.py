@@ -31,6 +31,7 @@ from src.etl.daily_update import (
     UpdateContext,
     run_daily_update,
 )
+from src.ingestion import nse_files
 from src.ingestion.nse_files import NoFile
 from tests.update_helpers import STEP_FUNCTIONS, stub_steps
 
@@ -46,8 +47,8 @@ def sqlite_session():
         yield db
 
 
-def _ctx(today: date = TODAY, fetch_fn=None) -> UpdateContext:
-    return UpdateContext(fetch_fn=fetch_fn or (lambda url: b""), today=today)
+def _ctx(today: date = TODAY) -> UpdateContext:
+    return UpdateContext(today=today)
 
 
 def _file_database(tmp_path: Path):
@@ -166,7 +167,9 @@ def test_failing_step_rolls_back_only_itself(
 # ---------------------------------------------------------------------------
 # Step 1: load prices (today is tried; a 404 for today is not remembered)
 # ---------------------------------------------------------------------------
-def test_load_prices_tries_today_and_does_not_cache_early_404(sqlite_session: Session) -> None:
+def test_load_prices_tries_today_and_does_not_cache_early_404(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Today's file is requested; NSE not having it yet is NOT stored as a holiday."""
     sqlite_session.add(_price_row("TESTCO", date(2026, 11, 19)))
     sqlite_session.flush()
@@ -176,22 +179,27 @@ def test_load_prices_tries_today_and_does_not_cache_early_404(sqlite_session: Se
         asked.append(url)
         raise NoFile(url)
 
-    ctx = _ctx(fetch_fn=not_published_yet)
-    result = daily_update.step_load_prices(sqlite_session, ctx)
+    monkeypatch.setattr(nse_files, "fetch", not_published_yet)
+    result = daily_update.step_load_prices(sqlite_session, _ctx())
 
     assert any("20261120" in url for url in asked)
     assert result == {"new_dates": [], "rows_added": 0}
     assert TODAY not in load_non_trading_days(PRICES)
 
 
-def test_load_prices_skips_download_when_today_already_stored(sqlite_session: Session) -> None:
+def test_load_prices_skips_download_when_today_already_stored(
+    sqlite_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """With prices already stored for today, nothing is downloaded."""
     sqlite_session.add(_price_row("TESTCO", TODAY))
     sqlite_session.flush()
     asked: list[str] = []
-    ctx = _ctx(fetch_fn=lambda url: asked.append(url) or b"")
+    monkeypatch.setattr(nse_files, "fetch", lambda url: asked.append(url) or b"")
 
-    assert daily_update.step_load_prices(sqlite_session, ctx) == {"new_dates": [], "rows_added": 0}
+    assert daily_update.step_load_prices(sqlite_session, _ctx()) == {
+        "new_dates": [],
+        "rows_added": 0,
+    }
     assert asked == []
 
 
@@ -204,7 +212,7 @@ def test_market_cap_step_loads_new_dates_and_warns_on_unmatched(sqlite_session: 
     ctx.summary.new_dates = [date(2026, 11, 19), TODAY]
     calls: list[tuple[date, date]] = []
 
-    def fake_load(start, end, session, fetch_fn):
+    def fake_load(start, end, session):
         calls.append((start, end))
         return SimpleNamespace(updated_rows=7, unmatched_symbols=2)
 
@@ -223,7 +231,7 @@ def test_market_cap_step_repairs_recent_dates_without_new_dates(sqlite_session: 
     sqlite_session.flush()
     calls: list[tuple[date, date]] = []
 
-    def fake_load(start, end, session, fetch_fn):
+    def fake_load(start, end, session):
         calls.append((start, end))
         return SimpleNamespace(updated_rows=1, unmatched_symbols=0)
 

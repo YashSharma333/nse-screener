@@ -92,6 +92,8 @@ def nse_sleeps(monkeypatch):
     fake_time = SimpleNamespace(sleep=slept.append)
     monkeypatch.setattr("src.ingestion.nse_files.time", fake_time)
     monkeypatch.setattr("src.ingestion.corporate_actions.time", fake_time)
+    monkeypatch.setattr("src.ingestion.price_loader.time", fake_time)
+    monkeypatch.setattr("src.ingestion.mcap_loader.time", fake_time)
     yield slept
     nse_files.reset_client()
 

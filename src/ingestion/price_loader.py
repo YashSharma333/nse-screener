@@ -12,18 +12,16 @@ Key principles:
    (file may still be published later).
 5. Monthly batch upsert: chunked by calendar month via src/db/upsert.py with
    unique key (symbol, date).
-6. Dependency injection: fetch_fn, parse_fn, cache_dir, and non_trading_path can be injected
-   so tests remain 100% offline.
+6. Folders and the pause come from config/settings.py when the loader runs; tests replace
+   ``nse_files.fetch`` and the settings instead of passing functions in.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import NSE_HISTORY_START
+from src.common.dates import date_or_default
 from src.common.db import use_session
 from src.common.trading_calendar import (
     PRICES,
@@ -41,8 +40,9 @@ from src.common.trading_calendar import (
 )
 from src.db.models import DailyPrice
 from src.db.upsert import upsert_rows
+from src.ingestion import nse_files
 from src.ingestion.bhavcopy_parser import parse_bhavcopy, write_cache
-from src.ingestion.nse_files import BadFile, NoFile, bhavcopy_url, fetch
+from src.ingestion.nse_files import BadFile, NoFile
 
 logger = logging.getLogger(__name__)
 
@@ -96,182 +96,128 @@ def write_price_gaps_report(gaps: list[date], path: Path | None = None) -> Path:
     return target
 
 
+def dates_to_load(
+    start: date, end: date, session: Session | None, non_trading_days: set[date]
+) -> list[date]:
+    """Calendar days from ``start`` to ``end`` that still need a download.
+
+    Every calendar day is a candidate (weekends too: special sessions exist). Days already
+    stored in daily_prices (resume after an interruption) and confirmed non-trading days are
+    left out.
+    """
+    with use_session(session) as s:
+        stored = set(get_trading_dates(s, start, end))
+    every_day = (start + timedelta(days=i) for i in range((end - start).days + 1))
+    return [d for d in every_day if d not in stored and d not in non_trading_days]
+
+
+def split_by_month(days: list[date]) -> list[list[date]]:
+    """Group an ordered list of days into one list per calendar month."""
+    months: dict[tuple[int, int], list[date]] = {}
+    for d in days:
+        months.setdefault((d.year, d.month), []).append(d)
+    return list(months.values())
+
+
+def read_cached_day(d: date) -> pd.DataFrame | None:
+    """The parsed prices of ``d`` from the Parquet cache, or None (missing or corrupt file)."""
+    path = settings.BHAVCOPY_ALL_DIR / f"{d.isoformat()}.parquet"
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except (OSError, ValueError) as exc:
+        logger.warning("Corrupt parquet cache for %s (%s); will re-download.", d, exc)
+        return None
+
+
+def download_day(d: date) -> pd.DataFrame:
+    """Download, check and cache one day. Raises NoFile or BadFile; the caller decides."""
+    raw = nse_files.fetch(nse_files.bhavcopy_url(d))
+    df = parse_bhavcopy(raw, d)  # raises BadFile when the date inside the file is not ``d``
+    write_cache(df, d)
+    if settings.PRICE_DOWNLOAD_PAUSE_SECONDS > 0:
+        time.sleep(settings.PRICE_DOWNLOAD_PAUSE_SECONDS)  # be polite to NSE
+    return df
+
+
+def load_one_day(d: date, today: date, summary: LoadPricesSummary) -> pd.DataFrame | None:
+    """Prices of one day (cache first, then NSE), or None when there is nothing to store.
+
+    A 404 is remembered as a holiday only when ``d`` is older than 3 days; a bad file is
+    skipped and counted.
+    """
+    df = read_cached_day(d)
+    source = "cached"
+    if df is not None:
+        summary.cached += 1
+    else:
+        try:
+            df = download_day(d)
+        except NoFile:
+            summary.no_file += 1
+            record_missing_file(PRICES, d, today)
+            return None
+        except BadFile as exc:
+            logger.warning("Bad file on %s (%s); skipping to avoid bad data.", d, exc)
+            summary.bad_file += 1
+            return None
+        summary.downloaded += 1
+        source = "downloaded"
+    if df.empty:
+        return None
+    df["date"] = pd.to_datetime(df["date"]).dt.date  # plain dates for the database
+    logger.info("Day %s: %d rows (%s)", d, len(df), source)
+    return df
+
+
+def write_month(
+    session: Session | None, rows: list[dict[str, Any]], summary: LoadPricesSummary
+) -> None:
+    """Upsert one month of rows (own session unless one is given; a given one is not committed)."""
+    with use_session(session) as s:
+        upsert_rows(session=s, model=DailyPrice, rows=rows, index_elements=["symbol", "date"])
+    summary.rows_inserted += len(rows)
+    logger.info("Upserted %d rows (cumulative: %d)", len(rows), summary.rows_inserted)
+
+
 def load_raw_prices(
     start: date | str | None = None,
     end: date | str | None = None,
     *,
     session: Session | None = None,
-    cache_dir: Path | None = None,
-    non_trading_path: Path | None = None,
-    fetch_fn: Callable[..., bytes] = fetch,
-    parse_fn: Callable[[bytes, date | str], pd.DataFrame] = parse_bhavcopy,
-    write_cache_fn: Callable[..., Path] = write_cache,
-    sleep_fn: Callable[[float], Any] = time.sleep,
-    pause_seconds: float | None = None,
     ref_date: date | None = None,
 ) -> LoadPricesSummary:
-    """Load raw Bhavcopy files into Parquet cache and upsert into daily_prices.
+    """Load raw Bhavcopy files into the Parquet cache and upsert them into daily_prices.
 
-    Parameters
-    ----------
-    start : date | str | None
-        Earliest calendar day to process (default: 2016-11-21).
-    end : date | str | None
-        Latest calendar day to process (default: today; NSE may not have published it yet).
-    session : Session | None
-        SQLAlchemy database session. If provided, uses it as given without closing.
-        If None, each month is saved in its own session. A given session is never committed here.
-    cache_dir : Path | None
-        Directory for storing full-universe parquet cache (data/raw/nse/bhavcopy_all).
-    non_trading_path : Path | None
-        Override for the price non-trading-days JSON (default: settings, see trading_calendar).
-    fetch_fn : Callable
-        Function downloading raw URL bytes (default: src.ingestion.nse_files.fetch).
-    parse_fn : Callable
-        Function parsing zip bytes into standardized DataFrame.
-    write_cache_fn : Callable
-        Function saving parsed DataFrame to Parquet cache.
-    sleep_fn : Callable
-        Sleep function for politeness between network downloads.
-    pause_seconds : float
-        Polite delay in seconds between downloads (default: settings.PRICE_DOWNLOAD_PAUSE_SECONDS).
-    ref_date : date | None
-        Reference date for determining recent 3-day buffer (default: date.today()).
-
-    Returns
-    -------
-    LoadPricesSummary
-        Summary statistics of the loading process.
+    ``start`` defaults to 2016-11-21, ``end`` to today (NSE may not have published it yet).
+    ``session``: used as given and never committed; without one, each month is saved in its
+    own session. ``ref_date`` is "today" for the 3-day rule on 404s (default: date.today()).
     """
     today = ref_date or date.today()
-    if pause_seconds is None:
-        pause_seconds = settings.PRICE_DOWNLOAD_PAUSE_SECONDS
-    start_date: date = (
-        (date.fromisoformat(start) if isinstance(start, str) else start)
-        if start is not None
-        else NSE_HISTORY_START
-    )
-    end_date: date = (
-        (date.fromisoformat(end) if isinstance(end, str) else end) if end is not None else today
-    )
+    start_date = date_or_default(start, NSE_HISTORY_START)
+    end_date = date_or_default(end, today)
 
     summary = LoadPricesSummary()
     if start_date > end_date:
         logger.info(
-            "Start date (%s) is after end date (%s); nothing to load.",
-            start_date,
-            end_date,
+            "Start date (%s) is after end date (%s); nothing to load.", start_date, end_date
         )
         return summary
 
-    target_cache_dir = cache_dir or settings.BHAVCOPY_ALL_DIR
-    target_cache_dir.mkdir(parents=True, exist_ok=True)
+    days = dates_to_load(start_date, end_date, session, load_non_trading_days(PRICES))
+    for month_days in split_by_month(days):
+        rows: list[dict[str, Any]] = []
+        for d in month_days:
+            df = load_one_day(d, today, summary)
+            if df is None:
+                continue
+            summary.first_date = min(summary.first_date or d, d)
+            summary.last_date = max(summary.last_date or d, d)
+            rows.extend(df.to_dict(orient="records"))
+        if rows:
+            write_month(session, rows, summary)
 
-    # Load known non-trading days once into memory for fast lookup
-    non_trading_days = load_non_trading_days(PRICES, non_trading_path)
-
-    # Build full sequence of calendar days in range (every single day, including weekends)
-    calendar_days: list[date] = []
-    curr = start_date
-    while curr <= end_date:
-        calendar_days.append(curr)
-        curr += timedelta(days=1)
-
-    def _execute_load() -> None:
-        # Pre-query dates already in database to guarantee fast, safe resume after interruption
-        with use_session(session) as s:
-            db_dates: set[date] = set(get_trading_dates(s, start_date, end_date))
-
-        # Group calendar days by year and month to insert in bounded monthly transactions
-        for (year, month), month_group in groupby(calendar_days, key=lambda d: (d.year, d.month)):
-            month_days = list(month_group)
-            month_records: list[dict[str, Any]] = []
-
-            for d in month_days:
-                # 1. Skip if already confirmed non-trading day (holiday, weekend 404)
-                if d in non_trading_days:
-                    continue
-
-                # 2. Skip if already in database (resume capability)
-                if d in db_dates:
-                    continue
-
-                # 3. Check if Parquet cache already exists for this day
-                parquet_path = target_cache_dir / f"{d.isoformat()}.parquet"
-                df: pd.DataFrame | None = None
-                source: str = "cached"
-
-                if parquet_path.exists():
-                    try:
-                        df = pd.read_parquet(parquet_path)
-                        summary.cached += 1
-                    except Exception as exc:
-                        logger.warning(
-                            "Corrupt parquet cache for %s (%s); will re-download.", d, exc
-                        )
-                        df = None
-
-                if df is None:
-                    url = bhavcopy_url(d)
-                    try:
-                        raw = fetch_fn(url)
-                        df = parse_fn(raw, d)
-                        write_cache_fn(df, d, cache_dir=target_cache_dir)
-                        summary.downloaded += 1
-                        source = "downloaded"
-
-                        # Polite pause after successful network download
-                        if pause_seconds > 0:
-                            sleep_fn(pause_seconds)
-
-                    except NoFile:
-                        summary.no_file += 1
-                        # Only record permanently as holiday if outside the recent 3-day buffer
-                        if record_missing_file(PRICES, d, today, non_trading_path):
-                            non_trading_days.add(d)
-                        continue
-
-                    except BadFile as exc:
-                        logger.warning("Bad file on %s (%s); skipping to avoid bad data.", d, exc)
-                        summary.bad_file += 1
-                        continue
-
-                # If we have a valid parsed DataFrame for this trading day, accumulate records
-                if df is not None and not df.empty:
-                    # Ensure date column consists of standard datetime.date objects
-                    if not isinstance(df["date"].iloc[0], date):
-                        df["date"] = pd.to_datetime(df["date"]).dt.date
-
-                    if summary.first_date is None or d < summary.first_date:
-                        summary.first_date = d
-                    if summary.last_date is None or d > summary.last_date:
-                        summary.last_date = d
-
-                    month_records.extend(df.to_dict(orient="records"))
-                    logger.info("Day %s: %d rows (%s)", d, len(df), source)
-
-            # End of calendar month: upsert accumulated records for this month
-            if month_records:
-                # One own session per month: each month is saved as soon as it is done
-                with use_session(session) as s:
-                    upsert_rows(
-                        session=s,
-                        model=DailyPrice,
-                        rows=month_records,
-                        index_elements=["symbol", "date"],
-                    )
-                summary.rows_inserted += len(month_records)
-                logger.info(
-                    "Month %04d-%02d: upserted %d rows into daily_prices (cumulative: %d rows)",
-                    year,
-                    month,
-                    len(month_records),
-                    summary.rows_inserted,
-                )
-
-    _execute_load()
-
-    # Final summary output
     logger.info(
         "Load complete: %d downloaded, %d cached, %d no-file, %d bad-file, "
         "%d rows inserted. Date range: %s to %s.",
@@ -283,5 +229,4 @@ def load_raw_prices(
         summary.first_date,
         summary.last_date,
     )
-
     return summary

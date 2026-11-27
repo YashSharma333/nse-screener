@@ -22,7 +22,6 @@ import io
 import logging
 import time
 import zipfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -35,11 +34,12 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import FIRST_MCAP_DATE
-from src.common.dates import parse_nse_date
+from src.common.dates import date_or_default, parse_nse_date
 from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates
 from src.db.models import DailyPrice
-from src.ingestion.nse_files import BadFile, NoFile, check_date, check_zip, fetch, pr_bundle_url
+from src.ingestion import nse_files
+from src.ingestion.nse_files import BadFile, NoFile, check_date, check_zip
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,19 @@ def _read_mcap_date(text: str) -> date:
     return parse_nse_date(
         text, MCAP_DATE_FORMATS, strict=True, error=BadFile, label="Trade date in mcap file"
     )
+
+
+def _to_decimal(val: Any) -> Decimal | None:
+    """An exact Decimal from a cell, None for blank/NULL/NaN; unreadable text is a bad file."""
+    if pd.isna(val) or val is None:
+        return None
+    s = str(val).strip()
+    if not s or s.upper() == "NULL" or s.upper() == "NAN":
+        return None
+    try:
+        return Decimal(s)
+    except Exception as exc:
+        raise BadFile(f"Cannot parse market cap value {s!r} as Decimal") from exc
 
 
 def parse_mcap_file(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataFrame:
@@ -145,17 +158,6 @@ def parse_mcap_file(raw_zip_bytes: bytes, expected_date: date | str) -> pd.DataF
     df["series"] = df[srs_col].str.upper()
     df["date"] = file_date
 
-    def _to_decimal(val: Any) -> Decimal | None:
-        if pd.isna(val) or val is None:
-            return None
-        s = str(val).strip()
-        if not s or s.upper() == "NULL" or s.upper() == "NAN":
-            return None
-        try:
-            return Decimal(s)
-        except Exception as exc:
-            raise BadFile(f"Cannot parse market cap value {s!r} as Decimal") from exc
-
     df["market_cap"] = df[mcap_col].apply(_to_decimal)
 
     # Drop rows without market cap
@@ -178,86 +180,75 @@ def write_mcap_cache(
     return target_path
 
 
-def load_market_caps(
-    start: date | str | None = None,
-    end: date | str | None = None,
-    *,
-    session: Session | None = None,
-    cache_dir: Path | None = None,
-    fetch_fn: Callable[..., bytes] = fetch,
-    parse_fn: Callable[[bytes, date | str], pd.DataFrame] = parse_mcap_file,
-    write_cache_fn: Callable[..., Path] = write_mcap_cache,
-    sleep_fn: Callable[[float], Any] = time.sleep,
-    pause_seconds: float | None = None,
-) -> McapSummary:
-    """Load market cap values from PR bundles into daily_prices for dates >= 2024-02-01.
+def read_cached_mcap(d: date) -> pd.DataFrame | None:
+    """The parsed market caps of ``d`` from the Parquet cache, or None (missing or corrupt)."""
+    path = settings.MCAP_DIR / f"{d.isoformat()}.parquet"
+    if not path.exists():
+        return None
+    try:
+        return pd.read_parquet(path)
+    except (OSError, ValueError) as exc:
+        logger.warning("Corrupt mcap parquet cache for %s (%s); will re-download.", d, exc)
+        return None
 
-    Parameters
-    ----------
-    start : date | str | None
-        Earliest date to load. Clamped to FIRST_MCAP_DATE (2024-02-01).
-    end : date | str | None
-        Latest date to load (default: today; the bundle may not be published yet).
-    session : Session | None
-        SQLAlchemy database session. If provided, uses it as given without closing.
-    cache_dir : Path | None
-        Directory for storing parquet cache (data/raw/nse/mcap).
-    fetch_fn : Callable
-        Function downloading raw URL bytes (default: fetch).
-    parse_fn : Callable
-        Function parsing zip bytes into DataFrame (default: parse_mcap_file).
-    write_cache_fn : Callable
-        Function caching DataFrame as Parquet.
-    sleep_fn : Callable
-        Sleep function for politeness between downloads.
-    pause_seconds : float
-        Delay in seconds between requests (default: settings.PRICE_DOWNLOAD_PAUSE_SECONDS).
 
-    Returns
-    -------
-    McapSummary
-        Summary statistics of the loading process.
+def download_mcap(d: date) -> pd.DataFrame:
+    """Download, check and cache one PR bundle. Raises NoFile or BadFile; the caller decides."""
+    raw = nse_files.fetch(nse_files.pr_bundle_url(d))
+    df = parse_mcap_file(raw, d)  # raises BadFile when the date inside the file is not ``d``
+    write_mcap_cache(df, d)
+    if settings.PRICE_DOWNLOAD_PAUSE_SECONDS > 0:
+        time.sleep(settings.PRICE_DOWNLOAD_PAUSE_SECONDS)  # be polite to NSE
+    return df
+
+
+def load_one_mcap_day(d: date, summary: McapSummary) -> pd.DataFrame | None:
+    """Market caps of one day (cache first, then NSE), or None when there is nothing to use."""
+    df = read_cached_mcap(d)
+    if df is not None:
+        summary.cached += 1
+    else:
+        try:
+            df = download_mcap(d)
+        except NoFile:
+            summary.missing_bundle += 1
+            logger.info("PR bundle not found for %s (leave market_cap NULL)", d)
+            return None
+        except BadFile as exc:
+            summary.bad_file += 1
+            logger.warning("Bad PR bundle / mcap file on %s (%s); skipping", d, exc)
+            return None
+        summary.downloaded += 1
+    return None if df.empty else df
+
+
+def match_to_stored_rows(df: pd.DataFrame, d: date, session: Session | None) -> pd.DataFrame:
+    """Add a ``matched`` column: True where (symbol, series) is already stored for day ``d``.
+
+    Why: market cap only ever UPDATES existing price rows; it never inserts a row.
     """
-    if pause_seconds is None:
-        pause_seconds = settings.PRICE_DOWNLOAD_PAUSE_SECONDS
-    # Boundary: market cap files start on 2024-02-01
-    req_start = (
-        (date.fromisoformat(start) if isinstance(start, str) else start)
-        if start is not None
-        else FIRST_MCAP_DATE
-    )
-    start_date = max(req_start, FIRST_MCAP_DATE)
-
-    req_end = (
-        (date.fromisoformat(end) if isinstance(end, str) else end)
-        if end is not None
-        else date.today()
-    )
-    end_date = req_end
-
-    summary = McapSummary()
-    if start_date > end_date:
-        logger.info(
-            "Start date (%s) is after end date (%s); nothing to load.",
-            start_date,
-            end_date,
+    with use_session(session) as s:
+        stored = pd.DataFrame(
+            s.execute(
+                select(DailyPrice.symbol, DailyPrice.series).where(DailyPrice.date == d)
+            ).all(),
+            columns=["symbol", "series"],
         )
-        return summary
+    stored["matched"] = True
+    merged = df.merge(stored, on=["symbol", "series"], how="left")
+    merged["matched"] = merged["matched"].fillna(False).astype(bool)
+    return merged
 
-    target_cache_dir = cache_dir or settings.MCAP_DIR
-    target_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _execute() -> None:
-        # Query distinct trading dates present in daily_prices in the target range
-        with use_session(session) as s:
-            trading_dates = get_trading_dates(s, start_date, end_date)
-        logger.info(
-            "Found %d trading dates in daily_prices between %s and %s for market cap load.",
-            len(trading_dates),
-            start_date,
-            end_date,
-        )
+def update_market_cap(
+    session: Session | None, d: date, df: pd.DataFrame, summary: McapSummary
+) -> None:
+    """Write the market caps of day ``d`` onto the stored price rows and count the leftovers."""
+    merged = match_to_stored_rows(df, d, session)
+    matched = merged[merged["matched"]]
+    summary.unmatched_symbols += len(merged) - len(matched)
 
+    if not matched.empty:
         table = DailyPrice.__table__
         update_stmt = (
             table.update()
@@ -268,89 +259,57 @@ def load_market_caps(
             )
             .values(market_cap=bindparam("b_market_cap"))
         )
+        params = [
+            {"b_symbol": sym, "b_date": d, "b_series": srs, "b_market_cap": cap}
+            for sym, srs, cap in zip(
+                matched["symbol"], matched["series"], matched["market_cap"], strict=True
+            )
+        ]
+        with use_session(session) as s:  # own session per date unless one is given
+            s.execute(update_stmt, params)
+        summary.updated_rows += len(params)
 
-        for d in trading_dates:
-            parquet_path = target_cache_dir / f"{d.isoformat()}.parquet"
-            df: pd.DataFrame | None = None
+    logger.info(
+        "Date %s: updated market_cap on %d rows (%d symbols not in daily_prices)",
+        d,
+        len(matched),
+        len(merged) - len(matched),
+    )
 
-            if parquet_path.exists():
-                try:
-                    df = pd.read_parquet(parquet_path)
-                    summary.cached += 1
-                except Exception as exc:
-                    logger.warning(
-                        "Corrupt mcap parquet cache for %s (%s); will re-download.", d, exc
-                    )
-                    df = None
 
-            if df is None:
-                url = pr_bundle_url(d)
-                try:
-                    raw = fetch_fn(url)
-                    df = parse_fn(raw, d)
-                    write_cache_fn(df, d, cache_dir=target_cache_dir)
-                    summary.downloaded += 1
+def load_market_caps(
+    start: date | str | None = None,
+    end: date | str | None = None,
+    *,
+    session: Session | None = None,
+) -> McapSummary:
+    """Load market cap values from PR bundles into daily_prices for dates >= 2024-02-01.
 
-                    if pause_seconds > 0:
-                        sleep_fn(pause_seconds)
-                except NoFile:
-                    summary.missing_bundle += 1
-                    logger.info("PR bundle not found for %s (leave market_cap NULL)", d)
-                    continue
-                except BadFile as exc:
-                    summary.bad_file += 1
-                    logger.warning("Bad PR bundle / mcap file on %s (%s); skipping", d, exc)
-                    continue
+    ``start`` is clamped to FIRST_MCAP_DATE (earlier dates stay NULL, never estimated);
+    ``end`` defaults to today. Only trading dates already in daily_prices are visited.
+    ``session``: used as given and never committed; without one, each date has its own session.
+    """
+    start_date = max(date_or_default(start, FIRST_MCAP_DATE), FIRST_MCAP_DATE)
+    end_date = date_or_default(end, date.today())
 
-            if df is not None and not df.empty:
-                if summary.first_date is None or d < summary.first_date:
-                    summary.first_date = d
-                if summary.last_date is None or d > summary.last_date:
-                    summary.last_date = d
+    summary = McapSummary()
+    if start_date > end_date:
+        logger.info(
+            "Start date (%s) is after end date (%s); nothing to load.", start_date, end_date
+        )
+        return summary
 
-                # Query existing (symbol, series) pairs for date d in daily_prices
-                existing_pairs_stmt = select(DailyPrice.symbol, DailyPrice.series).where(
-                    DailyPrice.date == d
-                )
-                with use_session(session) as s:
-                    existing_pairs = set(s.execute(existing_pairs_stmt).all())
+    with use_session(session) as s:
+        trading_dates = get_trading_dates(s, start_date, end_date)
+    logger.info("Found %d trading dates for market cap load.", len(trading_dates))
 
-                update_params: list[dict[str, Any]] = []
-                unmatched_count = 0
-
-                for _, row in df.iterrows():
-                    sym = row["symbol"]
-                    srs = row["series"]
-                    mcap_val = row["market_cap"]
-
-                    if (sym, srs) in existing_pairs:
-                        update_params.append(
-                            {
-                                "b_market_cap": mcap_val,
-                                "b_symbol": sym,
-                                "b_date": d,
-                                "b_series": srs,
-                            }
-                        )
-                    else:
-                        unmatched_count += 1
-
-                if update_params:
-                    # One own session per date: each date is saved as soon as it is done
-                    with use_session(session) as s:
-                        s.execute(update_stmt, update_params)
-                    summary.updated_rows += len(update_params)
-
-                summary.unmatched_symbols += unmatched_count
-
-                logger.info(
-                    "Date %s: updated market_cap on %d rows (%d symbols not in daily_prices)",
-                    d,
-                    len(update_params),
-                    unmatched_count,
-                )
-
-    _execute()
+    for d in trading_dates:
+        df = load_one_mcap_day(d, summary)
+        if df is None:
+            continue
+        summary.first_date = min(summary.first_date or d, d)
+        summary.last_date = max(summary.last_date or d, d)
+        update_market_cap(session, d, df, summary)
 
     logger.info(
         "Market cap load complete: %d downloaded, %d cached, %d missing bundles, "
@@ -364,5 +323,4 @@ def load_market_caps(
         summary.first_date,
         summary.last_date,
     )
-
     return summary
