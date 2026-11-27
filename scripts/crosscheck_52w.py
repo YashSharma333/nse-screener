@@ -5,8 +5,9 @@ Downloads official adjusted 52-week High/Low files (CM_52_wk_High_low_DDMMYYYY.c
 for ~10 dates, compares them against our stored prices across stock rename lineages, and
 writes reports/adj_crosscheck.csv.
 
-52-week definition (NSE's own, on purpose): the highest adj_high and lowest adj_low over the
-last CROSSCHECK_WINDOW_DAYS (365) CALENDAR days up to and including the checked date. It is
+52-week definition (NSE's own, on purpose): the highest high and lowest low over the
+last CROSSCHECK_WINDOW_DAYS (365) CALENDAR days up to and including the checked date,
+adjusted AS OF the checked date (only events up to that date, like NSE's file). It is
 NOT the indicator cache's 252-bar column: the cache window is trading rows, ends the day
 before, and a rarely-trading stock spans years in 252 rows. Using NSE's definition keeps this
 an independent check of our data. A comparison FAILS above CROSSCHECK_TOLERANCE_PCT.
@@ -24,14 +25,14 @@ from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from config import settings
 from config.settings import REGULAR_SERIES
 from src.common.db import use_session
 from src.common.trading_calendar import get_trading_dates
-from src.db.models import DailyPrice
+from src.db.models import AdjFactor, DailyPrice
 from src.ingestion import nse_files
 from src.ingestion.renames import RenameChains, family, load_chains_from_db
 
@@ -111,22 +112,49 @@ def official_levels(check_date: date) -> pd.DataFrame:
     return parse_52_wk_csv(nse_files.fetch(nse_files.cm_52_wk_url(check_date)))
 
 
-def our_levels(session: Session, check_date: date) -> dict[str, tuple[float, float]]:
-    """Our 52-week (high, low) per stored symbol: the 365-calendar-day window, adjusted prices."""
-    window_start = check_date - timedelta(days=settings.CROSSCHECK_WINDOW_DAYS)
-    stmt = (
-        select(
-            DailyPrice.symbol,
-            func.max(func.coalesce(DailyPrice.adj_high, DailyPrice.high)).label("max_high"),
-            func.min(func.coalesce(DailyPrice.adj_low, DailyPrice.low)).label("min_low"),
-        )
-        .where(DailyPrice.date >= window_start, DailyPrice.date <= check_date)
-        .group_by(DailyPrice.symbol)
+def events_in_window(session: Session, window_start: date, check_date: date) -> pd.DataFrame:
+    """Split/bonus factors (``adj_factors``) dated after ``window_start`` up to ``check_date``."""
+    stmt = select(AdjFactor.symbol, AdjFactor.date, AdjFactor.factor).where(
+        AdjFactor.date > window_start, AdjFactor.date <= check_date
     )
+    events = pd.DataFrame(session.execute(stmt).all(), columns=["symbol", "ex_date", "factor"])
+    events["factor"] = events["factor"].astype(float)
+    return events
+
+
+def our_levels(session: Session, check_date: date) -> dict[str, tuple[float, float]]:
+    """Our 52-week (high, low) per stored symbol, adjusted AS OF ``check_date``.
+
+    NSE's file for a past date only knows the splits and bonuses up to that date. Our stored
+    ``adj_*`` columns are adjusted to today, so they also contain LATER events and would
+    disagree with NSE for no real reason. So we start from the raw high/low and multiply each
+    row by the factors of the events that happened after that row and up to the check date.
+    The 365-calendar-day window is unchanged.
+    """
+    window_start = check_date - timedelta(days=settings.CROSSCHECK_WINDOW_DAYS)
+    stmt = select(DailyPrice.symbol, DailyPrice.date, DailyPrice.high, DailyPrice.low).where(
+        DailyPrice.date >= window_start, DailyPrice.date <= check_date
+    )
+    rows = pd.DataFrame(session.execute(stmt).all(), columns=["symbol", "date", "high", "low"])
+    if rows.empty:
+        return {}
+    rows[["high", "low"]] = rows[["high", "low"]].astype(float)
+
+    events = events_in_window(session, window_start, check_date)
+    if not events.empty:
+        # Every (row, later event) pair; a row's multiplier is the product of its events' factors.
+        pairs = rows[["symbol", "date"]].reset_index().merge(events, on="symbol")
+        pairs = pairs[pairs["date"] < pairs["ex_date"]]
+        multiplier = pairs.groupby("index")["factor"].prod()
+        rows["high"] *= multiplier.reindex(rows.index).fillna(1.0)
+        rows["low"] *= multiplier.reindex(rows.index).fillna(1.0)
+
+    levels = rows.groupby("symbol").agg(max_high=("high", "max"), min_low=("low", "min"))
     return {
-        row.symbol: (float(row.max_high), float(row.min_low))
-        for row in session.execute(stmt).all()
-        if row.max_high is not None and row.min_low is not None
+        symbol: (float(high), float(low))
+        for symbol, high, low in zip(
+            levels.index, levels["max_high"], levels["min_low"], strict=True
+        )
     }
 
 
@@ -189,8 +217,9 @@ def print_summary(report: pd.DataFrame) -> bool:
     print("=" * 80)
     print("OFFICIAL 52-WEEK HIGH/LOW CROSS-CHECK")
     print(
-        f"Definition: highest adj_high / lowest adj_low over {settings.CROSSCHECK_WINDOW_DAYS} "
-        "calendar days up to the checked date (NSE's definition, not the 252-bar cache column)."
+        f"Definition: highest high / lowest low over {settings.CROSSCHECK_WINDOW_DAYS} calendar "
+        "days up to the checked date, adjusted as of that date (NSE's definition, not the "
+        "252-bar cache column)."
     )
     print("=" * 80)
     print(f"Dates: {report['date'].nunique() if not report.empty else 0}")
