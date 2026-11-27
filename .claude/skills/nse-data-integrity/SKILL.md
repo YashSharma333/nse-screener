@@ -47,7 +47,7 @@ do not bring it back.
 
 ## Checklist before opening the PR
 
-- [ ] Tests are offline: fake downloader/`fetch_fn`, `tmp_path`, SQLite. Nothing may touch
+- [ ] Tests are offline: replace `nse_files.fetch` (monkeypatch), `tmp_path`, SQLite. Nothing may touch
       the network (issue #82 was a test that did).
 - [ ] Test for a file whose inner date differs from the requested date.
 - [ ] Test that a recent 404 is not cached as non-trading.
