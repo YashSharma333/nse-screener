@@ -35,6 +35,26 @@ def add_official_action(
     session.flush()
 
 
+def add_rights_action(
+    session: Session, symbol: str, ex_date: date, subject: str, face_value: float = 10.0
+) -> None:
+    """Insert one RIGHTS row as the downloader stores it: status needs_review, no factor."""
+    session.add(
+        CorporateAction(
+            symbol=symbol,
+            ex_date=ex_date,
+            series="EQ",
+            action_type="RIGHTS",
+            part_no=0,
+            subject=subject,
+            subject_hash=f"{symbol}-{ex_date}-rights",
+            face_value=face_value,
+            parse_status="needs_review",
+        )
+    )
+    session.flush()
+
+
 def add_placeholder_action(session: Session) -> None:
     """Make the official table non-empty without any price effect (a dividend for no stock)."""
     add_official_action(

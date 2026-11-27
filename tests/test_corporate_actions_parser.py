@@ -17,7 +17,9 @@ from src.ingestion.corporate_actions_parser import (
     STATUS_EXACT,
     STATUS_INFO,
     STATUS_REVIEW,
+    parse_rights_terms,
     parse_subject,
+    rights_factor,
     subject_hash,
     unparsed_price_share,
 )
@@ -165,3 +167,57 @@ def test_known_problem_cases_from_the_real_feed() -> None:
     assert math.isclose(day_factor("PREMEXPLN", "21-Jun-2024"), 0.2)  # a missed split
     assert math.isclose(day_factor("MARATHON", "05-Apr-2018"), 0.5)  # a missed split
     assert day_factor("IDEA", "18-Mar-2020") == 1.0  # the 2020 "event" never existed
+
+
+# ---------------------------------------------------------------------------
+# Rights issues: NSE's formula (derivatives adjustment page) needs the issue price and the
+# last cum-date close, so the parser only reads the terms and a pure function does the maths.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("subject", "face_value", "expected"),
+    [
+        ("Rights 6:19 @ Premium Rs 66/-", 10.0, (6.0, 19.0, 76.0)),  # issue price = FV + premium
+        ("Rights 1:1 @ Premium Rs 0/-", 2.0, (1.0, 1.0, 2.0)),  # premium 0 = issued at face value
+        ("Rights 18:91 @ Prem Rs 740", 10.0, (18.0, 91.0, 750.0)),
+        ("Rights 7:10 @ Prm Rs 102/-", 1.0, (7.0, 10.0, 103.0)),
+        ("Rights 2:5 @ Premium Re 0.85/-", 1.0, (2.0, 5.0, 1.85)),
+        ("Rights 87:38 @ Premium Of Rs 2.50 Per Share", 10.0, (87.0, 38.0, 12.5)),
+        ("Rights Issue 30:37@ Premium Rs 53/-", 10.0, (30.0, 37.0, 63.0)),
+    ],
+)
+def test_rights_terms_are_read_from_the_subject(subject, face_value, expected) -> None:
+    terms = parse_rights_terms(subject, face_value)
+    assert (terms.new_shares, terms.held_shares, terms.issue_price) == expected
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Rights 2:3",  # no price stated: we never guess an issue price
+        "Rights - 1:5 Fully Paid Up Shares @ Premium Rs 10/- Per Share / 1:5 Partly Paid Up "
+        "Shares @ Premium Rs 4/- Per Share",  # two offers in one line
+        "Rights:14 Compulosry Convertible Debentures For Every 20 Equity Shares",
+        "Annual General Meeting",
+    ],
+)
+def test_unreadable_rights_terms_are_none(subject: str) -> None:
+    assert parse_rights_terms(subject, 10.0) is None
+
+
+def test_rights_issue_wording_keeps_the_ratio_on_the_part() -> None:
+    (part,) = parse_subject("Rights Issue 30:37@ Premium Rs 53/-")
+    assert (part.rights_new, part.rights_held) == (30.0, 37.0)
+
+
+def test_rights_factor_follows_nse_formula() -> None:
+    """P=100, issue price 60, 1 new share per 4 held: E = (100-60)*1/5 = 8, factor = 92/100."""
+    terms = parse_rights_terms("Rights 1:4 @ Premium Rs 50/-", 10.0)
+    assert rights_factor(100.0, terms) == pytest.approx(0.92)
+
+
+def test_rights_factor_is_none_when_it_cannot_lower_the_price() -> None:
+    """Issue price at or above the market price gives no benefit to adjust for; bad prices too."""
+    terms = parse_rights_terms("Rights 1:4 @ Premium Rs 50/-", 10.0)
+    assert rights_factor(60.0, terms) is None
+    assert rights_factor(40.0, terms) is None
+    assert rights_factor(0.0, terms) is None

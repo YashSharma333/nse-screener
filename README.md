@@ -230,7 +230,7 @@ python run_pipeline.py --download-corporate-actions --from 2024-01-01 --to 2026-
 python scripts/check_nse_reports.py
 ```
 * **Why it exists:** Guessing split and bonus ratios from price jumps is sometimes wrong (a 2:1 split got factor 0.6 instead of 0.5). NSE publishes the exact ratios, so we download them and `--rebuild-adjusted` uses them for the price adjustment.
-* **What it downloads:** the corporate-actions API (splits, bonuses, rights, mergers, dividends ...), `symbolchange.csv` and `EQUITY_L.csv`. Details, the factor maths and the format-change protections are in [docs/corporate_actions.md](docs/corporate_actions.md).
+* **What it downloads:** the corporate-actions API (splits, bonuses, rights, mergers, dividends ...; rights issues are adjusted with NSE's formula, see the doc), `symbolchange.csv` and `EQUITY_L.csv`. Details, the factor maths and the format-change protections are in [docs/corporate_actions.md](docs/corporate_actions.md).
 * **What it changes:** Upserts into `corporate_actions` and `symbol_changes` (safe to repeat) and writes raw files to `data/corporate_actions/` (git-ignored). It does not change any price or adjusted price by itself: run `--rebuild-adjusted` afterwards.
 * **Expected output:** `Corporate actions: 22545 API rows -> 22537 stored (724 exact-factor events, 413 to review).` then `Symbol changes stored: 1080 (361 touch our securities list). Listing master rows: 2632.`
 
@@ -282,7 +282,7 @@ python run_pipeline.py --crosscheck-52w
 ```
 * **Why it exists:** Audits split and bonus adjusted rolling 52-week High and Low against NSE's official `CM_52_wk_High_low_DDMMYYYY.csv`.
 * **What it changes:** Read-only operation. Writes discrepancies to `reports/adj_crosscheck.csv`. Differences are listed and never auto-fixed.
-* **52-week definition:** NSE's own: highest high and lowest low over the last 365 calendar days up to the checked date (`CROSSCHECK_WINDOW_DAYS`), adjusted **as of the checked date** (only the splits and bonuses up to that date, like NSE's file, so a later split does not count), not the indicator cache's 252-bar column. Known gap: NSE also adjusts for rights issues and we do not yet (tracked in issue #144). The printed summary says PASS or FAIL: a comparison fails above `CROSSCHECK_TOLERANCE_PCT` (1%) and nothing compared is not a pass.
+* **52-week definition:** NSE's own: highest high and lowest low over the last 365 calendar days up to the checked date (`CROSSCHECK_WINDOW_DAYS`), adjusted **as of the checked date** (only the splits and bonuses up to that date, like NSE's file, so a later split does not count), not the indicator cache's 252-bar column. The printed summary says PASS or FAIL: a comparison fails above `CROSSCHECK_TOLERANCE_PCT` (1%) and nothing compared is not a pass.
 
 ##### 11. Remove ETFs / fund units (one-time, `scripts/drop_funds.py`)
 ```bash

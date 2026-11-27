@@ -50,6 +50,8 @@ from src.ingestion.corporate_actions_parser import (
     PRICE_ACTION_TYPES,
     STATUS_EXACT,
     STATUS_REVIEW,
+    parse_rights_terms,
+    rights_factor,
     unparsed_price_share,
 )
 from src.ingestion.renames import family, load_chains_from_db
@@ -184,6 +186,59 @@ def _combine_exact_parts(exact: pd.DataFrame) -> pd.DataFrame:
     return events.sort_values(["symbol", "date"]).reset_index(drop=True)
 
 
+def _last_cum_close(session: Session, symbol: str, ex_date: date) -> float | None:
+    """The raw close on the last stored trading day before ``ex_date`` (NSE's "P"), or None."""
+    close = session.execute(
+        select(DailyPrice.close)
+        .where(DailyPrice.symbol == symbol, DailyPrice.date < ex_date)
+        .order_by(DailyPrice.date.desc())
+        .limit(1)
+    ).scalar()
+    return None if close is None else float(close)
+
+
+def _rights_parts(
+    session: Session,
+    wanted: set[str],
+    start: date | None,
+    end: date | None,
+    chains: Any,
+    stored_symbols: set[str],
+) -> list[tuple[Any, ...]]:
+    """Rights issues that can be priced, in the same shape as the exact parts.
+
+    NSE adjusts prices for rights issues, but the factor needs the last cum-date close, so it
+    is worked out here from the stored raw prices (never from adjusted ones). A rights issue
+    with unreadable terms, no price before the ex-date, or an issue price at or above the
+    market price is left out, so it stays in the review list.
+    """
+    stmt = _in_window(
+        select(
+            CorporateAction.symbol,
+            CorporateAction.ex_date,
+            CorporateAction.subject,
+            CorporateAction.subject_hash,
+            CorporateAction.part_no,
+            CorporateAction.face_value,
+        ).where(CorporateAction.action_type == "RIGHTS"),
+        start,
+        end,
+    )
+    if wanted:
+        stmt = stmt.where(CorporateAction.symbol.in_(wanted))
+    parts: list[tuple[Any, ...]] = []
+    for row in session.execute(stmt).all():
+        terms = parse_rights_terms(row.subject, row.face_value)
+        if terms is None:
+            continue
+        for target in _stored_targets(row.symbol, chains, stored_symbols):
+            price = _last_cum_close(session, target, row.ex_date)
+            factor = None if price is None else rights_factor(price, terms)
+            if factor is not None:
+                parts.append((target, row.ex_date, "RIGHTS", row.subject_hash, row.part_no, factor))
+    return parts
+
+
 def get_price_adjustment_events(
     session: Session,
     symbols: Sequence[str] | None = None,
@@ -202,8 +257,11 @@ def get_price_adjustment_events(
       n_parts``. ``factor`` is the PRODUCT of every exact split, bonus and consolidation
       factor on that ex-date, and is what you multiply earlier prices by.
     * ``review``: ``symbol, date, action_type, subject`` for actions that may move the price
-      but have no exact factor (rights, mergers, demergers, unreadable text). They are never
-      applied automatically.
+      but have no exact factor (mergers, demergers, rights issues whose terms or price are not
+      clear, unreadable text). They are never applied automatically.
+
+    Rights issues with readable terms are in ``events`` (kind ``RIGHTS``): their factor comes
+    from NSE's formula and the raw close before the ex-date (see ``rights_factor``).
     """
     chains = load_chains_from_db(session)
     wanted: set[str] = set()
@@ -256,14 +314,18 @@ def get_price_adjustment_events(
         for row in session.execute(exact_stmt).all()
         for target in _stored_targets(row.symbol, chains, stored_symbols)
     ]
+    rights_parts = _rights_parts(session, wanted, start, end, chains, stored_symbols)
     exact = pd.DataFrame(
-        exact_parts, columns=["symbol", "date", "kind", "subject_hash", "part_no", "factor"]
+        exact_parts + rights_parts,
+        columns=["symbol", "date", "kind", "subject_hash", "part_no", "factor"],
     )
+    priced_rights = {(symbol, ex_date) for symbol, ex_date, *_ in rights_parts}
 
     review_items = [
         (target, row.ex_date, row.action_type, row.subject)
         for row in session.execute(review_stmt).all()
         for target in _stored_targets(row.symbol, chains, stored_symbols)
+        if not (row.action_type == "RIGHTS" and (target, row.ex_date) in priced_rights)
     ]
     review = pd.DataFrame(review_items, columns=["symbol", "date", "action_type", "subject"])
     if not review.empty:
