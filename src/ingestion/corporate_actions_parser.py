@@ -55,7 +55,14 @@ _BONUS_RE = re.compile(r"bonus[\s\-]*" + _NUMBER + r"\s*:\s*" + _NUMBER)
 _FROM_TO_RE = re.compile(
     r"from\s*" + _RUPEE + _NUMBER + r"\s*/?-?\s*(?:per share)?\s*to\s*" + _RUPEE + _NUMBER
 )
-_RIGHTS_RE = re.compile(r"rights\s*" + _NUMBER + r"\s*:\s*" + _NUMBER)
+# "rights 1:4", "rights issue 30:37@ ..." and "rights - 1:5": A new shares for every B held.
+_RIGHTS_RE = re.compile(r"rights(?:\s*issue)?[\s:\-]*" + _NUMBER + r"\s*:\s*" + _NUMBER)
+# Any "A:B" ratio, used to refuse a line that offers two different things.
+_RATIO_RE = re.compile(_NUMBER + r"\s*:\s*" + _NUMBER)
+# "@ Premium Rs 66/-", "Prem Rs 740", "Prm Rs 102/-", "Premium Of Rs 2.50 Per Share".
+_PREMIUM_RE = re.compile(r"(?:premium|prem|prm)\b[\sa-z]*?(?:rs\.?|re\.?)\s*" + _NUMBER)
+# Rights of something that is not a plain equity offer: no simple issue price to use.
+_COMPLEX_RIGHTS_RE = re.compile(r"partly|convertible|debenture|warrant|preference")
 # Bonus of something that is not the ordinary equity share does not move the share price.
 _NON_EQUITY_BONUS_RE = re.compile(r"ncrps|debenture|preference|redeemable|\bncd\b")
 
@@ -91,6 +98,50 @@ class ActionPart:
 def normalise_subject(subject: str) -> str:
     """Lower-case the subject and collapse all whitespace (NSE pads many subjects)."""
     return " ".join(str(subject).lower().split())
+
+
+@dataclass(frozen=True)
+class RightsTerms:
+    """What a rights issue offers: ``new_shares`` for every ``held_shares`` at ``issue_price``."""
+
+    new_shares: float
+    held_shares: float
+    issue_price: float
+
+
+def parse_rights_terms(subject: str, face_value: float | None) -> RightsTerms | None:
+    """Read the offer of a rights issue from its NSE subject, or None when it is not clear.
+
+    The issue price is the face value plus the premium NSE prints (``Premium Rs 0`` means
+    issued at face value). We never guess: no premium, no face value, two offers in one line
+    (fully and partly paid) or convertible debentures all give None, so the action stays in
+    the review report instead of getting a made-up factor.
+    """
+    text = normalise_subject(subject)
+    if "rights" not in text or face_value is None or _COMPLEX_RIGHTS_RE.search(text):
+        return None
+    ratios, premiums = _RATIO_RE.findall(text), _PREMIUM_RE.findall(text)
+    if len(ratios) != 1 or len(premiums) != 1:
+        return None
+    new_shares, held_shares = float(ratios[0][0]), float(ratios[0][1])
+    if new_shares <= 0 or held_shares <= 0:
+        return None
+    return RightsTerms(new_shares, held_shares, float(face_value) + float(premiums[0]))
+
+
+def rights_factor(cum_price: float, terms: RightsTerms) -> float | None:
+    """NSE's rights adjustment factor, or None when it cannot lower the price.
+
+    NSE (equity derivatives, "Adjustments in case of Corporate Actions"): with P the close on
+    the last cum-date, S the issue price, A new shares per B held,
+    ``E = (P - S) * A / (A + B)`` and ``factor = (P - E) / P``. Earlier prices are multiplied
+    by it. If S is not below P the offer gives no benefit, and a non-positive P is bad data.
+    """
+    if cum_price <= 0 or terms.issue_price >= cum_price:
+        return None
+    benefit = (cum_price - terms.issue_price) * terms.new_shares
+    benefit /= terms.new_shares + terms.held_shares
+    return round((cum_price - benefit) / cum_price, 8)
 
 
 def subject_hash(subject: str) -> str:

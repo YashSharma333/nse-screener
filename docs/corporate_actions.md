@@ -83,7 +83,7 @@ MySQL tables (created by migration 008):
 | Status | Meaning | Used for adjustment? |
 |---|---|---|
 | `exact` | A split, bonus or consolidation whose ratio was read exactly | Yes (`price_factor` is set) |
-| `needs_review` | May move the price but needs a person: rights, mergers, demergers, unreadable text | **Never automatically** |
+| `needs_review` | May move the price but needs a person: mergers, demergers, unreadable text. **Rights issues** are stored as `needs_review` too, but `get_price_adjustment_events` prices them when their terms are clear (see below) | Rights: yes, when priced at read time. The rest: **never automatically** |
 | `info` | Dividends, meetings, buybacks: no price adjustment | No |
 
 ### How the price factor is worked out
@@ -96,6 +96,26 @@ The factor is what you multiply every price **before** the ex-date by.
 | Bonus 1:1 (1 new share per 1 held) | 1 / (1 + 1) | 0.5 |
 | Bonus 1:2 (1 new share per 2 held) | 2 / (1 + 2) | 0.6667 |
 | Consolidation, face value Re 1 to Rs 10 | 10 / 1 | 10 |
+
+### Rights issues (priced when the events are read)
+
+NSE adjusts its prices for rights issues (its page "Adjustments in case of Corporate Actions").
+The factor needs a market price, so it is worked out from the stored **raw** close, not at
+download time. With `P` = raw close on the last trading day before the ex-date, `S` = issue
+price (face value + the premium printed in the subject; `Premium Rs 0` means face value),
+`A` new shares for every `B` held:
+
+```
+E = (P - S) * A / (A + B)        factor = (P - E) / P
+```
+
+Example: `Rights 1:4 @ Premium Rs 50/-`, face value 10, P = 100: S = 60, E = 8, factor 0.92.
+A rights issue stays in the review list (no factor) when: the subject has no premium, two offers
+(fully and partly paid), warrants or debentures; the face value is missing; there is no price
+before the ex-date; or the issue price is not below the market price. Checked against NSE's
+52-week files on 28 clean cases (one rights issue, no other event): 27 matched within 1%.
+NSE's own file ignores a few rights issues (for example PRAXIS 2021, WOCKPHARMA 2022), so a
+handful of crosscheck differences remain; they are NSE-side, not ours.
 
 Two actions on one day are multiplied: split 10 to 2 (0.2) and bonus 1:1 (0.5) on the same
 day give **0.1**. (AHCL, 24 Apr 2026.)
@@ -173,7 +193,7 @@ If NSE moves the site to another host, set the environment variable `NSE_API_BAS
   call per year, a short pause) and do not run it in a tight loop.
 * It has not been tested from a data-centre IP address (NSE sometimes blocks those); test it
   first when the nightly server is set up.
-* Rights issues, mergers and demergers need share prices to compute a factor, so they are
-  listed for review only.
+* Mergers and demergers need share prices to compute a factor, so they are listed for review
+  only. Rights issues are priced (see above) unless their terms are unclear.
 * At least one official bonus shows no price jump in our data (DVL, 2021-08-05, bonus 1:2);
   such cases need a look before adjusting.

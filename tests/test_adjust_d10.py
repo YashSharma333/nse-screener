@@ -24,7 +24,7 @@ from src.etl.adjust import (
     rebuild_adjusted,
 )
 from src.ingestion import nse_files
-from tests.official_actions import add_official_action, add_prices
+from tests.official_actions import add_official_action, add_prices, add_rights_action
 
 
 @pytest.fixture
@@ -345,3 +345,18 @@ def test_our_levels_stack_several_events_in_the_window(session: Session) -> None
     high, low = our_levels(session, date(2024, 11, 10))["TWICE"]
 
     assert (high, low) == (100.0, 10.0)
+
+
+def test_rights_issue_lowers_earlier_adjusted_prices_like_nse(session: Session) -> None:
+    """Rebuild applies the rights factor (0.92) to rows before the ex-date, not to the rest."""
+    days = add_prices(session, "RIGHTCO", [100.0, 100.0, 90.0], start=date(2024, 5, 1))
+    add_rights_action(session, "RIGHTCO", days[2], "Rights 1:4 @ Premium Rs 50/-")
+
+    rebuild_adjusted(session=session)
+
+    closes = [
+        float(r.adj_close) for r in session.scalars(select(DailyPrice).order_by(DailyPrice.date))
+    ]
+    assert closes == pytest.approx([92.0, 92.0, 90.0])
+    raw = [float(r.close) for r in session.scalars(select(DailyPrice).order_by(DailyPrice.date))]
+    assert raw == [100.0, 100.0, 90.0]  # raw prices are never touched

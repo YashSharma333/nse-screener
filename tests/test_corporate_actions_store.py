@@ -26,6 +26,7 @@ from src.ingestion.corporate_actions_store import (
     store_corporate_actions,
     store_symbol_changes,
 )
+from tests.official_actions import add_official_action, add_prices, add_rights_action
 
 FIXTURE = Path(__file__).parent / "fixtures" / "corporate_actions_sample.json"
 TODAY = date(2026, 11, 18)
@@ -89,6 +90,43 @@ def test_fund_unit_actions_are_not_stored() -> None:
     with_etf, _ = build_action_rows([*sample_rows(), etf], NOW)
 
     assert with_etf == without_etf
+
+
+# ---------------------------------------------------------------------------
+# Rights issues get a factor from the last cum-date close (NSE's formula)
+# ---------------------------------------------------------------------------
+def test_rights_issue_factor_uses_the_raw_close_before_the_ex_date(session) -> None:
+    add_prices(session, "RIGHTCO", [100.0, 100.0, 70.0], start=date(2024, 5, 1))
+    add_rights_action(session, "RIGHTCO", date(2024, 5, 3), "Rights 1:4 @ Premium Rs 50/-")
+
+    events, review = get_price_adjustment_events(session)
+
+    assert events[["symbol", "date", "kinds"]].values.tolist() == [
+        ["RIGHTCO", date(2024, 5, 3), "RIGHTS"]
+    ]
+    assert events["factor"].iloc[0] == pytest.approx(0.92)  # P = 100 (the close of 2 May)
+    assert review.empty  # an applied rights issue is no longer "needs review"
+
+
+def test_rights_issue_that_cannot_be_priced_stays_in_review(session) -> None:
+    add_prices(session, "NOPRICE", [100.0, 100.0, 70.0], start=date(2024, 5, 1))
+    add_rights_action(session, "NOPRICE", date(2024, 5, 3), "Rights 2:3")  # no issue price
+    add_rights_action(session, "NOHISTORY", date(2024, 5, 3), "Rights 1:4 @ Premium Rs 50/-")
+
+    events, review = get_price_adjustment_events(session)
+
+    assert events.empty
+    assert sorted(review["symbol"]) == ["NOHISTORY", "NOPRICE"]
+
+
+def test_rights_and_bonus_on_the_same_day_multiply(session) -> None:
+    add_prices(session, "BOTH", [100.0, 100.0, 70.0], start=date(2024, 5, 1))
+    add_rights_action(session, "BOTH", date(2024, 5, 3), "Rights 1:4 @ Premium Rs 50/-")
+    add_official_action(session, "BOTH", date(2024, 5, 3), factor=0.5, action_type="BONUS")
+
+    events, _ = get_price_adjustment_events(session)
+
+    assert events["factor"].iloc[0] == pytest.approx(0.46)  # 0.92 * 0.5
 
 
 # ---------------------------------------------------------------------------
