@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from datetime import date, timedelta
 
+import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -100,3 +101,28 @@ def test_nse_fetch_timeout_comes_from_settings(monkeypatch: pytest.MonkeyPatch) 
     nse_files.fetch("https://example.invalid/file.zip")
 
     assert seen == [7]
+
+
+def test_crosscheck_tolerance_comes_from_settings(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A difference passes or fails depending on CROSSCHECK_TOLERANCE_PCT at call time."""
+    from scripts.crosscheck_52w import print_summary
+
+    report = pd.DataFrame(
+        [
+            {
+                "date": "2024-11-18",
+                "symbol": "AAA",
+                "metric": "52W_LOW",
+                "official": 10.0,
+                "ours": 10.3,
+                "difference_pct": 3.0,
+            }
+        ]
+    )
+    monkeypatch.setattr(settings, "CROSSCHECK_TOLERANCE_PCT", 5.0)
+    assert print_summary(report) is True
+    monkeypatch.setattr(settings, "CROSSCHECK_TOLERANCE_PCT", 1.0)
+    assert print_summary(report) is False
+    capsys.readouterr()

@@ -188,6 +188,9 @@ PRICE_DOWNLOAD_PAUSE_SECONDS: float = 0.3
 BENCHMARK_DOWNLOAD_PAUSE_SECONDS: float = 0.5
 # The 52-week cross-check looks back this many calendar days (a year of history per date).
 CROSSCHECK_WINDOW_DAYS: int = 365
+# A cross-check comparison fails when our 52-week high or low is more than this many percent
+# away from NSE's official number.
+CROSSCHECK_TOLERANCE_PCT: float = 1.0
 
 # Official file start dates:
 # • 2016-11-21: earliest daily price history in scope

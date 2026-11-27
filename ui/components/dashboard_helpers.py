@@ -42,25 +42,31 @@ RSI_14 = "rsi_close_14"
 PRIOR_HIGH_252 = "window_high_252_max_ago1"
 PRIOR_VOLUME_AVERAGE = "sma_volume_20_ago1"
 
-# Raw snapshot column -> name shown in the table.
-COLUMN_NAMES: dict[str, str] = {
-    "symbol": "Symbol",
-    "series": "Series",
-    "close": "Close",
-    "volume": "Volume",
-    CHANGE_DAILY: "% Change Daily",
-    "percent_change_close_21": "% Change 1M",
-    "percent_change_close_63": "% Change 3M",
-    "percent_change_close_126": "% Change 6M",
-    "percent_change_close_252": "% Change 12M",
-    "sma_close_50": "SMA 50",
-    SMA_200: "SMA 200",
-    "ema_close_12": "EMA 12",
-    "ema_close_20": "EMA 20",
-    "ema_close_26": "EMA 26",
-    RSI_14: "RSI",
-    "pct_from_52w_high": "% From 52W High",
+# Raw snapshot column -> (name shown in the table, number format or None for text columns).
+# The format is a Streamlit/printf string: "₹%.2f" is rupees, "%.2f%%" is a percentage.
+COLUMN_DISPLAY: dict[str, tuple[str, str | None]] = {
+    "symbol": ("Symbol", None),
+    "series": ("Series", None),
+    "close": ("Close", "₹%.2f"),
+    "volume": ("Volume", "%d"),
+    CHANGE_DAILY: ("% Change Daily", "%.2f%%"),
+    "percent_change_close_21": ("% Change 1M", "%.2f%%"),
+    "percent_change_close_63": ("% Change 3M", "%.2f%%"),
+    "percent_change_close_126": ("% Change 6M", "%.2f%%"),
+    "percent_change_close_252": ("% Change 12M", "%.2f%%"),
+    "sma_close_50": ("SMA 50", "₹%.2f"),
+    SMA_200: ("SMA 200", "₹%.2f"),
+    "ema_close_12": ("EMA 12", "₹%.2f"),
+    "ema_close_20": ("EMA 20", "₹%.2f"),
+    "ema_close_26": ("EMA 26", "₹%.2f"),
+    RSI_14: ("RSI", "%.1f"),
+    "pct_from_52w_high": ("% From 52W High", "%.1f%%"),
 }
+
+# Names of the % change columns: the table colours these green and red.
+PERCENT_CHANGE_LABELS = [
+    label for label, _ in COLUMN_DISPLAY.values() if label.startswith("% Change")
+]
 
 # Column presets so a beginner does not have to pick 15 columns one by one.
 COLUMN_PRESETS: dict[str, list[str]] = {
@@ -76,7 +82,7 @@ COLUMN_PRESETS: dict[str, list[str]] = {
         "% Change 12M",
         "RSI",
     ],
-    "All": list(COLUMN_NAMES.values()),
+    "All": [label for label, _ in COLUMN_DISPLAY.values()],
 }
 
 NEAR_HIGH_PCT = 5.0  # "near the 52-week high" = within 5% of it
@@ -100,8 +106,8 @@ def add_derived_columns(table: pd.DataFrame) -> pd.DataFrame:
 
 def rename_for_display(snapshot: pd.DataFrame) -> pd.DataFrame:
     """Keep the display columns that exist in the snapshot and give them clean names."""
-    present = [c for c in COLUMN_NAMES if c in snapshot.columns]
-    return snapshot[present].rename(columns=COLUMN_NAMES)
+    present = [c for c in COLUMN_DISPLAY if c in snapshot.columns]
+    return snapshot[present].rename(columns={c: COLUMN_DISPLAY[c][0] for c in present})
 
 
 def default_series(available: list[str]) -> list[str]:

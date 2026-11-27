@@ -282,6 +282,7 @@ python run_pipeline.py --crosscheck-52w
 ```
 * **Why it exists:** Audits split and bonus adjusted rolling 52-week High and Low against NSE's official `CM_52_wk_High_low_DDMMYYYY.csv`.
 * **What it changes:** Read-only operation. Writes discrepancies to `reports/adj_crosscheck.csv`. Differences are listed and never auto-fixed.
+* **52-week definition:** NSE's own: highest `adj_high` and lowest `adj_low` over the last 365 calendar days up to the checked date (`CROSSCHECK_WINDOW_DAYS`), not the indicator cache's 252-bar column. The printed summary says PASS or FAIL: a comparison fails above `CROSSCHECK_TOLERANCE_PCT` (1%) and nothing compared is not a pass.
 
 ---
 

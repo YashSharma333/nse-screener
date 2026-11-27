@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ui.components.dashboard_helpers import (
-    COLUMN_NAMES,
+    COLUMN_DISPLAY,
     COLUMN_PRESETS,
     add_derived_columns,
     color_change,
@@ -86,7 +86,7 @@ def test_kpis_on_empty_frame_show_dashes_not_crash():
 
 
 def test_presets_only_use_known_column_names():
-    known = set(COLUMN_NAMES.values())
+    known = {label for label, _ in COLUMN_DISPLAY.values()}
     for name, cols in COLUMN_PRESETS.items():
         assert set(cols) <= known, name
 
